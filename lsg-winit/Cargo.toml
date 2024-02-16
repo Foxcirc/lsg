@@ -1,0 +1,9 @@
+[package]
+name = "lsg-winit"
+description = "async version of winit"
+keywords = ["async", "winit"]
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+
+[dependencies]

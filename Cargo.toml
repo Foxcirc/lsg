@@ -1,0 +1,12 @@
+
+[package]
+name = "lsg"
+description = "light and small gui apps"
+version = "0.1.0"
+edition = "2021"
+authors = ["foxcirc"]
+
+[workspace]
+members = ["lsg-winit"]
+
+[dependencies]
