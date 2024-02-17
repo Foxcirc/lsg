@@ -1,8 +1,4 @@
 
-<div style="text-align:center;">
-    <img src="https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/lsg-colored.png" alt="colourful lsg icon" style="display:block; margin:auto;">
-</div>
-
 `lsg-winit` is an async [`winit`](https://docs.rs/winit) wrapper written for the `lsg` library.
 However this crate is also meant to be used as a standalone.
 
