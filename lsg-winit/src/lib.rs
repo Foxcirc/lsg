@@ -1,4 +1,6 @@
 
+#![doc(html_logo_url = "https://optimisticpeach.github.io/Logo.svg")]
+
 //! `lsg-winit` is an async [`winit`](https://docs.rs/winit) wrapper written for the `lsg` library.
 //! However this crate is also meant to be used as a standalone.
 //!
