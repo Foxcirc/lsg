@@ -5,7 +5,6 @@
 
 # light and small gui apps
 
-# ergonimic
 
 `lsg` is a library for making desktop gui applications in rust
 It has a lot of other features that make it an awesome framework:
