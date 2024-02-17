@@ -1,12 +1,3 @@
 
-#![doc(html_logo_url = "https://optimisticpeach.github.io/Logo.svg")]
+#![doc(html_logo_url = "https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/lsg-colored.png")]
 
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn it_works() {
-
-    }
-
-}

@@ -561,6 +561,9 @@ dependencies = [
 [[package]]
 name = "lsg"
 version = "0.0.0"
+dependencies = [
+ "lsg-winit",
+]
 
 [[package]]
 name = "lsg-winit"

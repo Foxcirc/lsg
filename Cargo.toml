@@ -9,4 +9,11 @@ package.version = "0.1.0"
 package.edition = "2021"
 package.authors = ["foxcirc"]
 
+[[test]]
+name = "test"
+path = "src/test.rs"
+harness = false
+
+
 [dependencies]
+lsg-winit = { path = "lsg-winit" }
