@@ -10,8 +10,8 @@ package.edition = "2021"
 package.authors = ["foxcirc"]
 
 [[test]]
-name = "test"
-path = "src/test.rs"
+name = "app"
+path = "src/test/main.rs"
 harness = false
 edition = "2021" # why is 2015 the default?
 

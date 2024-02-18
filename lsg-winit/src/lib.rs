@@ -39,7 +39,7 @@
 //! use lsg_winit::winit;
 //! ```
 
-use std::{thread, ops::{Deref, DerefMut}, any::Any};
+use std::{thread, ops::{Deref, DerefMut}, any::Any, panic::{catch_unwind, resume_unwind, UnwindSafe}};
 use winit::{
     event_loop::{EventLoop, EventLoopBuilder, EventLoopProxy, DeviceEvents, ControlFlow},
     window::{WindowBuilder as WinitWindowBuilder, Window as WinitWindow, WindowAttributes, WindowButtons, Fullscreen, WindowLevel, Icon, Theme},
@@ -190,14 +190,17 @@ impl<T> Runner<T> {
     pub fn spawn<F>(&mut self, f: F)
     where
         F: FnOnce() -> T,
-        F: Send + 'static,
+        F: Send + UnwindSafe + 'static,
         T: Send + 'static,
     {
         let proxy = self.inner.create_proxy();
         let thread = thread::spawn(move || {
-            let result = f();
+            let result = catch_unwind(move || f());
             proxy.send_event(Request::Exit).map_err(drop).unwrap();
-            result
+            match result {
+                Ok(val) => val,
+                Err(err) => resume_unwind(err),
+            }
         });
         self.thread = Some(thread);
     }
@@ -231,7 +234,7 @@ impl<T> Runner<T> {
 
         })?;
 
-        Ok(thread.join().unwrap())
+        Ok(thread.join().expect("lsg_winit child thread panicked"))
         
     }
     
