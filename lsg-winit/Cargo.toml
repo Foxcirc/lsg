@@ -1,6 +1,6 @@
 [package]
 name = "lsg-winit"
-description = "async winit wrapper"
+description = "async winit wrapper for lsg"
 keywords = ["async", "winit"]
 edition.workspace = true
 version.workspace = true
@@ -10,6 +10,7 @@ authors.workspace = true
 name = "test"
 path = "src/test.rs"
 harness = false
+edition = "2021"
 
 [dev-dependencies]
 async-executor = "1.8.0"
@@ -18,8 +19,9 @@ futures-lite = "2.2.0"
 [dependencies]
 flume = "0.11.*"
 oneshot = "0.1.*"
+raw-window-handle = "0.6.0"
 
 [dependencies.winit]
 version = "0.29.*"
 default-features = false
-features = ["wayland"]
+features = ["rwh_06", "wayland"]

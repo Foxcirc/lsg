@@ -38,21 +38,31 @@
 //! use lsg_winit::winit;
 //! ```
 
-use std::thread;
-use winit::{event_loop::{EventLoop, EventLoopBuilder, EventLoopProxy, DeviceEvents, ControlFlow}, error::EventLoopError, event::Event, monitor::MonitorHandle};
+use std::{thread, ops::{Deref, DerefMut}, any::Any};
+use winit::{
+    event_loop::{EventLoop, EventLoopBuilder, EventLoopProxy, DeviceEvents, ControlFlow},
+    window::{WindowBuilder as WinitWindowBuilder, Window as WinitWindow, WindowAttributes, WindowButtons, Fullscreen, WindowLevel, Icon, Theme},
+    event::Event,
+    monitor::MonitorHandle,
+    dpi::{Size as WinitSize, Position as WinitPosition},
+    error::{EventLoopError, OsError},
+};
 
 pub use winit;
 
 enum Request {
     Exit, // only ever sent when the spawned thread returns
+    ExecOnMainThread   { f: SendableFunction, resp: oneshot::Sender<()> },
     Exiting            { resp: oneshot::Sender<bool> },
     AvailableMonitors  { resp: oneshot::Sender<AvailableMonitorsIterator> },
     PrimaryMonitor     { resp: oneshot::Sender<Option<MonitorHandle>> },
     ListenDeviceEvents { arg: DeviceEvents },
     SetControlFlow     { arg: ControlFlow },
-    ControlFlow        { resp: oneshot::Sender<ControlFlow> }
+    ControlFlow        { resp: oneshot::Sender<ControlFlow> },
+    BuildWindow        { arg: WinitWindowBuilder, resp: oneshot::Sender<Result<WinitWindow, OsError>> },
 }
 
+type SendableFunction = Box<dyn FnOnce() + Send>;
 type AvailableMonitorsIterator = Box<dyn Iterator<Item = MonitorHandle> + Send>;
 
 /// Handle that allows interacting with the `winit` event loop
@@ -85,7 +95,21 @@ impl AsyncEventLoop {
 
     /// Receive the next event.inside your async task.
     pub async fn next(&self) -> Event<()> {
-        self.events.recv_async().await.unwrap() // this can only fail if the main thread is dead
+        self.events.recv_async().await.unwrap()
+    }
+
+    /// Run something on the main thread
+    ///
+    /// This is useful as some platforms require specific things to be done on the main thread.
+    /// The closure will be run immediatly and the event loop will not run until it is done.
+    pub async fn exec_on_main_thread<F>(&mut self, f: F) -> ()
+    where
+        F: FnOnce() -> (),
+        F: Send + 'static,
+    {
+        let (resp, result) = oneshot::channel();
+        self.proxy.send_event(Request::ExecOnMainThread { f: Box::new(f), resp }).map_err(drop).unwrap();
+        result.await.unwrap()
     }
 
     pub async fn available_monitors(&self) -> impl Iterator<Item = MonitorHandle> {
@@ -117,6 +141,12 @@ impl AsyncEventLoop {
     pub async fn exiting(&self) -> bool {
         let (resp, result) = oneshot::channel();
         self.proxy.send_event(Request::Exiting { resp }).map_err(drop).unwrap();
+        result.await.unwrap()
+    }
+
+    async fn build_window(&self, arg: WinitWindowBuilder) -> Result<WinitWindow, OsError> {
+        let (resp, result) = oneshot::channel();
+        self.proxy.send_event(Request::BuildWindow { arg, resp }).map_err(drop).unwrap();
         result.await.unwrap()
     }
     
@@ -174,21 +204,23 @@ impl<T> Runner<T> {
     /// Runs the `winit` event loop. Only call on the main thread.
     /// 
     /// Also see [`spawn`](Runner::spawn).
-    pub fn run(mut self) -> Result<T, EventLoopError> {
+    pub fn run(self) -> Result<T, EventLoopError> {
 
-        let thread = self.thread.take();
+        let thread = self.thread.expect("cannot run without calling spawn");
 
         self.inner.run(move |event, evl| {
 
             if let Event::UserEvent(request) = event {
                 match request {
+                    Request::ExecOnMainThread { f, resp } => { f(); resp.send(()).unwrap() },
                     Request::Exit => evl.exit(),
                     Request::Exiting            { resp } => resp.send(evl.exiting()).unwrap(),
                     Request::AvailableMonitors  { resp } => resp.send(Box::new(evl.available_monitors())).unwrap(),
                     Request::PrimaryMonitor     { resp } => resp.send(evl.primary_monitor()).unwrap(),
                     Request::ControlFlow        { resp } => resp.send(evl.control_flow()).unwrap(),
-                    Request::SetControlFlow     { arg }  => evl.set_control_flow(arg),
-                    Request::ListenDeviceEvents { arg }  => evl.listen_device_events(arg),
+                    Request::SetControlFlow     { arg  } => evl.set_control_flow(arg),
+                    Request::ListenDeviceEvents { arg  } => evl.listen_device_events(arg),
+                    Request::BuildWindow   { arg, resp } => resp.send(arg.build(&evl)).unwrap(),
                 }
             } else {
                 // the other side could be dead before we receive the exit request
@@ -198,11 +230,145 @@ impl<T> Runner<T> {
 
         })?;
 
-        Ok(
-            thread.unwrap().join().unwrap()
-        )
+        Ok(thread.join().unwrap())
         
     }
     
 }
 
+/// Simple wrapper struct to create a [`Window`](https://docs.rs/winit/latest/winit/window/struct.Window.html)
+/// using an [`AsyncEventLoop`].
+pub struct Window {}
+
+impl Window {
+    /// This returns an actual `winit` [`Window`](https://docs.rs/winit/latest/winit/window/struct.Window.html).
+    pub async fn new(evl: &AsyncEventLoop) -> Result<WinitWindow, OsError> {
+        WindowBuilder::new().build(&evl).await
+    }
+}
+
+pub struct WindowBuilder {
+    inner: WinitWindowBuilder
+}
+
+/// Simple wrapper around a [`WindowBuilder`](https://docs.rs/winit/latest/winit/window/struct.WindowBuilder.html)
+/// using an [`AsyncEventLoop`] to build the window.
+impl WindowBuilder {
+    
+    /// Create a new `WindowBuilder`.
+    /// Don't use the deref method here.
+    pub fn new() -> Self {
+        Self { inner: WinitWindowBuilder::new() }
+    }
+
+    pub fn window_attributes(&self) -> &WindowAttributes {
+        self.inner.window_attributes()
+    }
+
+    pub fn with_inner_size<S: Into<WinitSize>>(mut self, size: S) -> Self {
+        self.inner = self.inner.with_inner_size(size);
+        self
+    }
+
+    pub fn with_min_inner_size<S: Into<WinitSize>>(mut self, size: S) -> Self {
+        self.inner = self.inner.with_min_inner_size(size);
+        self
+    }
+
+    pub fn with_max_inner_size<S: Into<WinitSize>>(mut self, size: S) -> Self {
+        self.inner = self.inner.with_max_inner_size(size);
+        self
+    }
+
+    pub fn with_position(mut self, resizable: bool) -> Self {
+        self.inner = self.inner.with_resizable(resizable);
+        self
+    }
+
+    pub fn with_enabled_buttons(mut self, buttons: WindowButtons) -> Self {
+        self.inner = self.inner.with_enabled_buttons(buttons);
+        self
+    }
+
+    pub fn with_title<T: Into<String>>(mut self, title: T) -> Self {
+        self.inner = self.inner.with_title(title);
+        self
+    }
+
+    pub fn with_fullscreen(mut self, fullscreen: Option<Fullscreen>) -> Self {
+        self.inner = self.inner.with_fullscreen(fullscreen);
+        self
+    }
+
+    pub fn with_maximized(mut self, maximized: bool) -> Self {
+        self.inner = self.inner.with_maximized(maximized);
+        self
+    }
+
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.inner = self.inner.with_visible(visible);
+        self
+    }
+
+    pub fn with_transparent(mut self, transparent: bool) -> Self {
+        self.inner = self.inner.with_transparent(transparent);
+        self
+    }
+
+    pub fn with_blur(mut self, blur: bool) -> Self {
+        self.inner = self.inner.with_blur(blur);
+        self
+    }
+
+    pub fn transparent(&self) -> bool {
+        self.inner.transparent()
+    }
+
+    pub fn with_decorations(mut self, decorations: bool) -> Self {
+        self.inner = self.inner.with_decorations(decorations);
+        self
+    }
+
+    pub fn with_window_level(mut self, level: WindowLevel) -> Self {
+        self.inner = self.inner.with_window_level(level);
+        self
+    }
+
+    pub fn with_window_icon(mut self, icon: Option<Icon>) -> Self {
+        self.inner = self.inner.with_window_icon(icon);
+        self
+    }
+
+    pub fn with_theme(mut self, theme: Option<Theme>) -> Self {
+        self.inner = self.inner.with_theme(theme);
+        self
+    }
+
+    pub fn with_resize_increments<S: Into<WinitSize>>(mut self, resize_increment: S) -> Self {
+        self.inner = self.inner.with_resize_increments(resize_increment);
+        self
+    }
+
+    pub fn with_content_protected(mut self, protected: bool) -> Self {
+        self.inner = self.inner.with_content_protected(protected);
+        self
+    }
+
+    pub fn with_active(mut self, active: bool) -> Self {
+        self.inner = self.inner.with_active(active);
+        self
+    }
+
+    pub unsafe fn with_parent_window(mut self, parent_window: Option<raw_window_handle::RawWindowHandle>) -> Self {
+        self.inner = self.inner.with_parent_window(parent_window);
+        self
+    }
+
+    /// This returns an actual `winit` [`Window`](https://docs.rs/winit/latest/winit/window/struct.Window.html).
+    /// Don't use the deref method here.
+    pub async fn build(self, evl: &AsyncEventLoop) -> Result<WinitWindow, OsError> {
+        let arg = self.inner;
+        evl.build_window(arg).await
+    }
+
+}
