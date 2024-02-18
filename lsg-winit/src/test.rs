@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use async_executor::LocalExecutor;
 use futures_lite::future::block_on;
-use lsg_winit::{AsyncEventLoop, Window, WindowBuilder};
+use lsg_winit::{AsyncEventLoop, WindowBuilder};
 
 fn main() -> ExitCode {
 

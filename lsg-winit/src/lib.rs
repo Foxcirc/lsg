@@ -21,6 +21,7 @@
 //! runner.spawn(move || { // slightly altered thread::spawn
 //!     block_on(async move {
 //!         let monitor = evl.primary_monitor()?; // exposes normal winit functions
+//!         let window = lsg_winit::WindowBuilder::new().build(&evl)?; // create a window
 //!         while let event = evl.next().await { // get the next event
 //!             // handle events here
 //!             if should_close { return } // return to terminate the event loop
@@ -236,17 +237,6 @@ impl<T> Runner<T> {
     
 }
 
-/// Simple wrapper struct to create a [`Window`](https://docs.rs/winit/latest/winit/window/struct.Window.html)
-/// using an [`AsyncEventLoop`].
-pub struct Window {}
-
-impl Window {
-    /// This returns an actual `winit` [`Window`](https://docs.rs/winit/latest/winit/window/struct.Window.html).
-    pub async fn new(evl: &AsyncEventLoop) -> Result<WinitWindow, OsError> {
-        WindowBuilder::new().build(&evl).await
-    }
-}
-
 pub struct WindowBuilder {
     inner: WinitWindowBuilder
 }
@@ -356,11 +346,6 @@ impl WindowBuilder {
 
     pub fn with_active(mut self, active: bool) -> Self {
         self.inner = self.inner.with_active(active);
-        self
-    }
-
-    pub unsafe fn with_parent_window(mut self, parent_window: Option<raw_window_handle::RawWindowHandle>) -> Self {
-        self.inner = self.inner.with_parent_window(parent_window);
         self
     }
 
