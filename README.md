@@ -5,14 +5,13 @@
 
 # light and small gui apps
 
-
-`lsg` is a library for making desktop gui applications in rust
-It has a lot of other features that make it an awesome framework:
+`lsg` is a library for making desktop/mobile gui applications in rust
+It has a lot of other features that make it awesome:
 - make it easy and pleasant to **style widgets** yourself
 - fully controllable **semi-automatic layouting**
-- ergonomic **async support** that abstracts away the typical "event loop" way of handling events
+- ergonomic **async support** that can abstract away your typical event loop
 - you can tightly **associate widgets with your application state**
-- gpu accelerated drawing (we use opengl)
+- **gpu accelerated** drawing (using wgpu)
 
 # async
 
@@ -27,28 +26,29 @@ In my opinion `smol`/`async-executor` is the best choice, since it fits into thi
 # lightweight
 
 Being "light" means following things:
-- short compilation times
+- short compilation times (for rust standards)
 - fast, even in debug builds
-- small executable size
+- reasonably small executable size
 
 `lsg` keeps it's dependencies minimal. However this also means that the library itself is missing
 some features you would expect in a traditional gui framework, notably we don't have builtin support for:
 - a lot of image formats (only png is included)
 - a lot of font formats (only ttf/otf is included)
-- platform specific 
+- platform specific api's
 
 # currently missing features
 
 These features should be implemented in the future:
 - support for accesskit
+- drag and drop
 - more platforms
 
 # platform support
 
 Currently this library supports:
 - Linux (Wayland or X11)
+- Windows
 
 Will be implemented in the near future:
-- Windows
 - MacOS
 - Android

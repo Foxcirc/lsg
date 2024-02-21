@@ -23,7 +23,7 @@ async fn run(evl: lsg_winit::AsyncEventLoop) {
 
     // create a simple window
     let window = lsg_winit::WindowBuilder::new()
-        .with_title("lsg-winit + opengl test")
+        .with_title("lsg test")
         .build(&evl).await.unwrap();
 
     let mut state = WgpuState::new(&window).await;
