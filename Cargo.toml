@@ -4,7 +4,7 @@ name = "lsg"
 description = "light and small gui apps"
 
 [workspace]
-members = [ "lsg-gl", "lsg-winit"]
+members = ["lsg-gl", "lsg-winit"]
 package.version = "0.1.0"
 package.edition = "2021"
 package.authors = ["foxcirc"]

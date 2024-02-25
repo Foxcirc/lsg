@@ -69,6 +69,15 @@ pub mod debug {
         ) }
     }
 
+    pub fn colored_print(source: DebugSource, _kind: DebugType, severity: DebugSeverity, _id: u32, message: &str) {
+        let color = if severity == DebugSeverity::High { "31" } else { "34" };
+        println!(
+            "gl/{:?} (Severity: {:?}): \x1b[{}m{}\x1b[39m",
+            source, severity, color, message.trim_end_matches("\n")
+        );
+    }
+
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
     #[repr(u32)]
     pub enum DebugSeverity {
@@ -108,8 +117,6 @@ pub mod debug {
 pub mod shader {
 
     use std::{ffi::CString, fmt};
-
-    use crate::{GlObject, Bindable, GlObjectKind};
 
     pub struct Shader {
         id: u32
@@ -213,181 +220,82 @@ pub mod shader {
         id: u32,
     }
 
-    impl GlObject for LinkedProgram {
-        const KIND: crate::GlObjectKind = GlObjectKind::Program;
-        fn from(id: u32) -> Self where Self: Sized { // TODO: remove from trait since it is useless
-            Self { id }
-        }
-        fn id(&self) -> u32 {
-            self.id
-        }
-    }
-
-    impl Bindable for LinkedProgram {
-        fn bind(&self) {
-            unsafe { gl::UseProgram(self.id) }
-        }
+    pub fn bind_program(program: &LinkedProgram) {
+        unsafe { gl::UseProgram(program.id) }
     }
 
 }
 
 pub mod vao {
 
-    use std::mem::MaybeUninit;
-
-    use crate::{Bindable, GlObject, GlObjectKind};
-
     #[repr(transparent)]
     pub struct VertexArrayObject {
         id: u32
     }
 
-    impl VertexArrayObject {
-        pub fn new() -> Self {
-            let mut id = 0;
-            unsafe { gl::GenVertexArrays(1, &mut id) };
-            Self { id }
-        }
-        pub fn many(dest: &mut [MaybeUninit<Self>]) {
-            unsafe { gl::GenVertexArrays(dest.len() as i32, dest.as_mut_ptr().cast()) }
-        }
-        pub fn with<F: FnOnce()>(&self, f: F) {
-            self.bind();
-            f();
-        }
+    pub fn gen_vertex_array() -> VertexArrayObject {
+        let mut id = 0;
+        unsafe { gl::GenVertexArrays(1, &mut id) };
+        VertexArrayObject { id }
     }
 
-    impl GlObject for VertexArrayObject {
-        const KIND: GlObjectKind = GlObjectKind::VertexArrayObject;
-        fn from(id: u32) -> Self where Self: Sized {
-            Self { id }
-        }
-        fn id(&self) -> u32 {
-            self.id
-        }
-    }
-
-    impl Bindable for VertexArrayObject {
-        fn bind(&self) {
-            unsafe { gl::BindVertexArray(self.id) }
-        }
+    pub fn bind_vertex_array(this: &VertexArrayObject) {
+        unsafe { gl::BindVertexArray(this.id) }
     }
     
 }
 
 pub mod buffer {
 
-    use std::{mem::{size_of, MaybeUninit}, iter, ptr::null};
+    use std::{mem::size_of, ptr::null};
 
-    pub(crate) trait GlObject {
-        const KIND: GlObjectKind;
-        fn from(id: u32) -> Self where Self: Sized;
-        fn id(&self) -> u32;
-    }
+    pub fn gen_buffer(kind: BufferType) -> Buffer {
 
-    #[derive(Debug, Clone, Copy)]
-    #[repr(u32)]
-    pub(crate) enum GlObjectKind {
-        Program,
-        VertexArrayObject, // TODO: make sure this is never converted to u32
-        ArrayBuffer = gl::ARRAY_BUFFER,
-        ElementBuffer = gl::ELEMENT_ARRAY_BUFFER,
-    }
+        let mut id = 0;
+        unsafe { gl::GenBuffers(1, &mut id) };
 
-    pub(crate) trait Bindable: GlObject {
-        fn bind(&self);
-    }
-
-    #[allow(private_bounds)]
-    pub unsafe trait GlBuffer: GlObject + Bindable {
-
-        fn new() -> Self where Self: Sized {
-
-            let mut id = 0;
-            unsafe { gl::GenBuffers(1, &mut id) };
-
-            Self::from(id)
-            
-        }
-
-        fn many(dest: &mut [MaybeUninit<Self>]) where Self: Sized {
-
-            let mut ids = Vec::new();
-            ids.resize(dest.len(), 0u32);
-
-            unsafe { gl::GenBuffers(ids.len() as i32, ids.as_mut_ptr()) };
-
-            for (id, item) in iter::zip(ids, dest) {
-                *item = MaybeUninit::new(Self::from(id))
-            }
-            
-        }
-
-        fn data<T>(&self, data: &[T], usage: DrawHint) {
-            
-            self.bind();
-            unsafe { gl::BufferData(
-                Self::KIND as u32,
-                (data.len() * size_of::<T>()) as isize,
-                data.as_ptr().cast(),
-                usage as u32
-            ) }
-
-        }
-
-    }
-
-    pub struct ArrayBuffer { id: u32 }
-
-    impl GlObject for ArrayBuffer {
-        const KIND: GlObjectKind = GlObjectKind::ArrayBuffer;
-        fn from(id: u32) -> Self { Self { id } }
-        fn id(&self) -> u32 { self.id }
-    }
-
-    impl Bindable for ArrayBuffer {
-        fn bind(&self) {
-            unsafe { gl::BindBuffer(Self::KIND as u32, self.id) }
-        }
-    }
-
-    unsafe impl GlBuffer for ArrayBuffer {}
-
-    impl ArrayBuffer {
+        Buffer { id, kind }
         
-        pub fn attribs(&self, location: usize, count: usize, kind: DataType, normalize: bool, stride: usize) {
+    }
 
-            self.bind();
-            unsafe { gl::VertexAttribPointer(
-                location as u32,
-                count as i32,
-                kind as u32,
-                normalize as u8,
-                (stride * size_of::<f32>()) as i32,
-                null(), // unsupported
-            ) };
-
-            unsafe { gl::EnableVertexAttribArray(location as u32) };
-            
-        }
+    pub fn buffer_data<T>(this: &Buffer, data: &[T], usage: DrawHint) {
+        
+        bind_buffer(this);
+        unsafe { gl::BufferData(
+            this.kind as u32,
+            (data.len() * size_of::<T>()) as isize,
+            data.as_ptr().cast(),
+            usage as u32
+        ) }
 
     }
 
-    pub struct ElementBuffer { id: u32 }
-
-    impl GlObject for ElementBuffer {
-        const KIND: GlObjectKind = GlObjectKind::ElementBuffer;
-        fn from(id: u32) -> Self { Self { id } }
-        fn id(&self) -> u32 { self.id }
+    pub fn bind_buffer(this: &Buffer) {
+        unsafe { gl::BindBuffer(this.kind as u32, this.id) }
     }
 
-    impl Bindable for ElementBuffer {
-        fn bind(&self) {
-            unsafe { gl::BindBuffer(Self::KIND as u32, self.id) }
-        }
+    pub struct Buffer {
+        id: u32,
+        kind: BufferType,
     }
 
-    unsafe impl GlBuffer for ElementBuffer {}
+    pub fn vertex_attribs(this: &Buffer, location: usize, count: usize, kind: DataType, normalize: bool, stride: usize) {
+
+        assert_eq!(this.kind, BufferType::ArrayBuffer);
+
+        bind_buffer(this);
+        unsafe { gl::VertexAttribPointer(
+            location as u32,
+            count as i32,
+            kind as u32,
+            normalize as u8,
+            (stride * size_of::<f32>()) as i32,
+            null(), // unsupported
+        ) };
+
+        unsafe { gl::EnableVertexAttribArray(location as u32) };
+
+    }
 
     #[derive(Debug, Clone, Copy)]
     #[repr(u32)]
@@ -403,20 +311,36 @@ pub mod buffer {
         Stream  = gl::STREAM_DRAW // set once, used at most a few times
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(u32)]
+    pub enum BufferType {
+        ArrayBuffer   = gl::ARRAY_BUFFER,
+        ElementBuffer = gl::ELEMENT_ARRAY_BUFFER,
+    }
+
+
 }
 
 pub mod draw {
 
-    use crate::{VertexArrayObject, Bindable, LinkedProgram};
+    use std::ptr::null;
+
+    use crate::{VertexArrayObject, LinkedProgram, bind_program, bind_vertex_array};
 
     pub fn resize_viewport(width: u32, height: u32) {
         unsafe { gl::Viewport(0, 0, width as i32, height as i32) }
     }
 
-    pub fn draw_array(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {
-        vao.bind();
-        program.bind();
+    pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {
+        bind_program(program);
+        bind_vertex_array(vao);
         unsafe { gl::DrawArrays(primitive as u32, start as i32, count as i32) }
+    }
+
+    pub fn draw_elements(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, count: usize) {
+        bind_program(program);
+        bind_vertex_array(vao);
+        unsafe { gl::DrawElements(primitive as u32, count as i32, gl::UNSIGNED_INT, null()) }
     }
 
     #[derive(Debug, Clone, Copy)]
