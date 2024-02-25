@@ -1,0 +1,9 @@
+[package]
+name = "lsg-gl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+gl = "0.14.0"
+num_enum = "0.7.2"

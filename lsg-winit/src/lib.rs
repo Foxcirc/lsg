@@ -39,13 +39,13 @@
 //! use lsg_winit::winit;
 //! ```
 
-use std::{thread, ops::{Deref, DerefMut}, any::Any, panic::{catch_unwind, resume_unwind, UnwindSafe}};
+use std::{thread, panic::{catch_unwind, resume_unwind, UnwindSafe}, process};
 use winit::{
     event_loop::{EventLoop, EventLoopBuilder, EventLoopProxy, DeviceEvents, ControlFlow},
     window::{WindowBuilder as WinitWindowBuilder, Window as WinitWindow, WindowAttributes, WindowButtons, Fullscreen, WindowLevel, Icon, Theme},
     event::Event,
     monitor::MonitorHandle,
-    dpi::{Size as WinitSize, Position as WinitPosition},
+    dpi::Size as WinitSize,
     error::{EventLoopError, OsError},
 };
 
@@ -187,6 +187,8 @@ impl<T> Runner<T> {
     ///
     /// This thread will act just like the main thread. When you return from it the event loop
     /// will terminate and [`run`](Runner::run) will return the same value.
+    ///
+    /// The threads name is `lsg_winit`.
     pub fn spawn<F>(&mut self, f: F)
     where
         F: FnOnce() -> T,
@@ -194,18 +196,23 @@ impl<T> Runner<T> {
         T: Send + 'static,
     {
         let proxy = self.inner.create_proxy();
-        let thread = thread::spawn(move || {
+        let builder = thread::Builder::new().name(String::from("lsg_winit"));
+        let thread = builder.spawn(move || {
             let result = catch_unwind(move || f());
             proxy.send_event(Request::Exit).map_err(drop).unwrap();
             match result {
                 Ok(val) => val,
                 Err(err) => resume_unwind(err),
             }
-        });
+        }).unwrap();
         self.thread = Some(thread);
     }
 
     /// Runs the `winit` event loop. Only call on the main thread.
+    ///
+    /// Code after this function may not be run of either the platform doesn't
+    /// support returning from the event loop or the child thread panics.
+    /// All cleanup should be done in the child thread.
     /// 
     /// Also see [`spawn`](Runner::spawn).
     pub fn run(self) -> Result<T, EventLoopError> {
@@ -234,7 +241,10 @@ impl<T> Runner<T> {
 
         })?;
 
-        Ok(thread.join().expect("lsg_winit child thread panicked"))
+        match thread.join() {
+            Ok(val) => Ok(val),
+            Err(..) => process::exit(1)
+        }
         
     }
     

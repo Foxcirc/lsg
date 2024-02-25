@@ -4,7 +4,7 @@ name = "lsg"
 description = "light and small gui apps"
 
 [workspace]
-members = ["lsg-winit"]
+members = [ "lsg-gl", "lsg-winit"]
 package.version = "0.1.0"
 package.edition = "2021"
 package.authors = ["foxcirc"]
@@ -22,9 +22,8 @@ env_logger = "0.11.2"
 
 [dependencies]
 lsg-winit = { path = "lsg-winit" }
-raw-window-handle = "0.5.0"
+lsg-gl = { path = "lsg-gl" }
 glutin = "0.31.3"
-rgl = "0.2.0"
-gl = "0.14.0"
+raw-window-handle = "0.5.0"
 # wgpu = { version = "0.19.1", default-features = false, features = ["wgsl"] }
 # raw-window-handle = "0.6.0"

@@ -37,7 +37,7 @@ dependencies = [
  "jni",
  "jni-sys",
  "libc",
- "log 0.4.20",
+ "log",
  "ndk",
  "ndk-context",
  "ndk-sys",
@@ -192,7 +192,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fba7adb4dd5aa98e5553510223000e7148f621165ec5f9acd7113f6ca4995298"
 dependencies = [
  "bitflags 2.4.2",
- "log 0.4.20",
+ "log",
  "polling",
  "rustix",
  "slab",
@@ -352,7 +352,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a009aa4810eb158359dda09d0c87378e4bbb89b5a801f016885a4707ba24f7ea"
 dependencies = [
- "log 0.4.20",
+ "log",
  "regex",
 ]
 
@@ -366,7 +366,7 @@ dependencies = [
  "anstyle",
  "env_filter",
  "humantime",
- "log 0.4.20",
+ "log",
 ]
 
 [[package]]
@@ -490,7 +490,7 @@ checksum = "5cc16584ff22b460a382b7feec54b23d2908d858152e5739a120b949293bd74e"
 dependencies = [
  "cc",
  "libc",
- "log 0.4.20",
+ "log",
  "rustversion",
  "windows",
 ]
@@ -510,31 +510,11 @@ dependencies = [
 
 [[package]]
 name = "gl"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c73b90c285f02059b34a6c66bc645ba5faa18c0e3ab332e0725654fc71db441"
-dependencies = [
- "gl_generator 0.6.1",
-]
-
-[[package]]
-name = "gl"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a94edab108827d67608095e269cf862e60d920f144a5026d3dbcfd8b877fb404"
 dependencies = [
- "gl_generator 0.14.0",
-]
-
-[[package]]
-name = "gl_generator"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75d69f914b49d9ff32fdf394cbd798f8c716d74fd19f9cc29da3e99797b2a78d"
-dependencies = [
- "khronos_api 2.2.0",
- "log 0.3.9",
- "xml-rs 0.7.0",
+ "gl_generator",
 ]
 
 [[package]]
@@ -543,9 +523,9 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d"
 dependencies = [
- "khronos_api 3.1.0",
- "log 0.4.20",
- "xml-rs 0.8.19",
+ "khronos_api",
+ "log",
+ "xml-rs",
 ]
 
 [[package]]
@@ -578,7 +558,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77cc5623f5309ef433c3dd4ca1223195347fe62c413da8e2fdd0eb76db2d9bcd"
 dependencies = [
- "gl_generator 0.14.0",
+ "gl_generator",
  "windows-sys 0.48.0",
 ]
 
@@ -588,7 +568,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a165fd686c10dcc2d45380b35796e577eacfd43d4660ee741ec8ebe2201b3b4f"
 dependencies = [
- "gl_generator 0.14.0",
+ "gl_generator",
  "x11-dl",
 ]
 
@@ -598,7 +578,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c8098adac955faa2d31079b65dc48841251f69efd3ac25477903fc424362ead"
 dependencies = [
- "gl_generator 0.14.0",
+ "gl_generator",
 ]
 
 [[package]]
@@ -644,7 +624,7 @@ dependencies = [
  "cfg-if",
  "combine",
  "jni-sys",
- "log 0.4.20",
+ "log",
  "thiserror",
  "walkdir",
  "windows-sys 0.45.0",
@@ -673,12 +653,6 @@ checksum = "406cda4b368d531c842222cf9d2600a9a4acce8d29423695379c6868a143a9ee"
 dependencies = [
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "khronos_api"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "037ab472c33f67b5fbd3e9163a2645319e5356fcd355efa6d4eb7fff4bbcb554"
 
 [[package]]
 name = "khronos_api"
@@ -737,15 +711,6 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e19e8d5c34a3e0e2223db8e060f9e8264aeeb5c5fc64a4ee9965c062211c024b"
-dependencies = [
- "log 0.4.20",
-]
-
-[[package]]
-name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
@@ -771,11 +736,18 @@ dependencies = [
  "async-executor",
  "env_logger",
  "futures-lite",
- "gl 0.14.0",
  "glutin",
+ "lsg-gl",
  "lsg-winit",
  "raw-window-handle",
- "rgl",
+]
+
+[[package]]
+name = "lsg-gl"
+version = "0.1.0"
+dependencies = [
+ "gl",
+ "num_enum",
 ]
 
 [[package]]
@@ -830,7 +802,7 @@ checksum = "2076a31b7010b17a38c01907c45b945e8f11495ee4dd588309718901b1f7a5b7"
 dependencies = [
  "bitflags 2.4.2",
  "jni-sys",
- "log 0.4.20",
+ "log",
  "ndk-sys",
  "num_enum",
  "raw-window-handle",
@@ -1078,15 +1050,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
 
 [[package]]
-name = "rgl"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08905a0f241c3886ef54b381bee7eab9c60c1269cc9de6bbffbf87aaf5e2b1a0"
-dependencies = [
- "gl 0.6.5",
-]
-
-[[package]]
 name = "rustix"
 version = "0.38.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1181,7 +1144,7 @@ dependencies = [
  "calloop-wayland-source",
  "cursor-icon",
  "libc",
- "log 0.4.20",
+ "log",
  "memmap2",
  "rustix",
  "thiserror",
@@ -1309,7 +1272,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
 dependencies = [
- "log 0.4.20",
+ "log",
  "once_cell",
  "tracing-core",
 ]
@@ -1395,7 +1358,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9e7e1900c352b609c8488ad12639a311045f40a35491fb69ba8c12f758af70b"
 dependencies = [
  "bumpalo",
- "log 0.4.20",
+ "log",
  "once_cell",
  "proc-macro2",
  "quote",
@@ -1548,7 +1511,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15a0c8eaff5216d07f226cb7a549159267f3467b289d9a2e52fd3ef5aae2b7af"
 dependencies = [
  "dlib",
- "log 0.4.20",
+ "log",
  "once_cell",
  "pkg-config",
 ]
@@ -1829,7 +1792,7 @@ dependencies = [
  "icrate",
  "js-sys",
  "libc",
- "log 0.4.20",
+ "log",
  "memmap2",
  "ndk",
  "ndk-sys",
@@ -1888,7 +1851,7 @@ checksum = "d039de8032a9a8856a6be89cea3e5d12fdd82306ab7c94d74e6deab2460651c5"
 dependencies = [
  "bitflags 2.4.2",
  "dlib",
- "log 0.4.20",
+ "log",
  "once_cell",
  "xkeysym",
 ]
@@ -1898,15 +1861,6 @@ name = "xkeysym"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "054a8e68b76250b253f671d1268cb7f1ae089ec35e195b2efb2a4e9a836d0621"
-
-[[package]]
-name = "xml-rs"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c1cb601d29fe2c2ac60a2b2e5e293994d87a1f6fa9687a31a15270f909be9c2"
-dependencies = [
- "bitflags 1.3.2",
-]
 
 [[package]]
 name = "xml-rs"

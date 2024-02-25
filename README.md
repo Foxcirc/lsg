@@ -11,14 +11,14 @@ It has a lot of other features that make it awesome:
 - fully controllable **semi-automatic layouting**
 - ergonomic **async support** that can abstract away your typical event loop
 - you can tightly **associate widgets with your application state**
-- **gpu accelerated** drawing (using wgpu)
+- **gpu accelerated** drawing (using OpenGL)
 
 # async
 
 This library requires the use of `async` rust to handle events. This provides a very
-powerful architecture and means your `ui` and `logic` can run on the same thread.
+powerful architecture and means your ui and logic can run on the same thread.
 
-We also don't force any `async runtime` upon you. You can use `smol`, `tokio` or even just `futures-lite`.
+We also don't force any async runtime upon you. You can use `smol`, `tokio` or even just `futures-lite`.
 It is recommended to use a runtime that let's you spawn tasks though, because this let's you handle events
 in a really ergonomic way.
 In my opinion `smol`/`async-executor` is the best choice, since it fits into this crates lightweight philosophy.
