@@ -4,7 +4,7 @@ use std::{ffi::{c_void as void, CStr}, num::NonZeroU32};
 use async_executor::LocalExecutor;
 use futures_lite::future::block_on;
 use glutin::{display::Display, context::PossiblyCurrentContext, surface::{Surface, WindowSurface}};
-use lsg_gl::{VertexArrayObject, LinkedProgram};
+use lsg_gl::{VertexArrayObject, LinkedProgram, to_small_cstr};
 use lsg_winit::winit::{dpi::PhysicalSize, window::Window, event::{WindowEvent, Event}};
 
 fn main() {
@@ -107,6 +107,7 @@ impl GlutinState {
         gl_load_with(|name| display.get_proc_address(name));
 
         lsg_gl::debug_message_callback(lsg_gl::colored_print);
+        lsg_gl::polygon_mode(lsg_gl::PolygonMode::Line);
 
         // vertex shader
         let vertex_shader_code = include_str!("vert.glsl");
@@ -126,22 +127,26 @@ impl GlutinState {
         let mut builder = lsg_gl::Program::new();
         builder.attach(vertex_shader);
         builder.attach(fragment_shader);
-        let program = builder.link();
+        let program = builder.link().unwrap();
 
         // setup for the triangle
         let vao = lsg_gl::gen_vertex_array();
         lsg_gl::bind_vertex_array(&vao);
 
         let vertices: &[f32] = &[
-            0.5,  0.5, 0.0,  // top right
-            0.5, -0.5, 0.0,  // bottom right
-           -0.5, -0.5, 0.0,  // bottom left
-           -0.5,  0.5, 0.0   // top left
+            // positions         // colors
+             0.5, -0.5, 0.0,  1.0, 0.0, 0.0,   // bottom right
+            -0.5, -0.5, 0.0,  0.0, 1.0, 0.0,   // bottom left
+             0.0,  0.5, 0.0,  0.0, 0.0, 1.0    // top
+           //  0.5,  0.5, 0.0, /* top right */      1.0, 1.0, 1.0,
+           //  0.5, -0.5, 0.0, /* bottom right */   1.0, 1.0, 1.0,
+           // -0.5, -0.5, 0.0, /* bottom left */    1.0, 1.0, 1.0,
+           // -0.5,  0.5, 0.0, /* top left */       1.0, 1.0, 1.0,
         ];
 
         let indices: &[u32] = &[
             0, 1, 3,
-            1, 2, 3,
+            // 1, 2, 3,
         ];
 
         let vbo = lsg_gl::gen_buffer(lsg_gl::BufferType::ArrayBuffer);
@@ -150,7 +155,13 @@ impl GlutinState {
         let ebo = lsg_gl::gen_buffer(lsg_gl::BufferType::ElementBuffer);
         lsg_gl::buffer_data(&ebo, indices, lsg_gl::DrawHint::Static);
         
-        lsg_gl::vertex_attribs(&vbo, 0, 3, lsg_gl::DataType::Float, false, 3);
+        let vertex_pos = lsg_gl::attrib_location(&program, "vertexPos").unwrap(); // TODO: add Attrib type
+        let vertex_color = lsg_gl::attrib_location(&program, "vertexColor").unwrap(); // TODO: add Attrib type
+        lsg_gl::vertex_attribs(&vbo, vertex_pos, 3, lsg_gl::DataType::Float, false, 6, 0);
+        lsg_gl::vertex_attribs(&vbo, vertex_color, 3, lsg_gl::DataType::Float, false, 6, 3);
+
+        // let input_color = lsg_gl::uniform_location(&program, "inputColor").unwrap(); // TODO: add Uniform type
+        // lsg_gl::uniform_3f(&program, input_color, 1.0, 1.0, 1.0);
        
         Self {
             _display: display,
@@ -182,7 +193,7 @@ impl GlutinState {
 
         lsg_gl::clear(0.0, 0.0, 0.0, 1.0);
         // lsg_gl::draw_arrays(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 0, 6);
-        lsg_gl::draw_elements(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 6);
+        lsg_gl::draw_elements(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 3);
 
         self.surface.swap_buffers(&self.context).unwrap();
         
@@ -193,18 +204,10 @@ impl GlutinState {
 fn gl_load_with<F: Fn(&CStr) -> *const void>(f: F) {
 
     // load opengl functions (without allocating)
-    let mut buf = [0u8; 2048];
+    let mut buf = [0u8; 1024];
     lsg_gl::load_with(move |name| {
-
-        let len = name.len();
-
-        buf[..len].copy_from_slice(name.as_bytes()); // copy the name
-        buf[len] = 0u8; // add the null byte
-
-        let cstr = CStr::from_bytes_with_nul(&buf[..=len]).unwrap();
-
-        f(cstr)
-
+        let cname = to_small_cstr(&mut buf, name);
+        f(cname)
     });
 
 }

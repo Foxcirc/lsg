@@ -3,8 +3,10 @@
 precision highp float;
 precision highp int;
 
-out vec4 outColor;
+in vec3 outColor;
+
+out vec4 fragmentColor;
 
 void main() {
-    outColor = vec4(0.5, 0.4, 0.7, 1.0);
+    fragmentColor = vec4(outColor.x, 1.0, 1.0, 1.0);
 }

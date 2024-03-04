@@ -5,7 +5,9 @@ pub use debug::*;
 pub use shader::*;
 pub use vao::*;
 pub use buffer::*;
+pub use uniform::*;
 pub use draw::*;
+pub use misc::*;
 
 // simple wrapper for common opengl functions
 
@@ -118,6 +120,8 @@ pub mod shader {
 
     use std::{ffi::CString, fmt};
 
+    use crate::to_small_cstr;
+
     pub struct Shader {
         id: u32
     }
@@ -133,9 +137,9 @@ pub mod shader {
             unsafe { gl::ShaderSource(id, 1, &source_ptr, (&source_len as *const usize).cast()) };
             unsafe { gl::CompileShader(id) };
 
-            if !compile_status(id) {
+            if !Self::compile_status(id) {
 
-                let len = info_log_length(id);
+                let len = Self::info_log_length(id);
                 let mut written = 0; // not actually used
                 let mut buf: Vec<u8> = Vec::new();
                 buf.resize(len, 0);
@@ -149,6 +153,18 @@ pub mod shader {
                 Ok(Self { id })
             }
 
+        }
+
+        fn compile_status(shader: u32) -> bool {
+            let mut out = 0;
+            unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut out) };
+            out as u8 == gl::TRUE
+        }
+
+        fn info_log_length(shader: u32) -> usize {
+            let mut out = 0;
+            unsafe { gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut out) };
+            out as usize
         }
 
     }
@@ -175,18 +191,6 @@ pub mod shader {
         Compute = gl::COMPUTE_SHADER
     }
 
-    fn compile_status(shader: u32) -> bool {
-        let mut out = 0;
-        unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut out) };
-        out as u8 == gl::TRUE
-    }
-
-    fn info_log_length(shader: u32) -> usize {
-        let mut out = 0;
-        unsafe { gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut out) };
-        out as usize
-    }
-
     pub struct Program {
         id: u32,
         shaders: Vec<Shader>,
@@ -206,23 +210,81 @@ pub mod shader {
             self.shaders.push(shader);
         }
         
-        pub fn link(mut self) -> LinkedProgram {
+        pub fn link(mut self) -> Result<LinkedProgram, LinkError> {
+
             unsafe { gl::LinkProgram(self.id) }
+
             for shader in self.shaders.drain(..) {
                 unsafe { gl::DeleteShader(shader.id) }
             }
-            LinkedProgram { id: self.id }
+
+            if !Self::compile_status(self.id) {
+
+                let len = Self::info_log_length(self.id);
+                let mut written = 0; // not actually used
+                let mut buf: Vec<u8> = Vec::new();
+                buf.resize(len, 0);
+
+                unsafe { gl::GetProgramInfoLog(self.id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
+
+                let msg = CString::from_vec_with_nul(buf).unwrap();
+
+                Err(LinkError { msg })
+
+            } else {
+                Ok(LinkedProgram { id: self.id })
+            }
+
+        }
+
+        fn compile_status(program: u32) -> bool {
+            let mut out = 0;
+            unsafe { gl::GetProgramiv(program, gl::LINK_STATUS, &mut out) };
+            out as u8 == gl::TRUE
+        }
+
+        fn info_log_length(program: u32) -> usize {
+            let mut out = 0;
+            unsafe { gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut out) };
+            out as usize
         }
 
     }
 
+    pub struct LinkError {
+        msg: CString,
+    }
+
+    impl fmt::Debug for LinkError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f,
+                "LinkErrorError {{\x1b[0;31m\n    {}\n\x1b[0;39m}}",
+                self.msg.to_string_lossy().trim_end_matches("\n")
+            )
+        }
+    }
+
     pub struct LinkedProgram {
-        id: u32,
+        pub(crate) id: u32,
     }
 
     pub fn bind_program(program: &LinkedProgram) {
         unsafe { gl::UseProgram(program.id) }
     }
+
+    pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<usize, AttribUnknown> {
+        let mut buf = [0; 1024];
+        let cname = to_small_cstr(&mut buf, name);
+        let result = unsafe { gl::GetAttribLocation(program.id, cname.as_ptr()) };
+        if result == -1 {
+            Err(AttribUnknown)
+        } else {
+            Ok(result as usize)
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct AttribUnknown;
 
 }
 
@@ -279,7 +341,7 @@ pub mod buffer {
         kind: BufferType,
     }
 
-    pub fn vertex_attribs(this: &Buffer, location: usize, count: usize, kind: DataType, normalize: bool, stride: usize) {
+    pub fn vertex_attribs(this: &Buffer, location: usize, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
         assert_eq!(this.kind, BufferType::ArrayBuffer);
 
@@ -290,7 +352,7 @@ pub mod buffer {
             kind as u32,
             normalize as u8,
             (stride * size_of::<f32>()) as i32,
-            null(), // unsupported
+            start as *const _,
         ) };
 
         unsafe { gl::EnableVertexAttribArray(location as u32) };
@@ -319,6 +381,36 @@ pub mod buffer {
     }
 
 
+}
+
+pub mod uniform {
+
+    use crate::{LinkedProgram, to_small_cstr, bind_program};
+
+    pub fn uniform_location(program: &LinkedProgram, name: &str) -> Result<usize, UniformUnknown> {
+        let mut buf = [0; 1024];
+        let cname = to_small_cstr(&mut buf, name);
+        let result = unsafe { gl::GetUniformLocation(program.id, cname.as_ptr()) };
+        if result == -1 {
+            Err(UniformUnknown)
+        } else {
+            Ok(result as usize)
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct UniformUnknown;
+
+    pub fn uniform_4f(program: &LinkedProgram, uniform: usize, x: f32, y: f32, z: f32, w: f32) {
+        bind_program(program);
+        unsafe { gl::Uniform4f(uniform as i32, x, y, z, w) };
+    }
+
+    pub fn uniform_3f(program: &LinkedProgram, uniform: usize, x: f32, y: f32, z: f32) {
+        bind_program(program);
+        unsafe { gl::Uniform3f(uniform as i32, x, y, z) };
+    }
+    
 }
 
 pub mod draw {
@@ -353,6 +445,34 @@ pub mod draw {
         unsafe { gl::ClearColor(r, g, b, alpha) };
         unsafe { gl::Clear(gl::COLOR_BUFFER_BIT) };
     }
-    
+
+    pub fn polygon_mode(mode: PolygonMode) {
+        unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, mode as u32) }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    #[repr(u32)]
+    pub enum PolygonMode {
+        Fill = gl::FILL,
+        Line = gl::LINE
+    }
+
+}
+
+pub mod misc {
+
+    use std::ffi::CStr;
+
+    pub fn to_small_cstr<'d>(buf: &'d mut [u8; 1024], text: &str) -> &'d CStr {
+
+        let len = text.len();
+
+        buf[..len].copy_from_slice(text.as_bytes()); // copy the name
+        buf[len] = 0u8; // add the null byte
+
+       CStr::from_bytes_with_nul(&buf[..=len]).unwrap()
+
+    }
+
 }
 

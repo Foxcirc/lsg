@@ -7,8 +7,9 @@
 
 `lsg` is a library for making desktop/mobile gui applications in rust
 It has a lot of other features that make it awesome:
+- many very functional **builtin widgets**
 - make it easy and pleasant to **style widgets** yourself
-- fully controllable **semi-automatic layouting**
+- fully controllable **semi-automatic layouting** that makes sense
 - ergonomic **async support** that can abstract away your typical event loop
 - you can tightly **associate widgets with your application state**
 - **gpu accelerated** drawing (using OpenGL)
@@ -26,7 +27,7 @@ In my opinion `smol`/`async-executor` is the best choice, since it fits into thi
 # lightweight
 
 Being "light" means following things:
-- short compilation times (for rust standards)
+- short incremental compilation times (for rust standards)
 - fast, even in debug builds
 - reasonably small executable size
 
@@ -49,6 +50,8 @@ Currently this library supports:
 - Linux (Wayland or X11)
 - Windows
 
-Will be implemented in the near future:
-- MacOS
+Will be implemented in the future:
 - Android
+
+Will not be implemented:
+- MacOs / iOS
