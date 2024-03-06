@@ -23,8 +23,6 @@ use std::{mem, fmt, ffi::c_void as void, error::Error as StdError};
 pub struct EventLoop {
     running: bool,
     con: wayland_client::Connection,
-    qh: wayland_client::QueueHandle<Self>,
-    queue: Option<wayland_client::EventQueue<Self>>, // option, so we can easily `take` it out and borrow the it and dispatcher mutably at the same time
     wayland: WaylandState,
     events: Vec<Event>, // ^^ also `taken` out but doesn't need to be an option
     ids: usize,
@@ -61,22 +59,9 @@ impl EventLoop {
 
         };
 
-        // main event queue
-        let queue = con.new_event_queue();
-        let qh = queue.handle();
-
-        // connect keyboard and pointer input
-        if globals.capabilities.contains(WlSeatCapability::Keyboard) {
-            globals.seat.get_keyboard(&qh, ());
-        } else if globals.capabilities.contains(WlSeatCapability::Pointer) {
-            globals.seat.get_pointer(&qh, ());
-        }
-
         let this = EventLoop {
             running: true,
             con,
-            qh,
-            queue: Some(queue),
             wayland: globals,
             events: Vec::new(),
             ids: 0,
@@ -87,6 +72,18 @@ impl EventLoop {
     }
 
     pub fn run<F: for<'a> FnMut(&'a mut EventLoop, Event)>(mut self, mut cb: F) -> Result<(), EvlError> {
+
+        let mut queue = self.con.new_event_queue();
+        let qh = queue.handle();
+
+        // connect keyboard and pointer input
+        if self.wayland.capabilities.contains(WlSeatCapability::Keyboard) {
+            self.wayland.seat.get_keyboard(&qh, ());
+        } else if self.wayland.capabilities.contains(WlSeatCapability::Pointer) {
+            self.wayland.seat.get_pointer(&qh, ());
+        }
+
+        self.events.push(Event::Init);
 
         // main event loop
         loop {
@@ -103,14 +100,16 @@ impl EventLoop {
             // we have to take the queue out every time here because the queue has to be present when handling
             // events (above)
             // for example, the queue is used when a new window is created to wait for the `configure` event
-            let mut queue = mem::take(&mut self.queue).unwrap(); // we are using an option to take it out
             queue.blocking_dispatch(&mut self)?;
-            self.queue = Some(queue);
 
         }
 
         Ok(())
         
+    }
+
+    pub fn exit(&mut self) {
+        self.running = false
     }
 
     pub(crate) fn id(&mut self) -> usize {
@@ -325,6 +324,7 @@ impl EglContext {
 }
 
 pub enum Event {
+    Init,
 }
 
 impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {

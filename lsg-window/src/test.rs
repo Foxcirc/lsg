@@ -12,7 +12,7 @@ fn wayland() -> Result<(), Box<dyn StdError>> {
     // EVH SHOULD ONLY BE NEEDED FOR
     // - Creating an EGL Instance CHECK
     // - Opening a window CHECK
-    // - Changing it's ControlFlow
+    // - Exiting
     // - Iterating monitors
 
     // we will be using the built-in gl functionality
@@ -23,8 +23,10 @@ fn wayland() -> Result<(), Box<dyn StdError>> {
     ctx.bind(&egl)?; // make the context current
 
     // run the event loop
-    evl.run(move |_evh, event| {
-        match event {}
+    evl.run(move |evl, event| {
+        match event {
+            Event::Init => evl.exit(),
+        }
     })?;
 
     Ok(())
