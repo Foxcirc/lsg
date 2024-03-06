@@ -309,7 +309,7 @@ pub mod vao {
 
 pub mod buffer {
 
-    use std::{mem::size_of, ptr::null};
+    use std::mem::size_of;
 
     pub fn gen_buffer(kind: BufferType) -> Buffer {
 
