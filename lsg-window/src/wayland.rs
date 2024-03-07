@@ -320,6 +320,9 @@ impl<T> Window<T> {
     }
 
     pub fn pre_present_notify(&mut self) -> PresentToken { // TODO: store QH
+        // when working with frame callbacks it seems you have to respect the following things:
+        // 1. you must only ever have ONE frame callback alive
+        // 2. you must request the frame callback BEFORE swapping the surfaces
          if self.shared.frame_callback_registered.compare_exchange(
             false, true, Ordering::Relaxed, Ordering::Relaxed
         ).is_ok() {
