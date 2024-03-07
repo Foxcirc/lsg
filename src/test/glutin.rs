@@ -41,7 +41,10 @@ async fn run(evl: lsg_winit::AsyncEventLoop) {
             Event::WindowEvent { window_id: _, event } => match event {
                 WindowEvent::CloseRequested  => break,
                 WindowEvent::Resized(size)   => state.resize(size),
-                WindowEvent::RedrawRequested => state.render(),
+                WindowEvent::RedrawRequested => {
+                    state.render(&window);
+                    window.request_redraw();
+                },
                 _ => (),
             },
 
@@ -187,14 +190,15 @@ impl GlutinState {
 
     }
 
-    pub fn render(&self) {
+    pub fn render(&self, window: &Window) {
 
         use glutin::surface::GlSurface;
 
-        lsg_gl::clear(0.0, 0.0, 0.0, 1.0);
+        lsg_gl::clear(0.1, 0.0, 0.0, 1.0);
         // lsg_gl::draw_arrays(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 0, 6);
         lsg_gl::draw_elements(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 3);
 
+        window.pre_present_notify();
         self.surface.swap_buffers(&self.context).unwrap();
         
     }

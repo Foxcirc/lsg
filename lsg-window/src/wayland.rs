@@ -5,30 +5,56 @@ use wayland_client::{
         wl_compositor::WlCompositor,
         // wl_shm::WlShm,
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
-        wl_surface::WlSurface, wl_keyboard::WlKeyboard, wl_pointer::WlPointer,
+        wl_surface::WlSurface,
+        wl_callback::{WlCallback, Event as WlCallbackEvent},
+        wl_keyboard::WlKeyboard,
+        wl_pointer::WlPointer, wl_region::WlRegion,
     },
-    WEnum, Proxy
+    WEnum, Proxy, QueueHandle, EventQueue
 };
 
 use wayland_protocols::xdg::shell::client::{
-    xdg_wm_base::XdgWmBase,
+    xdg_wm_base::{XdgWmBase, Event as XdgWmBaseEvent},
     xdg_surface::{XdgSurface, Event as XdgSurfaceEvent},
     xdg_toplevel::{XdgToplevel, Event as XdgToplevelEvent},
 };
 
 use khronos_egl as egl;
+use rustix::event::{PollFd, PollFlags, poll};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, atomic::{AtomicBool, Ordering}, Arc}, io, os::fd::{RawFd, BorrowedFd}};
 
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError};
-
-pub struct EventLoop {
+pub struct EventLoop<T: 'static = ()> {
     running: bool,
-    con: wayland_client::Connection,
-    wayland: WaylandState,
-    events: Vec<Event>, // ^^ also `taken` out but doesn't need to be an option
     ids: usize,
+    con: wayland_client::Connection,
+    qh: QueueHandle<Self>,
+    queue: Option<EventQueue<Self>>, // TODO: used where?
+    wayland: WaylandState,
+    events: Vec<Event<T>>, // used to push events from inside the dispatch impl
+    channel: Channel<Event<T>>, // used to send events to the evl from anywhere else
 }
 
-impl EventLoop {
+struct Channel<T> {
+    eventfd: RawFd,
+    sender: Sender<T>,
+    receiver: Receiver<T>
+}
+
+impl<T> Channel<T> {
+    pub fn new() -> Self {
+        let (sender, receiver) = channel();
+        let eventfd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) }; // TODO: use rustix eventfd when it is fixed
+        Channel { eventfd, sender, receiver }
+    }
+}
+
+impl<T> Drop for Channel<T> {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.eventfd) };
+    }
+}
+
+impl<T: 'static> EventLoop<T> {
 
     pub fn new() -> Result<Self, EvlError> {
 
@@ -59,21 +85,27 @@ impl EventLoop {
 
         };
 
+        let queue = con.new_event_queue();
+        let qh = queue.handle();
+
         let this = EventLoop {
             running: true,
-            con,
-            wayland: globals,
-            events: Vec::new(),
             ids: 0,
+            con,
+            queue: Some(queue),
+            qh,
+            wayland: globals,
+            events: Vec::with_capacity(8),
+            channel: Channel::new(),
         };
 
         Ok(this)
         
     }
 
-    pub fn run<F: for<'a> FnMut(&'a mut EventLoop, Event)>(mut self, mut cb: F) -> Result<(), EvlError> {
+    pub fn run<F: for<'a> FnMut(&'a mut Self, Event<T>)>(mut self, mut cb: F) -> Result<(), EvlError> {
 
-        let mut queue = self.con.new_event_queue();
+        let Some(mut queue) = self.queue.take() else { unreachable!() };
         let qh = queue.handle();
 
         // connect keyboard and pointer input
@@ -83,28 +115,68 @@ impl EventLoop {
             self.wayland.seat.get_pointer(&qh, ());
         }
 
-        self.events.push(Event::Init);
+        self.events.push(Event::Resume);
+
+        let mut events = Vec::with_capacity(8);
 
         // main event loop
         loop {
 
+            queue.dispatch_pending(&mut self)?;
+
+            // we `swap` the events so we can pass the event loop into the closure
+            mem::swap(&mut self.events, &mut events);
+
             // foreward the events to the callback
-            // we `take` the events so we can pass the dispatcher into the closure
-            let mut events = mem::take(&mut self.events); // this is cheap because Vec::default doesn't allocate
             for event in events.drain(..) { cb(&mut self, event) }
-            self.events = events;
+            
+            if !self.running { break } // stop if `exit` was called
+            if !self.events.is_empty() { continue } // the callback could've generated more events
 
-            if !self.running { break }
+            // prepare to wait for new events
+            let Some(guard) = queue.prepare_read() else { continue };
 
-            // wait for new events
-            // we have to take the queue out every time here because the queue has to be present when handling
-            // events (above)
-            // for example, the queue is used when a new window is created to wait for the `configure` event
-            queue.blocking_dispatch(&mut self)?;
+            let queue_fd = guard.connection_fd();
+            let channel_fd = unsafe { BorrowedFd::borrow_raw(self.channel.eventfd) };
+
+            let mut fds = [
+                PollFd::new(&queue_fd, PollFlags::IN | PollFlags::ERR),
+                PollFd::new(&channel_fd, PollFlags::IN),
+            ];
+
+            // println!("right before");
+            poll(&mut fds, -1).map_err(|err| io::Error::from(err))?;
+
+            let wl_events = fds[0].revents();
+            let channel_events = fds[1].revents();
+
+            // new events from the wayland connection
+            if wl_events.contains(PollFlags::IN) {
+                guard.read()?;
+            } else if wl_events.contains(PollFlags::ERR) {
+                return Err(EvlError::Io(io::Error::last_os_error()));
+            }
+
+            // new user events
+            if channel_events.contains(PollFlags::IN) {
+                while let Ok(event) = self.channel.receiver.try_recv() {
+                    self.events.push(event)
+                }
+                unsafe { libc::eventfd_read(self.channel.eventfd, &mut 0) };
+            }
 
         }
 
         Ok(())
+        
+    }
+
+    pub fn proxy(&self) -> EventLoopProxy<T> {
+
+        EventLoopProxy {
+            sender: self.channel.sender.clone(),
+            eventfd: self.channel.eventfd, // we can share the fd, no problemo
+        }
         
     }
 
@@ -117,6 +189,25 @@ impl EventLoop {
         self.ids
     }
     
+}
+
+pub struct EventLoopProxy<T> {
+    sender: Sender<Event<T>>,
+    eventfd: RawFd,
+}
+
+impl<T> EventLoopProxy<T> {
+
+    pub fn send(&self, event: T) -> Result<(), SendError<Event<T>>> {
+
+        self.sender.send(Event::User(event))?;
+
+        // the fd will be alive since the `send` would have failed if the EventLoop was destroyed
+        unsafe { libc::eventfd_write(self.eventfd, 1) };
+
+        Ok(())
+
+    }
 }
 
 struct WaylandState {
@@ -155,47 +246,57 @@ impl UninitWaylandGlobals {
     }
 }
 
-pub struct Window {
+pub type WindowId = usize;
+
+pub struct Window<T: 'static> {
     // our data
-    id: usize, // only used for some assertions so I don't fuck up accessing the windows
+    shared: Arc<WindowShared>, // needs to be accessed by some callbacks
     configured: bool,
-    width: i32,
-    height: i32,
+    width: i32, // TODO: can this possibly be removed?
+    height: i32, // TODO: this aswell ^^
     // wayland state
+    channel: Sender<Event<T>>,
+    qh: QueueHandle<EventLoop<T>>,
+    compositor: WlCompositor,
     surface: WlSurface,
     xdg_surface: XdgSurface,
     xdg_toplevel: XdgToplevel,
-    // egl state
-    // egl: Option<InternalEgl>,
 }
 
-// struct InternalEgl {
-//     _wl_egl_surface: wayland_egl::WlEglSurface, // needs to be kept alive
-//     egl_surface: egl::Surface,
-//     egl_context: egl::Context,
-// }
+struct WindowShared {
+    id: usize,
+    frame_callback_registered: AtomicBool, // needs to be modified
+    redraw_requested: AtomicBool, // needs to be modified
+}
 
-impl Window {
+impl<T> Window<T> {
     
     /// The window will initially be hidden, so you can setup title etc.
-    pub fn new(evh: &mut EventLoop) -> Result<Window, EvlError> {
+    pub fn new(evl: &mut EventLoop<T>) -> Result<Self, EvlError> {
 
-        let id = evh.id(); // the window id is the position in the array
+        let shared = Arc::new(WindowShared {
+            id: evl.id(),
+            frame_callback_registered: AtomicBool::new(false),
+            redraw_requested: AtomicBool::new(false)
+        });
 
-        let mut queue = evh.con.new_event_queue();
+        let mut queue = evl.con.new_event_queue();
         let qh = queue.handle();
 
-        let surface = evh.wayland.compositor.create_surface(&qh, ());
-        let xdg_surface = evh.wayland.wm.get_xdg_surface(&surface, &qh, ());
-        let xdg_toplevel = xdg_surface.get_toplevel(&qh, ());
+        let surface = evl.wayland.compositor.create_surface(&qh, ());
+        let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &qh, ());
+        let xdg_toplevel = xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared)); // <- use the main event queue here!
 
         surface.commit(); // commit the initial setup, the compositor will now send a `configure` event
 
         let mut this = Self {
-            id,
+            shared,
             configured: false,
             width: 100, // a default of 100x100
             height: 100,
+            channel: evl.channel.sender.clone(),
+            qh: evl.qh.clone(),
+            compositor: evl.wayland.compositor.clone(),
             surface,
             xdg_surface,
             xdg_toplevel,
@@ -210,7 +311,50 @@ impl Window {
         
     }
 
+    pub fn request_redraw(&mut self) {
+         if self.shared.frame_callback_registered.load(Ordering::Relaxed) {
+            self.shared.redraw_requested.store(true, Ordering::Relaxed); // wait for the frame callback to send the redraw event
+        } else {
+            self.channel.send(Event::Window { id: self.shared.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
+        }
+    }
+
+    pub fn pre_present_notify(&mut self) -> PresentToken { // TODO: store QH
+         if self.shared.frame_callback_registered.compare_exchange(
+            false, true, Ordering::Relaxed, Ordering::Relaxed
+        ).is_ok() {
+            self.surface.frame(&self.qh, Arc::clone(&self.shared)); // TODO: make this cheaper
+            self.surface.commit();
+        }
+        PresentToken(())
+    }
+
+    pub fn title<S: Into<String>>(&self, text: S) {
+        self.xdg_toplevel.set_title(text.into());
+    }
+
+    pub fn class<S: Into<String>>(&self, text: S) {
+        self.xdg_toplevel.set_app_id(text.into());
+    }
+
+    pub fn transparency(&self, value: bool) {
+        if value {
+            self.surface.set_opaque_region(None);
+        } else {
+            let region = self.compositor.create_region(&self.qh, ());
+            region.add(0, 0, i32::MAX, i32::MAX);
+            self.surface.set_opaque_region(Some(&region));
+        }
+    }
+
+    pub fn set_fullscreen(&self) {
+        // self.xdg_toplevel.set_fullscreen()
+        todo!();
+    }
+
 }
+
+pub struct PresentToken(());
 
 pub struct EglInstance {
     lib: egl::Instance<egl::Static>,
@@ -221,7 +365,7 @@ pub struct EglInstance {
 impl EglInstance {
 
     /// Should be only be called once. Although initializing multiple instances is not a hard error.
-    pub fn new(evh: &mut EventLoop) -> Result<EglInstance, EvlError> {
+    pub fn new<T>(evh: &mut EventLoop<T>) -> Result<EglInstance, EvlError> {
         
         let lib = egl::Instance::new(egl::Static);
 
@@ -242,7 +386,7 @@ impl EglInstance {
                 egl::NONE
             ];
             lib.choose_first_config(egl_display, &attribs)?
-                .ok_or(EvlError::Unsupported)? // todo: use different error
+                .ok_or(EvlError::EglUnsupported)?
         };
 
         Ok(Self {
@@ -261,7 +405,7 @@ impl EglInstance {
 
 /// One-per-window egl context.
 pub struct EglContext {
-    _wl_egl_surface: wayland_egl::WlEglSurface, // needs to be kept alive
+    wl_egl_surface: wayland_egl::WlEglSurface, // needs to be kept alive
     egl_surface: egl::Surface,
     egl_context: egl::Context,
 }
@@ -269,7 +413,7 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new(instance: &EglInstance, window: &Window) -> Result<Self, EvlError> {
+    pub fn new<T>(instance: &EglInstance, window: &Window<T>) -> Result<Self, EvlError> {
 
         let context = {
             let attribs = [
@@ -294,7 +438,7 @@ impl EglContext {
         };
 
         Ok(Self {
-            _wl_egl_surface: wl_egl_surface,
+            wl_egl_surface,
             egl_surface: surface,
             egl_context: context,
         })
@@ -313,18 +457,34 @@ impl EglContext {
         
     }
 
-    pub fn swap_buffers(&self, instance: &EglInstance) -> Result<(), EvlError> {
+    /// Returns an error if this context is not the current one.
+    pub fn swap_buffers(&self, instance: &EglInstance, _token: PresentToken) -> Result<(), EvlError> {
 
         instance.lib.swap_buffers(instance.display, self.egl_surface)?;
 
         Ok(())
 
     }
+
+    /// Don't forget to also resize your opengl Viewport!
+    pub fn resize(&self, width: u32, height: u32) {
+
+        self.wl_egl_surface.resize(width as i32, height as i32, 0, 0);
+        
+    }
     
 }
 
-pub enum Event {
-    Init,
+pub enum Event<T> {
+    Resume,
+    User(T),
+    Window { id: WindowId, event: WindowEvent },
+}
+
+pub enum WindowEvent {
+    Close,
+    Resize { width: u32, height: u32 },
+    Redraw,
 }
 
 impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
@@ -364,7 +524,22 @@ impl wayland_client::Dispatch<WlSeat, ()> for UninitWaylandGlobals {
     }
 }
 
-impl wayland_client::Dispatch<XdgSurface, ()> for Window {
+impl wayland_client::Dispatch<XdgWmBase, ()> for UninitWaylandGlobals {
+    fn event(
+        _: &mut Self,
+        wm: &XdgWmBase,
+        event: XdgWmBaseEvent,
+        _: &(),
+        _con: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>
+    ) {
+        if let XdgWmBaseEvent::Ping { serial } = event {
+            wm.pong(serial);
+        }
+    }
+}
+
+impl<T> wayland_client::Dispatch<XdgSurface, ()> for Window<T> {
     fn event(
         window: &mut Self,
         _surface: &XdgSurface,
@@ -380,35 +555,67 @@ impl wayland_client::Dispatch<XdgSurface, ()> for Window {
     }
 }
 
-impl wayland_client::Dispatch<XdgToplevel, ()> for Window {
+impl<T> wayland_client::Dispatch<XdgToplevel, Arc<WindowShared>> for EventLoop<T> {
     fn event(
-        window: &mut Self,
+        evl: &mut Self,
         _surface: &XdgToplevel,
         event: XdgToplevelEvent,
-        _data: &(),
+        shared: &Arc<WindowShared>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
         if let XdgToplevelEvent::Configure { width, height, .. } = event {
-            if width + height != 0 {
-                window.width = width;
-                window.height = height;
-            }
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize { width: width as u32, height: height as u32 } });
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
+        } else if let XdgToplevelEvent::Close = event {
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Close });
         }
     }
 }
 
+impl<T> wayland_client::Dispatch<WlCallback, Arc<WindowShared>> for EventLoop<T> {
+    fn event(
+        evl: &mut Self,
+        _cb: &WlCallback,
+        _event: WlCallbackEvent,
+        shared: &Arc<WindowShared>,
+        _con: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>
+    ) {
+        if shared.redraw_requested.compare_exchange(
+            true, false, Ordering::Relaxed, Ordering::Relaxed
+        ).is_ok() {
+            shared.frame_callback_registered.store(false, Ordering::Relaxed);
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
+        }
+    }
+}
+
+macro_rules! ignore {
+    ($prxy:ident) => {
+        fn event(
+            _: &mut Self,
+            _: &$prxy,
+            _: <$prxy as wayland_client::Proxy>::Event,
+            _: &(),
+            _: &wayland_client::Connection,
+            _: &wayland_client::QueueHandle<Self>
+        ) { () }
+    };
+}
+
 // global events
-wayland_client::delegate_noop!(UninitWaylandGlobals: ignore WlCompositor);
-// wayland_client::delegate_noop!(UninitWaylandGlobals: ignore WlShm);
-wayland_client::delegate_noop!(UninitWaylandGlobals: ignore XdgWmBase);
+impl wayland_client::Dispatch<WlCompositor, ()> for UninitWaylandGlobals { ignore!(WlCompositor); }
 
 // surface events
-wayland_client::delegate_noop!(Window: ignore WlSurface);
+impl<T> wayland_client::Dispatch<WlSurface, ()> for Window<T> { ignore!(WlSurface); }
+
+// region events
+impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion); }
 
 // input events
-wayland_client::delegate_noop!(EventLoop: ignore WlKeyboard);
-wayland_client::delegate_noop!(EventLoop: ignore WlPointer);
+impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> { ignore!(WlKeyboard); }
+impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> { ignore!(WlPointer); }
 
 #[derive(Debug)]
 pub enum EvlError {
@@ -418,7 +625,9 @@ pub enum EvlError {
     Egl(egl::Error),
     NoDisplay,
     WaylandEgl(wayland_egl::Error),
+    Io(io::Error),
     Unsupported,
+    EglUnsupported,
 }
 
 impl fmt::Display for EvlError {
@@ -428,9 +637,11 @@ impl fmt::Display for EvlError {
             Self::Wayland(value)    => value.to_string(),
             Self::Dispatch(value)   => value.to_string(),
             Self::Egl(value)        => value.to_string(),
-            Self::NoDisplay         => "cannot get egl display".to_string(), // TODO: maybe this error occurs if trying to initialize egl twice?
+            Self::NoDisplay         => "cannot get egl display".to_string(),
             Self::WaylandEgl(value) => value.to_string(),
-            Self::Unsupported       => "required wayland or egl features not present".to_string(),
+            Self::Io(value)         => value.to_string(),
+            Self::Unsupported       => "required wayland features not present".to_string(),
+            Self::EglUnsupported    => "required egl features not present".to_string(),
         })
     }
 }
@@ -466,3 +677,10 @@ impl From<wayland_egl::Error> for EvlError {
         Self::WaylandEgl(value)
     }
 }
+
+impl From<io::Error> for EvlError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+

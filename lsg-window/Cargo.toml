@@ -9,3 +9,8 @@ wayland-client = "0.31.2"
 wayland-protocols = { version = "0.31.2", features = ["client"] }
 wayland-egl = "0.32.0"
 khronos-egl = { version = "6.0.0", features = ["static"] }
+rustix = { version = "0.38.31", features = ["event"] }
+libc = "0.2.153" # TODO: Maybe I can remove this dep and just use rustix in the future but this version of rustix is bugged
+
+[dev-dependencies]
+lsg-gl = { path = "../lsg-gl" }

@@ -765,6 +765,9 @@ name = "lsg-window"
 version = "0.1.0"
 dependencies = [
  "khronos-egl",
+ "libc",
+ "lsg-gl",
+ "rustix",
  "wayland-client",
  "wayland-egl",
  "wayland-protocols",
