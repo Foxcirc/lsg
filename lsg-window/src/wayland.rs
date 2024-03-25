@@ -28,7 +28,7 @@ pub struct EventLoop<T: 'static = ()> {
     ids: usize,
     con: wayland_client::Connection,
     qh: QueueHandle<Self>,
-    queue: Option<EventQueue<Self>>, // TODO: used where?
+    queue: Option<EventQueue<Self>>,
     wayland: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
     channel: Channel<Event<T>>, // used to send events to the evl from anywhere else
@@ -92,7 +92,7 @@ impl<T: 'static> EventLoop<T> {
             running: true,
             ids: 0,
             con,
-            queue: Some(queue),
+            queue: Some(queue), // TODO: dont use option but inner and out struct
             qh,
             wayland: globals,
             events: Vec::with_capacity(8),
@@ -198,9 +198,9 @@ pub struct EventLoopProxy<T> {
 
 impl<T> EventLoopProxy<T> {
 
-    pub fn send(&self, event: T) -> Result<(), SendError<Event<T>>> {
+    pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
 
-        self.sender.send(Event::User(event))?;
+        self.sender.send(event)?;
 
         // the fd will be alive since the `send` would have failed if the EventLoop was destroyed
         unsafe { libc::eventfd_write(self.eventfd, 1) };
@@ -208,6 +208,7 @@ impl<T> EventLoopProxy<T> {
         Ok(())
 
     }
+
 }
 
 struct WaylandState {
@@ -252,55 +253,56 @@ pub struct Window<T: 'static> {
     // our data
     shared: Arc<WindowShared>, // needs to be accessed by some callbacks
     configured: bool,
-    width: i32, // TODO: can this possibly be removed?
-    height: i32, // TODO: this aswell ^^
     // wayland state
-    channel: Sender<Event<T>>,
+    proxy: EventLoopProxy<T>,
     qh: QueueHandle<EventLoop<T>>,
     compositor: WlCompositor,
-    surface: WlSurface,
-    xdg_surface: XdgSurface,
     xdg_toplevel: XdgToplevel,
 }
 
 struct WindowShared {
     id: usize,
-    frame_callback_registered: AtomicBool, // needs to be modified
-    redraw_requested: AtomicBool, // needs to be modified
+    initial_size: Size,
+    frame_callback_registered: AtomicBool,
+    redraw_requested: AtomicBool,
+    surface: WlSurface,
+    xdg_surface: XdgSurface,
 }
 
 impl<T> Window<T> {
     
     /// The window will initially be hidden, so you can setup title etc.
-    pub fn new(evl: &mut EventLoop<T>) -> Result<Self, EvlError> {
-
-        let shared = Arc::new(WindowShared {
-            id: evl.id(),
-            frame_callback_registered: AtomicBool::new(false),
-            redraw_requested: AtomicBool::new(false)
-        });
+    pub fn new(evl: &mut EventLoop<T>, size: Size) -> Result<Self, EvlError> {
 
         let mut queue = evl.con.new_event_queue();
         let qh = queue.handle();
 
         let surface = evl.wayland.compositor.create_surface(&qh, ());
         let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &qh, ());
-        let xdg_toplevel = xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared)); // <- use the main event queue here!
 
-        surface.commit(); // commit the initial setup, the compositor will now send a `configure` event
+        let shared = Arc::new(WindowShared {
+            id: evl.id(),
+            initial_size: size,
+            frame_callback_registered: AtomicBool::new(false),
+            redraw_requested: AtomicBool::new(false),
+            surface,
+            xdg_surface,
+        });
+
+        let xdg_toplevel = shared.xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared)); // <- use the main event queue here!
+
+        shared.surface.commit(); // commit the initial setup, the compositor will now send a `configure` event
 
         let mut this = Self {
             shared,
             configured: false,
-            width: 100, // a default of 100x100
-            height: 100,
-            channel: evl.channel.sender.clone(),
+            proxy: evl.proxy(),
             qh: evl.qh.clone(),
             compositor: evl.wayland.compositor.clone(),
-            surface,
-            xdg_surface,
             xdg_toplevel,
         };
+
+        queue.roundtrip(&mut this)?;
 
         // wait for the configure event
         while !this.configured {
@@ -315,19 +317,19 @@ impl<T> Window<T> {
          if self.shared.frame_callback_registered.load(Ordering::Relaxed) {
             self.shared.redraw_requested.store(true, Ordering::Relaxed); // wait for the frame callback to send the redraw event
         } else {
-            self.channel.send(Event::Window { id: self.shared.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
+            self.proxy.send(Event::Window { id: self.shared.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
         }
     }
 
-    pub fn pre_present_notify(&mut self) -> PresentToken { // TODO: store QH
+    pub fn pre_present_notify(&mut self) -> PresentToken {
         // when working with frame callbacks it seems you have to respect the following things:
         // 1. you must only ever have ONE frame callback alive
         // 2. you must request the frame callback BEFORE swapping the surfaces
          if self.shared.frame_callback_registered.compare_exchange(
             false, true, Ordering::Relaxed, Ordering::Relaxed
         ).is_ok() {
-            self.surface.frame(&self.qh, Arc::clone(&self.shared)); // TODO: make this cheaper
-            self.surface.commit();
+            self.shared.surface.frame(&self.qh, Arc::clone(&self.shared)); // TODO: make this cheaper
+            self.shared.surface.commit();
         }
         PresentToken(())
     }
@@ -342,19 +344,45 @@ impl<T> Window<T> {
 
     pub fn transparency(&self, value: bool) {
         if value {
-            self.surface.set_opaque_region(None);
+            self.shared.surface.set_opaque_region(None);
         } else {
             let region = self.compositor.create_region(&self.qh, ());
             region.add(0, 0, i32::MAX, i32::MAX);
-            self.surface.set_opaque_region(Some(&region));
+            self.shared.surface.set_opaque_region(Some(&region));
         }
     }
 
-    pub fn set_fullscreen(&self) {
+    pub fn fullscreen(&self) {
         // self.xdg_toplevel.set_fullscreen()
-        todo!();
+        self.shared.surface.commit();
+        // todo!();
     }
 
+    pub fn min_size(&mut self, optional_size: Option<Size>) {
+        let size = optional_size.unwrap_or_default();
+        self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
+        self.shared.surface.commit();
+    }
+
+    pub fn max_size(&mut self, optional_size: Option<Size>) {
+        let size = optional_size.unwrap_or_default();
+        self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
+        self.shared.surface.commit();
+    }
+
+    pub fn force_size(&mut self, optional_size: Option<Size>) {
+        let size = optional_size.unwrap_or_default();
+        self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
+        self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
+        self.shared.surface.commit();
+    }
+
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Size {
+    pub width: u32,
+    pub height: u32
 }
 
 pub struct PresentToken(());
@@ -416,7 +444,7 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T>(instance: &EglInstance, window: &Window<T>) -> Result<Self, EvlError> {
+    pub fn new<T>(instance: &EglInstance, window: &Window<T>, size: Size) -> Result<Self, EvlError> {
 
         let context = {
             let attribs = [
@@ -429,7 +457,7 @@ impl EglContext {
             instance.lib.create_context(instance.display, instance.config, None, &attribs).unwrap()
         };
 
-        let wl_egl_surface = wayland_egl::WlEglSurface::new(window.surface.id(), window.width, window.height)?;
+        let wl_egl_surface = wayland_egl::WlEglSurface::new(window.shared.surface.id(), size.width as i32, size.height as i32)?;
 
         let surface = {
             unsafe { instance.lib.create_window_surface(
@@ -470,9 +498,9 @@ impl EglContext {
     }
 
     /// Don't forget to also resize your opengl Viewport!
-    pub fn resize(&self, width: u32, height: u32) {
+    pub fn resize(&self, size: Size) {
 
-        self.wl_egl_surface.resize(width as i32, height as i32, 0, 0);
+        self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
         
     }
     
@@ -486,7 +514,7 @@ pub enum Event<T> {
 
 pub enum WindowEvent {
     Close,
-    Resize { width: u32, height: u32 },
+    Resize { size: Size },
     Redraw,
 }
 
@@ -551,8 +579,9 @@ impl<T> wayland_client::Dispatch<XdgSurface, ()> for Window<T> {
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
+        println!("YAAAAAAAAAAAAAAaa");
         if let XdgSurfaceEvent::Configure { serial } = event {
-            window.xdg_surface.ack_configure(serial);
+            window.shared.xdg_surface.ack_configure(serial);
             window.configured = true;
         }
     }
@@ -567,10 +596,19 @@ impl<T> wayland_client::Dispatch<XdgToplevel, Arc<WindowShared>> for EventLoop<T
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
-        if let XdgToplevelEvent::Configure { width, height, .. } = event {
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize { width: width as u32, height: height as u32 } });
+        if let XdgToplevelEvent::Configure { mut width, mut height, .. } = event {
+            if width + height == 0 {
+                width = shared.initial_size.width as i32;
+                height = shared.initial_size.width as i32;
+            }
+            // shared.xdg_surface.set_window_geometry(0, 0, width, height);
+            // shared.surface.commit();
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize { size: Size { width: width as u32, height: height as u32 } } });
             evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
-        } else if let XdgToplevelEvent::Close = event {
+        // } else if let XdgToplevelEvent::Close = event {
+        //     evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Close });
+        }
+        if let XdgToplevelEvent::Close = event {
             evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Close });
         }
     }

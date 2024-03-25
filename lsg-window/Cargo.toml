@@ -14,3 +14,4 @@ libc = "0.2.153" # TODO: Maybe I can remove this dep and just use rustix in the 
 
 [dev-dependencies]
 lsg-gl = { path = "../lsg-gl" }
+anyhow = "*"

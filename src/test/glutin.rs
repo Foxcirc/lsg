@@ -43,7 +43,7 @@ async fn run(evl: lsg_winit::AsyncEventLoop) {
                 WindowEvent::Resized(size)   => state.resize(size),
                 WindowEvent::RedrawRequested => {
                     state.render(&window);
-                    window.request_redraw();
+                    // window.request_redraw();
                 },
                 _ => (),
             },
@@ -110,7 +110,7 @@ impl GlutinState {
         gl_load_with(|name| display.get_proc_address(name));
 
         lsg_gl::debug_message_callback(lsg_gl::colored_print);
-        lsg_gl::polygon_mode(lsg_gl::PolygonMode::Line);
+        // lsg_gl::polygon_mode(lsg_gl::PolygonMode::Line);
 
         // vertex shader
         let vertex_shader_code = include_str!("vert.glsl");
@@ -179,6 +179,7 @@ impl GlutinState {
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
 
         use glutin::surface::GlSurface;
+        println!("resized: {:?}", size);
 
         self.surface.resize(
             &self.context,
@@ -194,7 +195,7 @@ impl GlutinState {
 
         use glutin::surface::GlSurface;
 
-        lsg_gl::clear(0.1, 0.0, 0.0, 1.0);
+        lsg_gl::clear(1.0, 0.0, 0.0, 1.0);
         // lsg_gl::draw_arrays(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 0, 6);
         lsg_gl::draw_elements(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 3);
 

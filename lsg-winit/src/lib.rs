@@ -102,7 +102,7 @@ impl AsyncEventLoop {
     /// Run something on the main thread
     ///
     /// This is useful as some platforms require specific things to be done on the main thread.
-    /// The closure will be run immediatly and the event loop will not run until it is done.
+    /// The closure will be run immediatly and the event loop may not run until it is done.
     pub async fn exec_on_main_thread<F>(&mut self, f: F) -> ()
     where
         F: FnOnce() -> (),
