@@ -42,8 +42,8 @@ async fn run(evl: lsg_winit::AsyncEventLoop) {
             Event::WindowEvent { window_id: _, event } => match event {
                 WindowEvent::CloseRequested  => break,
                 WindowEvent::Resized(size)   => {
-                    state.resize(PhysicalSize { width: 300, height: 300 });
-                    // state.resize(size);
+                    // state.resize(PhysicalSize { width: 300, height: 300 });
+                    state.resize(size);
                 },
                 WindowEvent::RedrawRequested => {
                     state.render(&window);

@@ -16,8 +16,10 @@ use wayland_client::{
 use wayland_protocols::xdg::shell::client::{
     xdg_wm_base::{XdgWmBase, Event as XdgWmBaseEvent},
     xdg_surface::{XdgSurface, Event as XdgSurfaceEvent},
-    xdg_toplevel::{XdgToplevel, Event as XdgToplevelEvent},
+    xdg_toplevel::{XdgToplevel, Event as XdgToplevelEvent, State as XdgToplevelState},
 };
+
+use bitflags::bitflags;
 
 use khronos_egl as egl;
 use rustix::event::{PollFd, PollFlags, poll};
@@ -92,7 +94,7 @@ impl<T: 'static> EventLoop<T> {
             running: true,
             ids: 0,
             con,
-            queue: Some(queue), // TODO: dont use option but inner and out struct
+            queue: Some(queue),
             qh,
             wayland: globals,
             events: Vec::with_capacity(8),
@@ -264,6 +266,7 @@ struct WindowShared {
     id: WindowId,
     new_width: AtomicU32,
     new_height: AtomicU32,
+    flags: AtomicU32,
     frame_callback_registered: AtomicBool,
     redraw_requested: AtomicBool,
 }
@@ -282,6 +285,7 @@ impl<T> Window<T> {
             id,
             new_width: AtomicU32::new(size.width),
             new_height: AtomicU32::new(size.height),
+            flags: AtomicU32::new(0),
             frame_callback_registered: AtomicBool::new(false),
             redraw_requested: AtomicBool::new(false)
         });
@@ -342,10 +346,10 @@ impl<T> Window<T> {
         }
     }
 
-    pub fn fullscreen(&self) {
-        // self.xdg_toplevel.set_fullscreen()
-        self.surface.commit();
-        // todo!();
+    pub fn fullscreen(&self, _mode: bool) {
+        todo!();
+        // self.xdg_toplevel.set_fullscreen();
+        // self.surface.commit();
     }
 
     pub fn force_min_size(&mut self, optional_size: Option<Size>) {
@@ -504,7 +508,7 @@ pub enum Event<T> {
 
 pub enum WindowEvent {
     Close,
-    Resize { size: Size },
+    Resize { size: Size, flags: ConfigureFlags },
     Redraw,
 }
 
@@ -577,8 +581,11 @@ impl<T> wayland_client::Dispatch<XdgSurface, Arc<WindowShared>> for EventLoop<T>
             // foreward the final configuration state to the user
             let width  = shared.new_width .load(Ordering::Relaxed);
             let height = shared.new_height.load(Ordering::Relaxed);
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize { size: Size { width, height } } });
-
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize {
+                size: Size { width, height },
+                flags: ConfigureFlags::from_bits_retain(shared.flags.load(Ordering::Relaxed))
+            } });
+            
             if !shared.redraw_requested.load(Ordering::Relaxed) {
                 evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
             }
@@ -592,23 +599,54 @@ impl<T> wayland_client::Dispatch<XdgToplevel, Arc<WindowShared>> for EventLoop<T
         evl: &mut Self,
         _surface: &XdgToplevel,
         event: XdgToplevelEvent,
-        configure_shared: &Arc<WindowShared>,
+        shared: &Arc<WindowShared>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
 
-        if let XdgToplevelEvent::Configure { width, height, .. } = event {
+        if let XdgToplevelEvent::Configure { width, height, states } = event {
             if width > 0 && height > 0 {
-                configure_shared.new_width .store(width  as u32, Ordering::Relaxed);
-                configure_shared.new_height.store(height as u32, Ordering::Relaxed);
+                shared.new_width .store(width  as u32, Ordering::Relaxed);
+                shared.new_height.store(height as u32, Ordering::Relaxed);
             }
+            let flags = read_configure_flags(states);
+            shared.flags.store(flags.bits(), Ordering::Relaxed);
         }
 
-        if let XdgToplevelEvent::Close = event {
-            evl.events.push(Event::Window { id: configure_shared.id, event: WindowEvent::Close });
+        else if let XdgToplevelEvent::Close = event {
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Close });
         }
 
     }
+}
+
+// type ConfigureFlags = usize;
+bitflags! {
+    #[derive(Debug)]
+    pub struct ConfigureFlags: u32 {
+        const FULLSCREEN = 1 << 0;
+        const RESIZING   = 1 << 1;
+        const ACTIVATED  = 1 << 2;
+        const SUSPENDED  = 1 << 3;
+    }
+}
+
+fn read_configure_flags(states: Vec<u8>) -> ConfigureFlags {
+    states.chunks_exact(4)
+        .flat_map(|chunk| chunk.try_into())
+        .map(|bytes| u32::from_ne_bytes(bytes))
+        .flat_map(XdgToplevelState::try_from)
+        .fold(ConfigureFlags::empty(), |mut acc, state| {
+            use XdgToplevelState::*;
+            match state {
+                Fullscreen => acc.set(ConfigureFlags::FULLSCREEN, true),
+                Resizing   => acc.set(ConfigureFlags::RESIZING,   true),
+                Activated  => acc.set(ConfigureFlags::ACTIVATED,  true),
+                Suspended  => acc.set(ConfigureFlags::SUSPENDED,  true),
+                _ => ()
+            }
+            acc
+        })
 }
 
 impl<T> wayland_client::Dispatch<WlCallback, Arc<WindowShared>> for EventLoop<T> {

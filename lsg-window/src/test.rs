@@ -51,8 +51,9 @@ fn wayland() -> anyhow::Result<()> {
                     ctx.swap_buffers(&egl, token).unwrap();
                     // window.request_redraw();
                 },
-                WindowEvent::Resize { size } => {
-                    println!("resizing to: {:?}", size);
+                WindowEvent::Resize { size, flags } => {
+                    // println!("resizing to: {:?}", size);
+                    eprintln!("FLAGS: {:?}", flags);
                     // let size = Size { width: 300, height: 300 };
                     // ctx.resize(Size { width: 300, height: 300 });
                     ctx.resize(size);
