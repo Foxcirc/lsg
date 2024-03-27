@@ -26,7 +26,7 @@ fn wayland() -> anyhow::Result<()> {
     );
     
     let size = Size { width: 500, height: 500 };
-    let mut window = Window::new(&mut evl, size)?; // the actual window is stored inside the event loop, wh represents a handle to the window, it's just a usize
+    let mut window = Window::new(&mut evl, size); // the actual window is stored inside the event loop, wh represents a handle to the window, it's just a usize
     // window.force_size(Some(size));
     // window.max_size(Some(size));
     let ctx = EglContext::new(&egl, &window, size)?; // create an egl context for our window
@@ -53,9 +53,12 @@ fn wayland() -> anyhow::Result<()> {
                 },
                 WindowEvent::Resize { size } => {
                     println!("resizing to: {:?}", size);
+                    // let size = Size { width: 300, height: 300 };
                     // ctx.resize(Size { width: 300, height: 300 });
+                    ctx.resize(size);
                     lsg_gl::resize_viewport(size.width, size.height);
-                    window.fullscreen();
+                    // window.fullscreen();
+                    // window.request_redraw();
                 },
             },
         }

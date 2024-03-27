@@ -21,7 +21,7 @@ use wayland_protocols::xdg::shell::client::{
 
 use khronos_egl as egl;
 use rustix::event::{PollFd, PollFlags, poll};
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, atomic::{AtomicBool, Ordering}, Arc}, io, os::fd::{RawFd, BorrowedFd}};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, atomic::{AtomicBool, Ordering, AtomicU32}, Arc}, io, os::fd::{RawFd, BorrowedFd}};
 
 pub struct EventLoop<T: 'static = ()> {
     running: bool,
@@ -184,7 +184,7 @@ impl<T: 'static> EventLoop<T> {
         self.running = false
     }
 
-    pub(crate) fn id(&mut self) -> usize {
+    pub(crate) fn new_window_id(&mut self) -> usize {
         self.ids += 1;
         self.ids
     }
@@ -206,7 +206,6 @@ impl<T> EventLoopProxy<T> {
         unsafe { libc::eventfd_write(self.eventfd, 1) };
 
         Ok(())
-
     }
 
 }
@@ -252,64 +251,56 @@ pub type WindowId = usize;
 pub struct Window<T: 'static> {
     // our data
     shared: Arc<WindowShared>, // needs to be accessed by some callbacks
-    configured: bool,
     // wayland state
     proxy: EventLoopProxy<T>,
     qh: QueueHandle<EventLoop<T>>,
     compositor: WlCompositor,
+    surface: WlSurface,
+    _xdg_surface: XdgSurface,
     xdg_toplevel: XdgToplevel,
 }
 
 struct WindowShared {
-    id: usize,
-    initial_size: Size,
+    id: WindowId,
+    new_width: AtomicU32,
+    new_height: AtomicU32,
     frame_callback_registered: AtomicBool,
     redraw_requested: AtomicBool,
-    surface: WlSurface,
-    xdg_surface: XdgSurface,
 }
 
 impl<T> Window<T> {
     
     /// The window will initially be hidden, so you can setup title etc.
-    pub fn new(evl: &mut EventLoop<T>, size: Size) -> Result<Self, EvlError> {
+    pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
-        let mut queue = evl.con.new_event_queue();
-        let qh = queue.handle();
+        let id = evl.new_window_id();
 
-        let surface = evl.wayland.compositor.create_surface(&qh, ());
-        let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &qh, ());
+        // let mut queue = evl.con.new_event_queue();
+        // let qh = queue.handle();
 
         let shared = Arc::new(WindowShared {
-            id: evl.id(),
-            initial_size: size,
+            id,
+            new_width: AtomicU32::new(size.width),
+            new_height: AtomicU32::new(size.height),
             frame_callback_registered: AtomicBool::new(false),
-            redraw_requested: AtomicBool::new(false),
-            surface,
-            xdg_surface,
+            redraw_requested: AtomicBool::new(false)
         });
 
-        let xdg_toplevel = shared.xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared)); // <- use the main event queue here!
+        let surface = evl.wayland.compositor.create_surface(&evl.qh, ());
+        let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &evl.qh, Arc::clone(&shared));
+        let xdg_toplevel = xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared));
 
-        shared.surface.commit(); // commit the initial setup, the compositor will now send a `configure` event
+        surface.commit();
 
-        let mut this = Self {
+        Self {
             shared,
-            configured: false,
             proxy: evl.proxy(),
             qh: evl.qh.clone(),
             compositor: evl.wayland.compositor.clone(),
-            xdg_toplevel,
-        };
-
-        queue.roundtrip(&mut this)?;
-
-        // wait for the configure event
-        while !this.configured {
-            queue.blocking_dispatch(&mut this)?;
+            surface,
+            _xdg_surface: xdg_surface,
+            xdg_toplevel
         }
-
-        Ok(this)
         
     }
 
@@ -322,14 +313,13 @@ impl<T> Window<T> {
     }
 
     pub fn pre_present_notify(&mut self) -> PresentToken {
-        // when working with frame callbacks it seems you have to respect the following things:
-        // 1. you must only ever have ONE frame callback alive
-        // 2. you must request the frame callback BEFORE swapping the surfaces
+        // it seems you have request the frame callback before swapping buffers
+        // otherwise the callback will never fire because the compositor thinks the content didn't change
          if self.shared.frame_callback_registered.compare_exchange(
             false, true, Ordering::Relaxed, Ordering::Relaxed
         ).is_ok() {
-            self.shared.surface.frame(&self.qh, Arc::clone(&self.shared)); // TODO: make this cheaper
-            self.shared.surface.commit();
+            self.surface.frame(&self.qh, Arc::clone(&self.shared));
+            self.surface.commit();
         }
         PresentToken(())
     }
@@ -344,37 +334,37 @@ impl<T> Window<T> {
 
     pub fn transparency(&self, value: bool) {
         if value {
-            self.shared.surface.set_opaque_region(None);
+            self.surface.set_opaque_region(None);
         } else {
             let region = self.compositor.create_region(&self.qh, ());
             region.add(0, 0, i32::MAX, i32::MAX);
-            self.shared.surface.set_opaque_region(Some(&region));
+            self.surface.set_opaque_region(Some(&region));
         }
     }
 
     pub fn fullscreen(&self) {
         // self.xdg_toplevel.set_fullscreen()
-        self.shared.surface.commit();
+        self.surface.commit();
         // todo!();
     }
 
-    pub fn min_size(&mut self, optional_size: Option<Size>) {
+    pub fn force_min_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
-        self.shared.surface.commit();
+        self.surface.commit();
     }
 
-    pub fn max_size(&mut self, optional_size: Option<Size>) {
+    pub fn force_max_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
-        self.shared.surface.commit();
+        self.surface.commit();
     }
 
     pub fn force_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
-        self.shared.surface.commit();
+        self.surface.commit();
     }
 
 }
@@ -457,7 +447,7 @@ impl EglContext {
             instance.lib.create_context(instance.display, instance.config, None, &attribs).unwrap()
         };
 
-        let wl_egl_surface = wayland_egl::WlEglSurface::new(window.shared.surface.id(), size.width as i32, size.height as i32)?;
+        let wl_egl_surface = wayland_egl::WlEglSurface::new(window.surface.id(), size.width as i32, size.height as i32)?;
 
         let surface = {
             unsafe { instance.lib.create_window_surface(
@@ -570,19 +560,29 @@ impl wayland_client::Dispatch<XdgWmBase, ()> for UninitWaylandGlobals {
     }
 }
 
-impl<T> wayland_client::Dispatch<XdgSurface, ()> for Window<T> {
+impl<T> wayland_client::Dispatch<XdgSurface, Arc<WindowShared>> for EventLoop<T> {
     fn event(
-        window: &mut Self,
-        _surface: &XdgSurface,
+        evl: &mut Self,
+        xdg_surface: &XdgSurface,
         event: XdgSurfaceEvent,
-        _data: &(),
+        shared: &Arc<WindowShared>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
-        println!("YAAAAAAAAAAAAAAaa");
         if let XdgSurfaceEvent::Configure { serial } = event {
-            window.shared.xdg_surface.ack_configure(serial);
-            window.configured = true;
+
+            // ack the configure
+            xdg_surface.ack_configure(serial);
+
+            // foreward the final configuration state to the user
+            let width  = shared.new_width .load(Ordering::Relaxed);
+            let height = shared.new_height.load(Ordering::Relaxed);
+            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize { size: Size { width, height } } });
+
+            if !shared.redraw_requested.load(Ordering::Relaxed) {
+                evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
+            }
+
         }
     }
 }
@@ -592,25 +592,22 @@ impl<T> wayland_client::Dispatch<XdgToplevel, Arc<WindowShared>> for EventLoop<T
         evl: &mut Self,
         _surface: &XdgToplevel,
         event: XdgToplevelEvent,
-        shared: &Arc<WindowShared>,
+        configure_shared: &Arc<WindowShared>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
-        if let XdgToplevelEvent::Configure { mut width, mut height, .. } = event {
-            if width + height == 0 {
-                width = shared.initial_size.width as i32;
-                height = shared.initial_size.width as i32;
+
+        if let XdgToplevelEvent::Configure { width, height, .. } = event {
+            if width > 0 && height > 0 {
+                configure_shared.new_width .store(width  as u32, Ordering::Relaxed);
+                configure_shared.new_height.store(height as u32, Ordering::Relaxed);
             }
-            // shared.xdg_surface.set_window_geometry(0, 0, width, height);
-            // shared.surface.commit();
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize { size: Size { width: width as u32, height: height as u32 } } });
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
-        // } else if let XdgToplevelEvent::Close = event {
-        //     evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Close });
         }
+
         if let XdgToplevelEvent::Close = event {
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: configure_shared.id, event: WindowEvent::Close });
         }
+
     }
 }
 
@@ -649,7 +646,7 @@ macro_rules! ignore {
 impl wayland_client::Dispatch<WlCompositor, ()> for UninitWaylandGlobals { ignore!(WlCompositor); }
 
 // surface events
-impl<T> wayland_client::Dispatch<WlSurface, ()> for Window<T> { ignore!(WlSurface); }
+impl<T> wayland_client::Dispatch<WlSurface, ()> for EventLoop<T> { ignore!(WlSurface); }
 
 // region events
 impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion); }
