@@ -23,7 +23,7 @@ use bitflags::bitflags;
 
 use khronos_egl as egl;
 use rustix::event::{PollFd, PollFlags, poll};
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, atomic::{AtomicBool, Ordering, AtomicU32}, Arc}, io, os::fd::{RawFd, BorrowedFd}};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}};
 
 pub struct EventLoop<T: 'static = ()> {
     running: bool,
@@ -252,7 +252,7 @@ pub type WindowId = usize;
 
 pub struct Window<T: 'static> {
     // our data
-    shared: Arc<WindowShared>, // needs to be accessed by some callbacks
+    shared: Arc<Mutex<WindowShared>>, // needs to be accessed by some callbacks
     // wayland state
     proxy: EventLoopProxy<T>,
     qh: QueueHandle<EventLoop<T>>,
@@ -264,11 +264,11 @@ pub struct Window<T: 'static> {
 
 struct WindowShared {
     id: WindowId,
-    new_width: AtomicU32,
-    new_height: AtomicU32,
-    flags: AtomicU32,
-    frame_callback_registered: AtomicBool,
-    redraw_requested: AtomicBool,
+    new_width: u32,
+    new_height: u32,
+    flags: u32,
+    frame_callback_registered: bool,
+    redraw_requested: bool,
 }
 
 impl<T> Window<T> {
@@ -281,14 +281,14 @@ impl<T> Window<T> {
         // let mut queue = evl.con.new_event_queue();
         // let qh = queue.handle();
 
-        let shared = Arc::new(WindowShared {
+        let shared = Arc::new(Mutex::new(WindowShared {
             id,
-            new_width: AtomicU32::new(size.width),
-            new_height: AtomicU32::new(size.height),
-            flags: AtomicU32::new(0),
-            frame_callback_registered: AtomicBool::new(false),
-            redraw_requested: AtomicBool::new(false)
-        });
+            new_width:  size.width,
+            new_height: size.height,
+            flags: 0,
+            frame_callback_registered: false,
+            redraw_requested: false
+        }));
 
         let surface = evl.wayland.compositor.create_surface(&evl.qh, ());
         let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &evl.qh, Arc::clone(&shared));
@@ -309,19 +309,20 @@ impl<T> Window<T> {
     }
 
     pub fn request_redraw(&mut self) {
-         if self.shared.frame_callback_registered.load(Ordering::Relaxed) {
-            self.shared.redraw_requested.store(true, Ordering::Relaxed); // wait for the frame callback to send the redraw event
+        let mut guard = self.shared.lock().unwrap();
+         if guard.frame_callback_registered {
+            guard.redraw_requested = true; // wait for the frame callback to send the redraw event
         } else {
-            self.proxy.send(Event::Window { id: self.shared.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
+            self.proxy.send(Event::Window { id: guard.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
         }
     }
 
     pub fn pre_present_notify(&mut self) -> PresentToken {
         // it seems you have request the frame callback before swapping buffers
         // otherwise the callback will never fire because the compositor thinks the content didn't change
-         if self.shared.frame_callback_registered.compare_exchange(
-            false, true, Ordering::Relaxed, Ordering::Relaxed
-        ).is_ok() {
+        let mut guard = self.shared.lock().unwrap();
+         if guard.frame_callback_registered {
+            guard.frame_callback_registered = true;
             self.surface.frame(&self.qh, Arc::clone(&self.shared));
             self.surface.commit();
         }
@@ -564,12 +565,12 @@ impl wayland_client::Dispatch<XdgWmBase, ()> for UninitWaylandGlobals {
     }
 }
 
-impl<T> wayland_client::Dispatch<XdgSurface, Arc<WindowShared>> for EventLoop<T> {
+impl<T> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for EventLoop<T> {
     fn event(
         evl: &mut Self,
         xdg_surface: &XdgSurface,
         event: XdgSurfaceEvent,
-        shared: &Arc<WindowShared>,
+        shared: &Arc<Mutex<WindowShared>>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
@@ -578,43 +579,47 @@ impl<T> wayland_client::Dispatch<XdgSurface, Arc<WindowShared>> for EventLoop<T>
             // ack the configure
             xdg_surface.ack_configure(serial);
 
+            let guard = shared.lock().unwrap();
+
             // foreward the final configuration state to the user
-            let width  = shared.new_width .load(Ordering::Relaxed);
-            let height = shared.new_height.load(Ordering::Relaxed);
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Resize {
+            let width  = guard.new_width;
+            let height = guard.new_height;
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
                 size: Size { width, height },
-                flags: ConfigureFlags::from_bits_retain(shared.flags.load(Ordering::Relaxed))
+                flags: ConfigureFlags::from_bits_retain(guard.flags)
             } });
             
-            if !shared.redraw_requested.load(Ordering::Relaxed) {
-                evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
+            if !guard.redraw_requested {
+                evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
             }
 
         }
     }
 }
 
-impl<T> wayland_client::Dispatch<XdgToplevel, Arc<WindowShared>> for EventLoop<T> {
+impl<T> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for EventLoop<T> {
     fn event(
         evl: &mut Self,
         _surface: &XdgToplevel,
         event: XdgToplevelEvent,
-        shared: &Arc<WindowShared>,
+        shared: &Arc<Mutex<WindowShared>>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
 
+        let mut guard = shared.lock().unwrap();
+
         if let XdgToplevelEvent::Configure { width, height, states } = event {
             if width > 0 && height > 0 {
-                shared.new_width .store(width  as u32, Ordering::Relaxed);
-                shared.new_height.store(height as u32, Ordering::Relaxed);
+                guard.new_width  = width  as u32;
+                guard.new_height = height as u32;
             }
             let flags = read_configure_flags(states);
-            shared.flags.store(flags.bits(), Ordering::Relaxed);
+            guard.flags = flags.bits();
         }
 
         else if let XdgToplevelEvent::Close = event {
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
         }
 
     }
@@ -649,20 +654,20 @@ fn read_configure_flags(states: Vec<u8>) -> ConfigureFlags {
         })
 }
 
-impl<T> wayland_client::Dispatch<WlCallback, Arc<WindowShared>> for EventLoop<T> {
+impl<T> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for EventLoop<T> {
     fn event(
         evl: &mut Self,
         _cb: &WlCallback,
         _event: WlCallbackEvent,
-        shared: &Arc<WindowShared>,
+        shared: &Arc<Mutex<WindowShared>>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
-        if shared.redraw_requested.compare_exchange(
-            true, false, Ordering::Relaxed, Ordering::Relaxed
-        ).is_ok() {
-            shared.frame_callback_registered.store(false, Ordering::Relaxed);
-            evl.events.push(Event::Window { id: shared.id, event: WindowEvent::Redraw });
+        let mut guard = shared.lock().unwrap();
+        if guard.redraw_requested {
+            guard.redraw_requested = false;
+            guard.frame_callback_registered = false;
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
         }
     }
 }
