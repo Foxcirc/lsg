@@ -15,7 +15,7 @@ fn wayland() -> anyhow::Result<()> {
     // - CONTINIOUS REDRAW CHECK
     // - FOCUS events
 
-    let proxy = evl.proxy();
+    let proxy = evl.new_proxy();
     proxy.send(Event::User("Hello world!"))?;
 
     // we will be using the built-in gl functionality

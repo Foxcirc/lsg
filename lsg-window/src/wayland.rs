@@ -7,8 +7,9 @@ use wayland_client::{
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
         wl_surface::WlSurface,
         wl_callback::{WlCallback, Event as WlCallbackEvent},
-        wl_keyboard::WlKeyboard,
-        wl_pointer::WlPointer, wl_region::WlRegion,
+        wl_keyboard::{WlKeyboard, Event as WlKeyboardEvent},
+        wl_pointer::{WlPointer, Event as WlPointerEvent},
+        wl_region::WlRegion,
     },
     WEnum, Proxy, QueueHandle, EventQueue
 };
@@ -95,7 +96,7 @@ impl<T: 'static> EventLoop<T> {
             queue: Some(queue),
             qh,
             wayland: globals,
-            events: Vec::with_capacity(8),
+            events: Vec::with_capacity(4),
             channel: Channel::new(),
         };
 
@@ -111,13 +112,14 @@ impl<T: 'static> EventLoop<T> {
         // connect keyboard and pointer input
         if self.wayland.capabilities.contains(WlSeatCapability::Keyboard) {
             self.wayland.seat.get_keyboard(&qh, ());
-        } else if self.wayland.capabilities.contains(WlSeatCapability::Pointer) {
+        }
+        if self.wayland.capabilities.contains(WlSeatCapability::Pointer) {
             self.wayland.seat.get_pointer(&qh, ());
         }
 
         self.events.push(Event::Resume);
 
-        let mut events = Vec::with_capacity(8);
+        let mut events = Vec::with_capacity(4);
 
         // main event loop
         loop {
@@ -128,10 +130,12 @@ impl<T: 'static> EventLoop<T> {
             mem::swap(&mut self.events, &mut events);
 
             // foreward the events to the callback
-            for event in events.drain(..) { cb(&mut self, event) }
+            for event in events.drain(..) {
+                cb(&mut self, event)
+            }
             
             if !self.running { break } // stop if `exit` was called
-            if !self.events.is_empty() { continue } // the callback could've generated more events
+            let timeout = if self.events.is_empty() { -1 } else { 0 }; // maybe cb generated events
 
             // prepare to wait for new events
             let Some(guard) = queue.prepare_read() else { continue };
@@ -144,8 +148,8 @@ impl<T: 'static> EventLoop<T> {
                 PollFd::new(&channel_fd, PollFlags::IN),
             ];
 
-            // println!("right before");
-            poll(&mut fds, -1).map_err(|err| io::Error::from(err))?;
+            // wait for new events
+            poll(&mut fds, timeout).map_err(|err| io::Error::from(err))?;
 
             let wl_events = fds[0].revents();
             let channel_events = fds[1].revents();
@@ -171,13 +175,25 @@ impl<T: 'static> EventLoop<T> {
         
     }
 
-    pub fn proxy(&self) -> EventLoopProxy<T> {
+    pub fn new_proxy(&self) -> EventLoopProxy<T> {
 
         EventLoopProxy {
             sender: self.channel.sender.clone(),
             eventfd: self.channel.eventfd, // we can share the fd, no problemo
         }
         
+    }
+
+    pub fn suspend(&mut self) {
+        self.events.push(Event::Suspend);
+    }
+
+    pub fn resume(&mut self) {
+        self.events.push(Event::Resume);
+    }
+
+    pub fn quit(&mut self) {
+        self.events.push(Event::Quit);
     }
 
     pub fn exit(&mut self) {
@@ -296,7 +312,7 @@ impl<T> Window<T> {
 
         Self {
             shared,
-            proxy: evl.proxy(),
+            proxy: evl.new_proxy(),
             qh: evl.qh.clone(),
             compositor: evl.wayland.compositor.clone(),
             surface,
@@ -492,7 +508,7 @@ impl EglContext {
 
     }
 
-    /// Don't forget to also resize your opengl Viewport!
+    /// Don't forget to also resize your opengl viewport!
     pub fn resize(&self, size: Size) {
 
         self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
@@ -502,8 +518,15 @@ impl EglContext {
 }
 
 pub enum Event<T> {
+    /// Your app was resumed from the background or started.
     Resume,
+    /// Your app's view has to be destroyed but it can keep running in the background.
+    Suspend,
+    /// Your app has to quit.
+    Quit,
+    /// Your own events. See [`EventLoopProxy`].
     User(T),
+    /// An event that belongs to a specific window. (Eg. focus, mouse movement)
     Window { id: WindowId, event: WindowEvent },
 }
 
@@ -684,7 +707,28 @@ impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegi
 
 // input events
 impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> { ignore!(WlKeyboard); }
-impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> { ignore!(WlPointer); }
+
+impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
+    fn event(
+            evh: &mut Self,
+            proxy: &WlPointer,
+            event: <WlPointer as Proxy>::Event,
+            _data: &(),
+            con: &wayland_client::Connection,
+            _qh: &QueueHandle<Self>,
+        ) {
+
+        // println!("POINTER EVENT: {:?}", event);
+        // match event {
+
+            // WlPointerEvent::Enter { serial, surface, surface_x, surface_y } => {
+                
+            // }
+            
+        // }
+        
+    }
+}
 
 #[derive(Debug)]
 pub enum EvlError {
