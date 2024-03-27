@@ -19,8 +19,6 @@ use wayland_protocols::xdg::shell::client::{
     xdg_toplevel::{XdgToplevel, Event as XdgToplevelEvent, State as XdgToplevelState},
 };
 
-use bitflags::bitflags;
-
 use khronos_egl as egl;
 use rustix::event::{PollFd, PollFlags, poll};
 use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}};
@@ -266,7 +264,7 @@ struct WindowShared {
     id: WindowId,
     new_width: u32,
     new_height: u32,
-    flags: u32,
+    flags: ConfigureFlags,
     frame_callback_registered: bool,
     redraw_requested: bool,
 }
@@ -285,7 +283,7 @@ impl<T> Window<T> {
             id,
             new_width:  size.width,
             new_height: size.height,
-            flags: 0,
+            flags: ConfigureFlags::default(),
             frame_callback_registered: false,
             redraw_requested: false
         }));
@@ -310,10 +308,12 @@ impl<T> Window<T> {
 
     pub fn request_redraw(&mut self) {
         let mut guard = self.shared.lock().unwrap();
-         if guard.frame_callback_registered {
+         if guard.frame_callback_registered { // was pre-present-notify called?
             guard.redraw_requested = true; // wait for the frame callback to send the redraw event
         } else {
             self.proxy.send(Event::Window { id: guard.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
+            // TODO: this event will be immediatly processed before the event loop get's a real change to run
+            //       make the event loop try processing system events first after the callback generated an event (nonblocking, just check if there are any new sys events)
         }
     }
 
@@ -586,7 +586,7 @@ impl<T> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for Event
             let height = guard.new_height;
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
                 size: Size { width, height },
-                flags: ConfigureFlags::from_bits_retain(guard.flags)
+                flags: guard.flags
             } });
             
             if !guard.redraw_requested {
@@ -614,8 +614,7 @@ impl<T> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for Even
                 guard.new_width  = width  as u32;
                 guard.new_height = height as u32;
             }
-            let flags = read_configure_flags(states);
-            guard.flags = flags.bits();
+            guard.flags = read_configure_flags(states);
         }
 
         else if let XdgToplevelEvent::Close = event {
@@ -625,31 +624,20 @@ impl<T> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for Even
     }
 }
 
-// type ConfigureFlags = usize;
-bitflags! {
-    #[derive(Debug)]
-    pub struct ConfigureFlags: u32 {
-        const FULLSCREEN = 1 << 0;
-        const RESIZING   = 1 << 1;
-        const ACTIVATED  = 1 << 2;
-        const SUSPENDED  = 1 << 3;
-    }
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ConfigureFlags {
+    pub fullscreen: bool
 }
-
+ 
 fn read_configure_flags(states: Vec<u8>) -> ConfigureFlags {
     states.chunks_exact(4)
         .flat_map(|chunk| chunk.try_into())
         .map(|bytes| u32::from_ne_bytes(bytes))
         .flat_map(XdgToplevelState::try_from)
-        .fold(ConfigureFlags::empty(), |mut acc, state| {
-            use XdgToplevelState::*;
-            match state {
-                Fullscreen => acc.set(ConfigureFlags::FULLSCREEN, true),
-                Resizing   => acc.set(ConfigureFlags::RESIZING,   true),
-                Activated  => acc.set(ConfigureFlags::ACTIVATED,  true),
-                Suspended  => acc.set(ConfigureFlags::SUSPENDED,  true),
-                _ => ()
-            }
+        .fold(ConfigureFlags::default(), |mut acc, state| {
+            if let XdgToplevelState::Fullscreen = state {
+                acc.fullscreen = true;
+            };
             acc
         })
 }
