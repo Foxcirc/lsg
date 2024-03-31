@@ -8,7 +8,7 @@ use wayland_client::{
         wl_surface::WlSurface,
         wl_callback::{WlCallback, Event as WlCallbackEvent},
         wl_keyboard::{WlKeyboard, Event as WlKeyboardEvent},
-        wl_pointer::{WlPointer, Event as WlPointerEvent},
+        wl_pointer::{WlPointer, Event as WlPointerEvent, ButtonState, Axis},
         wl_region::WlRegion,
     },
     WEnum, Proxy, QueueHandle, EventQueue
@@ -26,13 +26,20 @@ use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::
 
 pub struct EventLoop<T: 'static = ()> {
     running: bool,
-    ids: usize,
     con: wayland_client::Connection,
     qh: QueueHandle<Self>,
     queue: Option<EventQueue<Self>>,
     wayland: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
     channel: Channel<Event<T>>, // used to send events to the evl from anywhere else
+    mouse_focus: Option<MouseFocusData>,
+    // focus: Option<Focus
+}
+
+struct MouseFocusData {
+    id: WindowId,
+    x: f64,
+    y: f64
 }
 
 struct Channel<T> {
@@ -91,7 +98,7 @@ impl<T: 'static> EventLoop<T> {
 
         let this = EventLoop {
             running: true,
-            ids: 0,
+            mouse_focus: None,
             con,
             queue: Some(queue),
             qh,
@@ -200,11 +207,6 @@ impl<T: 'static> EventLoop<T> {
         self.running = false
     }
 
-    pub(crate) fn new_window_id(&mut self) -> usize {
-        self.ids += 1;
-        self.ids
-    }
-    
 }
 
 pub struct EventLoopProxy<T> {
@@ -262,7 +264,10 @@ impl UninitWaylandGlobals {
     }
 }
 
-pub type WindowId = usize;
+pub type WindowId = u32;
+fn get_window_id(surface: &WlSurface) -> WindowId {
+    surface.id().protocol_id()
+}
 
 pub struct Window<T: 'static> {
     // our data
@@ -290,13 +295,10 @@ impl<T> Window<T> {
     /// The window will initially be hidden, so you can setup title etc.
     pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
-        let id = evl.new_window_id();
-
-        // let mut queue = evl.con.new_event_queue();
-        // let qh = queue.handle();
+        let surface = evl.wayland.compositor.create_surface(&evl.qh, ());
 
         let shared = Arc::new(Mutex::new(WindowShared {
-            id,
+            id: get_window_id(&surface),
             new_width:  size.width,
             new_height: size.height,
             flags: ConfigureFlags::default(),
@@ -304,7 +306,6 @@ impl<T> Window<T> {
             redraw_requested: false
         }));
 
-        let surface = evl.wayland.compositor.create_surface(&evl.qh, ());
         let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &evl.qh, Arc::clone(&shared));
         let xdg_toplevel = xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared));
 
@@ -530,10 +531,25 @@ pub enum Event<T> {
     Window { id: WindowId, event: WindowEvent },
 }
 
+#[derive(Debug)]
 pub enum WindowEvent {
     Close,
     Resize { size: Size, flags: ConfigureFlags },
     Redraw,
+    MouseMotion { x: f64, y: f64 },
+    MouseDown { x: f64, y: f64, button: MouseButton },
+    MouseUp { x: f64, y: f64, button: MouseButton },
+    MouseScroll { axis: ScrollAxis, value: f64 },
+}
+
+#[derive(Debug)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    X1,
+    X2,
+    Unknown,
 }
 
 impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
@@ -710,24 +726,114 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> { ignore!(WlKe
 
 impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
     fn event(
-            evh: &mut Self,
-            proxy: &WlPointer,
+            evl: &mut Self,
+            _proxy: &WlPointer,
             event: <WlPointer as Proxy>::Event,
             _data: &(),
-            con: &wayland_client::Connection,
+            _con: &wayland_client::Connection,
             _qh: &QueueHandle<Self>,
         ) {
 
-        // println!("POINTER EVENT: {:?}", event);
-        // match event {
+        match event {
 
-            // WlPointerEvent::Enter { serial, surface, surface_x, surface_y } => {
+             WlPointerEvent::Enter { surface, surface_x, surface_y, .. } => {
+                let id = get_window_id(&surface);
+                evl.mouse_focus = Some(MouseFocusData { id, x: surface_x, y: surface_y });
+                // evh.events.push(Event::Window { id, event:
+                //     WindowEvent::MouseMotion { x: surface_x, y: surface_y }
+                // });
+             },
+
+             WlPointerEvent::Leave { .. } => {
+                evl.mouse_focus = None;
+             },
+
+             WlPointerEvent::Motion { surface_x, surface_y, .. } => {
+
+                let Some(ref mut data) = evl.mouse_focus else { unreachable!() };
+
+                data.x = surface_x;
+                data.y = surface_x;
+
+                evl.events.push(Event::Window {
+                    id: data.id,
+                    event: WindowEvent::MouseMotion { x: surface_x, y: surface_y }
+                });
+
+             },
+
+            // TODO: handle WlPointerEvent::Frame and actually process these events correctly
+
+            WlPointerEvent::Button { button, state, .. } => {
+
+                let Some(ref data) = evl.mouse_focus else { unreachable!() };
+
+                const BTN_LEFT: u32 = 0x110;
+                const BTN_RIGHT: u32 = 0x111;
+                const BTN_MIDDLE: u32 = 0x112;
+                const BTN_SIDE: u32 = 0x113;
+                const BTN_EXTRA: u32 = 0x114;
+                const BTN_FORWARD: u32 = 0x115;
+                const BTN_BACK: u32 = 0x116;
+
+                let converted = match button {
+                    BTN_LEFT   => MouseButton::Left,
+                    BTN_RIGHT  => MouseButton::Right,
+                    BTN_MIDDLE => MouseButton::Middle,
+                    BTN_BACK    | BTN_SIDE  => MouseButton::X1,
+                    BTN_FORWARD | BTN_EXTRA => MouseButton::X2,
+                    _ => MouseButton::Unknown,
+                };
+
+                let down = match state {
+                    WEnum::Value(ButtonState::Pressed) => true,
+                    WEnum::Value(ButtonState::Released) => false,
+                    WEnum::Value(..) => return, // fucking non-exhaustive enums
+                    WEnum::Unknown(..) => return
+                };
+
+                let event = if down {
+                    WindowEvent::MouseDown { button: converted, x: data.x, y: data.y }
+                } else {
+                    WindowEvent::MouseUp { button: converted, x: data.x, y: data.y }
+                };
+
+                evl.events.push(Event::Window {
+                    id: data.id,
+                    event
+                });
                 
-            // }
+            },
+
+            WlPointerEvent::Axis { axis, value, .. } => {
+
+                let Some(ref data) = evl.mouse_focus else { unreachable!() };
+
+                let axis = match axis {
+                    WEnum::Value(Axis::VerticalScroll) => ScrollAxis::Vertical,
+                    WEnum::Value(Axis::HorizontalScroll) => ScrollAxis::Horizontal,
+                    WEnum::Value(..) => return,
+                    WEnum::Unknown(..) => return
+                };
+
+                evl.events.push(Event::Window {
+                    id: data.id,
+                    event: WindowEvent::MouseScroll { axis, value }
+                });
+                
+            },
+
+            _ => ()
             
-        // }
+        }
         
     }
+}
+
+#[derive(Debug)]
+pub enum ScrollAxis {
+    Vertical,
+    Horizontal
 }
 
 #[derive(Debug)]

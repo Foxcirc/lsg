@@ -42,9 +42,11 @@ fn wayland() -> anyhow::Result<()> {
                 window.title("lsg-test");
                 window.class("lsg-test");
             }, // TODO: implement the suspend event
+            Event::Suspend => unimplemented!(),
+            Event::Quit => evl.exit(),
             Event::User(message) => println!("{}", message),
             Event::Window { id: _id, event } => match event {
-                WindowEvent::Close => evl.exit(),
+                WindowEvent::Close => evl.quit(),
                 WindowEvent::Redraw => {
                     lsg_gl::clear(1.0, 0.0, 0.0, 1.0);
                     let token = window.pre_present_notify();
@@ -61,6 +63,13 @@ fn wayland() -> anyhow::Result<()> {
                     // window.fullscreen();
                     // window.request_redraw();
                 },
+                WindowEvent::MouseDown { x, y, button } => {
+                    println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
+                },
+                WindowEvent::MouseScroll { axis, value } => {
+                    println!("scrolling with axis = {:?}, value = {}", axis, value);
+                }
+                _ => ()
             },
         }
     })?;
