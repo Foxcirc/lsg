@@ -7,7 +7,7 @@ use wayland_client::{
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
         wl_surface::WlSurface,
         wl_callback::{WlCallback, Event as WlCallbackEvent},
-        wl_keyboard::{WlKeyboard, Event as WlKeyboardEvent},
+        wl_keyboard::{WlKeyboard, Event as WlKeyboardEvent, KeyState},
         wl_pointer::{WlPointer, Event as WlPointerEvent, ButtonState, Axis},
         wl_region::WlRegion,
     },
@@ -22,6 +22,7 @@ use wayland_protocols::xdg::shell::client::{
 
 use khronos_egl as egl;
 use rustix::event::{PollFd, PollFlags, poll};
+use xkbcommon::xkb;
 use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}};
 
 pub struct EventLoop<T: 'static = ()> {
@@ -31,32 +32,32 @@ pub struct EventLoop<T: 'static = ()> {
     queue: Option<EventQueue<Self>>,
     wayland: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
-    channel: Channel<Event<T>>, // used to send events to the evl from anywhere else
-    mouse_focus: Option<MouseFocusData>,
+    proxy_data: EventLoopProxyData<T>,
+    mouse_data: MouseData, // TODO: remove option .-.
+    keyboard_data: KeyboardData,
     // focus: Option<Focus
 }
 
-struct MouseFocusData {
-    id: WindowId,
+struct KeyboardData {
+    has_focus: WindowId,
+    xkb_context: xkb::Context,
+    xkb_keymap: Option<xkb::Keymap>,
+    xkb_state: Option<xkb::State>,
+}
+
+struct MouseData {
+    has_focus: WindowId,
     x: f64,
     y: f64
 }
 
-struct Channel<T> {
-    eventfd: RawFd,
-    sender: Sender<T>,
-    receiver: Receiver<T>
+struct EventLoopProxyData<T> {
+    pub eventfd: RawFd,
+    pub sender: Sender<Event<T>>,
+    pub receiver: Receiver<Event<T>>
 }
 
-impl<T> Channel<T> {
-    pub fn new() -> Self {
-        let (sender, receiver) = channel();
-        let eventfd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) }; // TODO: use rustix eventfd when it is fixed
-        Channel { eventfd, sender, receiver }
-    }
-}
-
-impl<T> Drop for Channel<T> {
+impl<T> Drop for EventLoopProxyData<T> {
     fn drop(&mut self) {
         unsafe { libc::close(self.eventfd) };
     }
@@ -96,15 +97,24 @@ impl<T: 'static> EventLoop<T> {
         let queue = con.new_event_queue();
         let qh = queue.handle();
 
+        let proxy_data = {
+            let (sender, receiver) = channel();
+            let eventfd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) }; // TODO: use rustix eventfd when it is fixed
+            EventLoopProxyData { eventfd, sender, receiver }
+        };
+
+        let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+
         let this = EventLoop {
             running: true,
-            mouse_focus: None,
             con,
             queue: Some(queue),
             qh,
             wayland: globals,
             events: Vec::with_capacity(4),
-            channel: Channel::new(),
+            proxy_data,
+            mouse_data: MouseData { has_focus: 0, x: 0.0, y: 0.0 },
+            keyboard_data: KeyboardData { xkb_context, xkb_keymap: None, xkb_state: None, has_focus: 0 },
         };
 
         Ok(this)
@@ -148,7 +158,7 @@ impl<T: 'static> EventLoop<T> {
             let Some(guard) = queue.prepare_read() else { continue };
 
             let queue_fd = guard.connection_fd();
-            let channel_fd = unsafe { BorrowedFd::borrow_raw(self.channel.eventfd) };
+            let channel_fd = unsafe { BorrowedFd::borrow_raw(self.proxy_data.eventfd) };
 
             let mut fds = [
                 PollFd::new(&queue_fd, PollFlags::IN | PollFlags::ERR),
@@ -170,10 +180,10 @@ impl<T: 'static> EventLoop<T> {
 
             // new user events
             if channel_events.contains(PollFlags::IN) {
-                while let Ok(event) = self.channel.receiver.try_recv() {
+                while let Ok(event) = self.proxy_data.receiver.try_recv() {
                     self.events.push(event)
                 }
-                unsafe { libc::eventfd_read(self.channel.eventfd, &mut 0) };
+                unsafe { libc::eventfd_read(self.proxy_data.eventfd, &mut 0) };
             }
 
         }
@@ -185,8 +195,8 @@ impl<T: 'static> EventLoop<T> {
     pub fn new_proxy(&self) -> EventLoopProxy<T> {
 
         EventLoopProxy {
-            sender: self.channel.sender.clone(),
-            eventfd: self.channel.eventfd, // we can share the fd, no problemo
+            sender: self.proxy_data.sender.clone(),
+            eventfd: self.proxy_data.eventfd, // we can share the fd, no problemo
         }
         
     }
@@ -519,11 +529,11 @@ impl EglContext {
 }
 
 pub enum Event<T> {
-    /// Your app was resumed from the background or started.
+    /// Your app was resumed from the background or started and should show it's view.
     Resume,
-    /// Your app's view has to be destroyed but it can keep running in the background.
+    /// Your app's view should be destroyed but it can keep running in the background.
     Suspend,
-    /// Your app has to quit.
+    /// Your app should quit.
     Quit,
     /// Your own events. See [`EventLoopProxy`].
     User(T),
@@ -540,6 +550,9 @@ pub enum WindowEvent {
     MouseDown { x: f64, y: f64, button: MouseButton },
     MouseUp { x: f64, y: f64, button: MouseButton },
     MouseScroll { axis: ScrollAxis, value: f64 },
+    KeyDown { key: Key, repeat: bool },
+    KeyUp { key: Key },
+    KeyInput { text: String, repeat: bool },
 }
 
 #[derive(Debug)]
@@ -550,6 +563,20 @@ pub enum MouseButton {
     X1,
     X2,
     Unknown,
+}
+
+#[derive(Debug)]
+#[repr(u32)]
+pub enum Key {
+    // Escape,
+    // Tab,
+    // CapsLock,
+    // Shift,
+    // Control,
+    // Alt,
+    // AltGr,
+    // Super, // windows key
+    Unknown(u32)
 }
 
 impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
@@ -584,6 +611,7 @@ impl wayland_client::Dispatch<WlSeat, ()> for UninitWaylandGlobals {
     ) {
         if let WlSeatEvent::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
             evh.capabilities = Some(capabilities);
+            // TODO: enable capabilities being dynamically updated (eg. user unpluggs keyboard)
             // we will get the keyboard and pointer later
         }
     }
@@ -722,13 +750,102 @@ impl<T> wayland_client::Dispatch<WlSurface, ()> for EventLoop<T> { ignore!(WlSur
 impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion); }
 
 // input events
-impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> { ignore!(WlKeyboard); }
+impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
+    fn event(
+            evl: &mut Self,
+            _proxy: &WlKeyboard,
+            event: WlKeyboardEvent,
+            _data: &(),
+            _con: &wayland_client::Connection,
+            _qh: &QueueHandle<Self>,
+        ) {
+
+        match event {
+
+            WlKeyboardEvent::Keymap { fd, size, .. } => {
+
+                let keymap = unsafe {
+                    let Ok(Some(value)) = xkb::Keymap::new_from_fd(
+                        &evl.keyboard_data.xkb_context,
+                        fd, size as usize,
+                        xkb::FORMAT_TEXT_V1,
+                        xkb::KEYMAP_COMPILE_NO_FLAGS
+                    ) else { return };
+                    value
+                };
+
+                let state = xkb::State::new(&keymap);
+
+                evl.keyboard_data.xkb_keymap = Some(keymap);
+                evl.keyboard_data.xkb_state = Some(state);
+                
+            },
+
+            WlKeyboardEvent::Enter { surface, keys, .. } => {
+
+                let id = get_window_id(&surface);
+                evl.keyboard_data.has_focus = id;
+                
+            },
+
+            WlKeyboardEvent::Leave { surface, .. } => {
+                evl.keyboard_data.has_focus = 0;
+            },
+
+            WlKeyboardEvent::Key { key, state, .. } => {
+
+                let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state else { return };
+
+                let down = match state {
+                    WEnum::Value(KeyState::Pressed) => true,
+                    WEnum::Value(KeyState::Released) => false,
+                    WEnum::Value(..) => return,
+                    WEnum::Unknown(..) => return
+                };
+
+                let xkb_key = xkb::Keycode::new(key + 8); // says the wayland docs
+
+                // let results = xkb_state.key_get_syms(xkb_key);
+                // for result in results {
+                //     println!("-> {:?} {:?}", direction, result);
+                // }
+
+                // let result = xkb_state.key_get_utf8(xkb_key);
+                // xkb_state.update_key(xkb::Keycode::new(xkb_key), direction);
+
+                let event = if down {
+                    WindowEvent::KeyDown { key: Key::Unknown(xkb_key.raw()), repeat: false }
+                    // TODO: shedule key-repeat
+                } else {
+                    WindowEvent::KeyUp { key: Key::Unknown(xkb_key.raw()) }
+                };
+
+                evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event })
+                
+            },
+
+            WlKeyboardEvent::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
+
+                let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state else { return };
+
+                xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                
+            },
+
+            WlKeyboardEvent::RepeatInfo { rate, delay } => (), // TODO: impl key-repeat with timer
+
+            _ => (),
+            
+        }
+
+    }
+}
 
 impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
     fn event(
             evl: &mut Self,
             _proxy: &WlPointer,
-            event: <WlPointer as Proxy>::Event,
+            event: WlPointerEvent,
             _data: &(),
             _con: &wayland_client::Connection,
             _qh: &QueueHandle<Self>,
@@ -737,36 +854,35 @@ impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
         match event {
 
              WlPointerEvent::Enter { surface, surface_x, surface_y, .. } => {
+
                 let id = get_window_id(&surface);
-                evl.mouse_focus = Some(MouseFocusData { id, x: surface_x, y: surface_y });
-                // evh.events.push(Event::Window { id, event:
-                //     WindowEvent::MouseMotion { x: surface_x, y: surface_y }
-                // });
+                evl.mouse_data.has_focus = id;
+                evl.mouse_data.x = surface_x;
+                evl.mouse_data.y = surface_y;
+
+                evl.events.push(Event::Window { id, event:
+                    WindowEvent::MouseMotion { x: surface_x, y: surface_y }
+                });
+
              },
 
              WlPointerEvent::Leave { .. } => {
-                evl.mouse_focus = None;
+                evl.mouse_data.has_focus = 0;
              },
 
              WlPointerEvent::Motion { surface_x, surface_y, .. } => {
 
-                let Some(ref mut data) = evl.mouse_focus else { unreachable!() };
-
-                data.x = surface_x;
-                data.y = surface_x;
+                evl.mouse_data.x = surface_x;
+                evl.mouse_data.y = surface_x;
 
                 evl.events.push(Event::Window {
-                    id: data.id,
+                    id: evl.mouse_data.has_focus,
                     event: WindowEvent::MouseMotion { x: surface_x, y: surface_y }
                 });
 
              },
 
-            // TODO: handle WlPointerEvent::Frame and actually process these events correctly
-
             WlPointerEvent::Button { button, state, .. } => {
-
-                let Some(ref data) = evl.mouse_focus else { unreachable!() };
 
                 const BTN_LEFT: u32 = 0x110;
                 const BTN_RIGHT: u32 = 0x111;
@@ -793,21 +909,19 @@ impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
                 };
 
                 let event = if down {
-                    WindowEvent::MouseDown { button: converted, x: data.x, y: data.y }
+                    WindowEvent::MouseDown { button: converted, x: evl.mouse_data.x, y: evl.mouse_data.y }
                 } else {
-                    WindowEvent::MouseUp { button: converted, x: data.x, y: data.y }
+                    WindowEvent::MouseUp { button: converted, x: evl.mouse_data.x, y: evl.mouse_data.y }
                 };
 
                 evl.events.push(Event::Window {
-                    id: data.id,
+                    id: evl.mouse_data.has_focus,
                     event
                 });
                 
             },
 
             WlPointerEvent::Axis { axis, value, .. } => {
-
-                let Some(ref data) = evl.mouse_focus else { unreachable!() };
 
                 let axis = match axis {
                     WEnum::Value(Axis::VerticalScroll) => ScrollAxis::Vertical,
@@ -817,7 +931,7 @@ impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
                 };
 
                 evl.events.push(Event::Window {
-                    id: data.id,
+                    id: evl.mouse_data.has_focus,
                     event: WindowEvent::MouseScroll { axis, value }
                 });
                 

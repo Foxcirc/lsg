@@ -13,6 +13,7 @@
 [ ] IME
 [x] Continious Redraw + Vsync
 [ ] Handling things like sigterm as the Quit event
+[ ] Request user attention
 
 # Outsources platform features
 [ ] Clipboard
