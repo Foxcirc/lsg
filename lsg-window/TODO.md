@@ -1,9 +1,9 @@
 
 # Requirements for a new backend
 [x] Open and configure windows
-[ ] Handling events
+[x] Handling events
 [x] User events
-[ ] Correct keyboard mapping
+[x] Correct keyboard mapping
 [ ] Window transparency
 [ ] Drag 'n drop
 [ ] Monitor handling

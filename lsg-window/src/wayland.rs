@@ -5,7 +5,7 @@ use wayland_client::{
         wl_compositor::WlCompositor,
         // wl_shm::WlShm,
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
-        wl_surface::WlSurface,
+        wl_surface::{WlSurface, Event as WlSurfaceEvent},
         wl_callback::{WlCallback, Event as WlCallbackEvent},
         wl_keyboard::{WlKeyboard, Event as WlKeyboardEvent, KeyState},
         wl_pointer::{WlPointer, Event as WlPointerEvent, ButtonState, Axis},
@@ -546,6 +546,8 @@ pub enum WindowEvent {
     Close,
     Resize { size: Size, flags: ConfigureFlags },
     Redraw,
+    Enter,
+    Leave,
     MouseMotion { x: f64, y: f64 },
     MouseDown { x: f64, y: f64, button: MouseButton },
     MouseUp { x: f64, y: f64, button: MouseButton },
@@ -744,7 +746,24 @@ macro_rules! ignore {
 impl wayland_client::Dispatch<WlCompositor, ()> for UninitWaylandGlobals { ignore!(WlCompositor); }
 
 // surface events
-impl<T> wayland_client::Dispatch<WlSurface, ()> for EventLoop<T> { ignore!(WlSurface); }
+impl<T> wayland_client::Dispatch<WlSurface, ()> for EventLoop<T> {
+    fn event(
+            _evl: &mut Self,
+            _proxy: &WlSurface,
+            _event: WlSurfaceEvent,
+            _data: &(),
+            _conn: &wayland_client::Connection,
+            _qhandle: &QueueHandle<Self>,
+        ) {
+
+        // match event {
+        //     WlSurfaceEvent::Enter { output }
+        // }
+
+        // TODO: impl fullscreen on current output here
+        
+    }
+}
 
 // region events
 impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion); }
@@ -781,20 +800,29 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
                 
             },
 
-            WlKeyboardEvent::Enter { surface, keys, .. } => {
+            WlKeyboardEvent::Enter { surface, keys: _keys, .. } => {
+
+                // TODO: handle "keys" field that is passed here ^^
 
                 let id = get_window_id(&surface);
                 evl.keyboard_data.has_focus = id;
+
+
+                evl.events.push(Event::Window { id, event: WindowEvent::Enter });
                 
             },
 
-            WlKeyboardEvent::Leave { surface, .. } => {
+            WlKeyboardEvent::Leave { .. } => {
+
+                evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event: WindowEvent::Leave});
+
                 evl.keyboard_data.has_focus = 0;
+
             },
 
             WlKeyboardEvent::Key { key, state, .. } => {
 
-                let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state else { return };
+                // let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state else { return };
 
                 let down = match state {
                     WEnum::Value(KeyState::Pressed) => true,
