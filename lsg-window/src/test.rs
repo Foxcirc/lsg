@@ -1,3 +1,5 @@
+use std::io::Write;
+
 
 #[test]
 fn wayland() -> anyhow::Result<()> {
@@ -70,7 +72,14 @@ fn wayland() -> anyhow::Result<()> {
                     // println!("scrolling with axis = {:?}, value = {}", axis, value);
                 },
                 WindowEvent::KeyDown { key, repeat } => {
-                    // println!("keydown! (repeat = {})", repeat);
+                    if !key.modifier() {
+                        if let Key::Char(chr) = key {
+                            print!("{chr}");
+                            std::io::stdout().flush().unwrap();
+                        } else {
+                            println!("\n{:?} (repeat {})", key, repeat);
+                        }
+                    }
                 }
                 _ => (),
             },

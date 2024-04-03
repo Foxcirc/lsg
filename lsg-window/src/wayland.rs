@@ -616,6 +616,23 @@ pub enum Key {
     Unknown(u32),
 }
 
+impl Key {
+
+    pub fn modifier(&self) -> bool {
+        matches!(
+            self,
+            Self::Shift | Self::Control | Self::CapsLock |
+            Self::Alt | Self::AltGr | Self::Super
+        )
+    }
+
+    pub(crate) fn discriminant(&self) -> u32 {
+        // SAFETY: this is safe because this enum is `repr(u32)`
+        unsafe { *(self as *const Self as *const u32) }
+    }
+
+}
+
 /// Look at the source and see how keys are translated.
 pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
 
@@ -623,26 +640,26 @@ pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
 
     match xkb_sym {
 
-        Keysym::Escape       => Key::Escape,
-        Keysym::Tab          => Key::Tab,
-        Keysym::Caps_Lock    => Key::CapsLock,
-        Keysym::Shift_L      => Key::Shift,
-        Keysym::Shift_R      => Key::Shift,
-        Keysym::Control_L    => Key::Control,
-        Keysym::Control_R    => Key::Control,
-        Keysym::Alt_L        => Key::Alt,
-        Keysym::Alt_R        => Key::Alt,
+        Keysym::Escape    => Key::Escape,
+        Keysym::Tab       => Key::Tab,
+        Keysym::Caps_Lock => Key::CapsLock,
+        Keysym::Shift_L   => Key::Shift,
+        Keysym::Shift_R   => Key::Shift,
+        Keysym::Control_L => Key::Control,
+        Keysym::Control_R => Key::Control,
+        Keysym::Alt_L     => Key::Alt,
+        Keysym::Alt_R     => Key::Alt,
         Keysym::ISO_Level3_Shift => Key::AltGr,
-        Keysym::Meta_L       => Key::Super,
-        Keysym::Meta_R       => Key::Super,
-        Keysym::Menu         => Key::AppMenu,
-        Keysym::Return       => Key::Return,
-        Keysym::BackSpace    => Key::Backspace,
-        Keysym::space        => Key::Space,
-        Keysym::Up           => Key::ArrowUp,
-        Keysym::Down         => Key::ArrowDown,
-        Keysym::Left         => Key::ArrowLeft,
-        Keysym::Right        => Key::ArrowRight,
+        Keysym::Super_L    => Key::Super,
+        Keysym::Super_R    => Key::Super,
+        Keysym::Menu      => Key::AppMenu,
+        Keysym::Return    => Key::Return,
+        Keysym::BackSpace => Key::Backspace,
+        Keysym::space     => Key::Space,
+        Keysym::Up        => Key::ArrowUp,
+        Keysym::Down      => Key::ArrowDown,
+        Keysym::Left      => Key::ArrowLeft,
+        Keysym::Right     => Key::ArrowRight,
 
         Keysym::F1  => Key::F(1),
         Keysym::F2  => Key::F(2),
@@ -769,13 +786,6 @@ pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
 
     }
 
-}
-
-impl Key {
-    pub(crate) fn discriminant(&self) -> u32 {
-        // SAFETY: this is safe because this enum is `repr(u32)`
-        unsafe { *(self as *const Self as *const u32) }
-    }
 }
 
 impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
@@ -1032,13 +1042,10 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
                     };
 
                     let xkb_key = xkb::Keycode::new(key + 8); // says the wayland docs
-                    let key = Key::Unknown(xkb_key.raw());
-                    // let key = translate_xkb_sym(xkb_sym);
+                    let xkb_sym = xkb_state.key_get_one_sym(xkb_key);
+                    let key = translate_xkb_sym(xkb_sym);
 
                     let event = if down {
-
-                        let xkb_sym = xkb_state.key_get_one_sym(xkb_key);
-                        println!("{:?}", xkb_sym);
 
                         // arm key-repeat timer with the correct delay and repeat rate
                         evl.keyboard_data.repeat_key = key;
