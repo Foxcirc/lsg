@@ -4,6 +4,7 @@
 [x] Handling events
 [x] User events
 [x] Correct keyboard mapping
+[x] Key repeat
 [ ] Window transparency
 [ ] Drag 'n drop
 [ ] Monitor handling
@@ -14,6 +15,7 @@
 [x] Continious Redraw + Vsync
 [ ] Handling things like sigterm as the Quit event
 [ ] Request user attention
+[ ] Clean up & TODO's
 
 # Outsources platform features
 [ ] Clipboard

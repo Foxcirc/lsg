@@ -21,9 +21,9 @@ use wayland_protocols::xdg::shell::client::{
 };
 
 use khronos_egl as egl;
-use rustix::event::{PollFd, PollFlags, poll};
+use rustix::{event::{PollFd, PollFlags, poll}, fd::AsFd};
 use xkbcommon::xkb;
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd, OwnedFd}, time::Duration};
 
 pub struct EventLoop<T: 'static = ()> {
     running: bool,
@@ -33,7 +33,7 @@ pub struct EventLoop<T: 'static = ()> {
     wayland: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
     proxy_data: EventLoopProxyData<T>,
-    mouse_data: MouseData, // TODO: remove option .-.
+    mouse_data: MouseData,
     keyboard_data: KeyboardData,
     // focus: Option<Focus
 }
@@ -43,6 +43,10 @@ struct KeyboardData {
     xkb_context: xkb::Context,
     xkb_keymap: Option<xkb::Keymap>,
     xkb_state: Option<xkb::State>,
+    repeat_timer: timerfd::TimerFd,
+    repeat_key: Key,
+    repeat_rate: Duration,
+    repeat_delay: Duration,
 }
 
 struct MouseData {
@@ -114,7 +118,16 @@ impl<T: 'static> EventLoop<T> {
             events: Vec::with_capacity(4),
             proxy_data,
             mouse_data: MouseData { has_focus: 0, x: 0.0, y: 0.0 },
-            keyboard_data: KeyboardData { xkb_context, xkb_keymap: None, xkb_state: None, has_focus: 0 },
+            keyboard_data: KeyboardData {
+                xkb_context,
+                xkb_keymap: None,
+                xkb_state: None,
+                has_focus: 0,
+                repeat_timer: timerfd::TimerFd::new().expect("todo"),
+                repeat_key: Key::Unknown(0),
+                repeat_rate: Duration::ZERO,
+                repeat_delay: Duration::ZERO,
+            },
         };
 
         Ok(this)
@@ -159,10 +172,12 @@ impl<T: 'static> EventLoop<T> {
 
             let queue_fd = guard.connection_fd();
             let channel_fd = unsafe { BorrowedFd::borrow_raw(self.proxy_data.eventfd) };
+            let timer_fd = self.keyboard_data.repeat_timer.as_fd();
 
             let mut fds = [
                 PollFd::new(&queue_fd, PollFlags::IN | PollFlags::ERR),
                 PollFd::new(&channel_fd, PollFlags::IN),
+                PollFd::new(&timer_fd, PollFlags::IN),
             ];
 
             // wait for new events
@@ -170,6 +185,7 @@ impl<T: 'static> EventLoop<T> {
 
             let wl_events = fds[0].revents();
             let channel_events = fds[1].revents();
+            let timer_events = fds[2].revents();
 
             // new events from the wayland connection
             if wl_events.contains(PollFlags::IN) {
@@ -180,10 +196,18 @@ impl<T: 'static> EventLoop<T> {
 
             // new user events
             if channel_events.contains(PollFlags::IN) {
+                unsafe { libc::eventfd_read(self.proxy_data.eventfd, &mut 0) }; // make sure to read
                 while let Ok(event) = self.proxy_data.receiver.try_recv() {
                     self.events.push(event)
                 }
-                unsafe { libc::eventfd_read(self.proxy_data.eventfd, &mut 0) };
+            }
+
+            // new key-repeat timer events
+            if timer_events.contains(PollFlags::IN) {
+                self.keyboard_data.repeat_timer.read(); // make sure to read
+                // emit the sysnthetic key-repeat event
+                let event = WindowEvent::KeyDown { key: self.keyboard_data.repeat_key, repeat: true };
+                events.push(Event::Window { id: self.keyboard_data.has_focus, event });
             }
 
         }
@@ -557,7 +581,7 @@ pub enum WindowEvent {
     KeyInput { text: String, repeat: bool },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum MouseButton {
     Left,
     Right,
@@ -567,18 +591,191 @@ pub enum MouseButton {
     Unknown,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)] // TODO: write a debug impl
 #[repr(u32)]
 pub enum Key {
-    // Escape,
-    // Tab,
-    // CapsLock,
-    // Shift,
-    // Control,
-    // Alt,
-    // AltGr,
-    // Super, // windows key
-    Unknown(u32)
+    Escape,
+    Tab,
+    CapsLock,
+    Shift,
+    Control,
+    Alt,
+    AltGr,
+    Super, // windows key
+    AppMenu, // application menu key
+    Return,
+    Backspace,
+    Space,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    F(u32), // f1, f2, f3, etc.
+    Char(char), // a-z, A-Z, 1-9, + special chars
+    DeadChar(char),
+    Unknown(u32),
+}
+
+/// Look at the source and see how keys are translated.
+pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
+
+    use xkb::Keysym;
+
+    match xkb_sym {
+
+        Keysym::Escape       => Key::Escape,
+        Keysym::Tab          => Key::Tab,
+        Keysym::Caps_Lock    => Key::CapsLock,
+        Keysym::Shift_L      => Key::Shift,
+        Keysym::Shift_R      => Key::Shift,
+        Keysym::Control_L    => Key::Control,
+        Keysym::Control_R    => Key::Control,
+        Keysym::Alt_L        => Key::Alt,
+        Keysym::Alt_R        => Key::Alt,
+        Keysym::ISO_Level3_Shift => Key::AltGr,
+        Keysym::Meta_L       => Key::Super,
+        Keysym::Meta_R       => Key::Super,
+        Keysym::Menu         => Key::AppMenu,
+        Keysym::Return       => Key::Return,
+        Keysym::BackSpace    => Key::Backspace,
+        Keysym::space        => Key::Space,
+        Keysym::Up           => Key::ArrowUp,
+        Keysym::Down         => Key::ArrowDown,
+        Keysym::Left         => Key::ArrowLeft,
+        Keysym::Right        => Key::ArrowRight,
+
+        Keysym::F1  => Key::F(1),
+        Keysym::F2  => Key::F(2),
+        Keysym::F3  => Key::F(3),
+        Keysym::F4  => Key::F(4),
+        Keysym::F5  => Key::F(5),
+        Keysym::F6  => Key::F(6),
+        Keysym::F7  => Key::F(7),
+        Keysym::F8  => Key::F(8),
+        Keysym::F9  => Key::F(9),
+        Keysym::F10 => Key::F(10),
+        Keysym::F11 => Key::F(11),
+        Keysym::F12 => Key::F(12),
+
+        Keysym::_1 => Key::Char('1'),
+        Keysym::_2 => Key::Char('2'),
+        Keysym::_3 => Key::Char('3'),
+        Keysym::_4 => Key::Char('4'),
+        Keysym::_5 => Key::Char('5'),
+        Keysym::_6 => Key::Char('6'),
+        Keysym::_7 => Key::Char('7'),
+        Keysym::_8 => Key::Char('8'),
+        Keysym::_9 => Key::Char('9'),
+
+        Keysym::a => Key::Char('a'),
+        Keysym::A => Key::Char('A'),
+        Keysym::b => Key::Char('b'),
+        Keysym::B => Key::Char('B'),
+        Keysym::c => Key::Char('c'),
+        Keysym::C => Key::Char('C'),
+        Keysym::d => Key::Char('d'),
+        Keysym::D => Key::Char('D'),
+        Keysym::e => Key::Char('e'),
+        Keysym::E => Key::Char('E'),
+        Keysym::f => Key::Char('f'),
+        Keysym::F => Key::Char('F'),
+        Keysym::g => Key::Char('g'),
+        Keysym::G => Key::Char('G'),
+        Keysym::h => Key::Char('h'),
+        Keysym::H => Key::Char('H'),
+        Keysym::i => Key::Char('i'),
+        Keysym::I => Key::Char('I'),
+        Keysym::j => Key::Char('j'),
+        Keysym::J => Key::Char('J'),
+        Keysym::k => Key::Char('k'),
+        Keysym::K => Key::Char('K'),
+        Keysym::l => Key::Char('l'),
+        Keysym::L => Key::Char('L'),
+        Keysym::m => Key::Char('m'),
+        Keysym::M => Key::Char('M'),
+        Keysym::n => Key::Char('n'),
+        Keysym::N => Key::Char('N'),
+        Keysym::o => Key::Char('o'),
+        Keysym::O => Key::Char('O'),
+        Keysym::p => Key::Char('p'),
+        Keysym::P => Key::Char('P'),
+        Keysym::q => Key::Char('q'),
+        Keysym::Q => Key::Char('Q'),
+        Keysym::r => Key::Char('r'),
+        Keysym::R => Key::Char('R'),
+        Keysym::s => Key::Char('s'),
+        Keysym::S => Key::Char('S'),
+        Keysym::t => Key::Char('t'),
+        Keysym::T => Key::Char('T'),
+        Keysym::u => Key::Char('u'),
+        Keysym::U => Key::Char('U'),
+        Keysym::v => Key::Char('v'),
+        Keysym::V => Key::Char('V'),
+        Keysym::w => Key::Char('w'),
+        Keysym::W => Key::Char('W'),
+        Keysym::x => Key::Char('x'),
+        Keysym::X => Key::Char('X'),
+        Keysym::y => Key::Char('y'),
+        Keysym::Y => Key::Char('Y'),
+        Keysym::z => Key::Char('z'),
+        Keysym::Z => Key::Char('Z'),
+
+        Keysym::question     => Key::Char('?'),
+        Keysym::equal        => Key::Char('='),
+        Keysym::exclam       => Key::Char('!'),
+        Keysym::at           => Key::Char('@'),
+        Keysym::numbersign   => Key::Char('#'),
+        Keysym::dollar       => Key::Char('$'),
+        Keysym::EuroSign     => Key::Char('€'),
+        Keysym::percent      => Key::Char('%'),
+        Keysym::section      => Key::Char('§'),
+        Keysym::asciicircum  => Key::Char('^'),
+        Keysym::degree       => Key::Char('°'),
+        Keysym::ampersand    => Key::Char('&'),
+        Keysym::asterisk     => Key::Char('*'),
+        Keysym::parenleft    => Key::Char('('),
+        Keysym::parenright   => Key::Char(')'),
+        Keysym::underscore   => Key::Char('_'),
+        Keysym::minus        => Key::Char('-'),
+        Keysym::plus         => Key::Char('+'),
+        Keysym::braceleft    => Key::Char('{'),
+        Keysym::braceright   => Key::Char('}'),
+        Keysym::bracketleft  => Key::Char('['),
+        Keysym::bracketright => Key::Char(']'),
+        Keysym::backslash    => Key::Char('\\'),
+        Keysym::bar          => Key::Char('|'),
+        Keysym::colon        => Key::Char(':'),
+        Keysym::semicolon    => Key::Char(';'),
+        Keysym::quotedbl     => Key::Char('"'),
+        Keysym::apostrophe   => Key::Char('\''),
+        Keysym::less         => Key::Char('<'),
+        Keysym::greater      => Key::Char('>'),
+        Keysym::comma        => Key::Char(','),
+        Keysym::period       => Key::Char('.'),
+        Keysym::slash        => Key::Char('/'),
+        Keysym::asciitilde   => Key::Char('~'),
+
+        Keysym::dead_acute      => Key::DeadChar('´'),
+        Keysym::dead_grave      => Key::DeadChar('`'),
+        Keysym::dead_circumflex => Key::DeadChar('^'),
+        Keysym::dead_tilde      => Key::DeadChar('~'),
+
+        Keysym::adiaeresis => Key::Char('ä'),
+        Keysym::odiaeresis => Key::Char('ö'),
+        Keysym::udiaeresis => Key::Char('ü'),
+        Keysym::ssharp     => Key::Char('ß'),
+
+        other => Key::Unknown(other.raw())
+
+    }
+
+}
+
+impl Key {
+    pub(crate) fn discriminant(&self) -> u32 {
+        // SAFETY: this is safe because this enum is `repr(u32)`
+        unsafe { *(self as *const Self as *const u32) }
+    }
 }
 
 impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
@@ -594,7 +791,7 @@ impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
             match &interface[..] {
                 "wl_compositor" => evh.compositor = Some(registry.bind(name, 1, qh, ())),
                 // "wl_shm"        => evh.shm        = Some(registry.bind(name, 1, qh, ())),
-                "wl_seat"       => evh.seat       = Some(registry.bind(name, 1, qh, ())),
+                "wl_seat"       => evh.seat       = Some(registry.bind(name, 4, qh, ())), // require version 4
                 "xdg_wm_base"   => evh.wm         = Some(registry.bind(name, 1, qh, ())),
                 _ => ()
             }
@@ -800,15 +997,17 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
                 
             },
 
-            WlKeyboardEvent::Enter { surface, keys: _keys, .. } => {
-
-                // TODO: handle "keys" field that is passed here ^^
+            WlKeyboardEvent::Enter { surface, .. } => {
 
                 let id = get_window_id(&surface);
                 evl.keyboard_data.has_focus = id;
 
-
                 evl.events.push(Event::Window { id, event: WindowEvent::Enter });
+
+                // note: we ignore the pressed keys here, as this is how most of my programs behave
+                // TODO: generate synthetic KEYDOWN / KEYUP events for
+                //     - Keys that are pressed here (keys fields of the ENTER event)
+                //     - Keys that should be released because focus is lost (currently down keys on the LEAVE event)
                 
             },
 
@@ -816,51 +1015,78 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
 
                 evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event: WindowEvent::Leave});
 
+                evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Disarmed, timerfd::SetTimeFlags::Default);
                 evl.keyboard_data.has_focus = 0;
 
             },
 
             WlKeyboardEvent::Key { key, state, .. } => {
 
-                // let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state else { return };
+                if let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state {
 
-                let down = match state {
-                    WEnum::Value(KeyState::Pressed) => true,
-                    WEnum::Value(KeyState::Released) => false,
-                    WEnum::Value(..) => return,
-                    WEnum::Unknown(..) => return
+                    let down = match state {
+                        WEnum::Value(KeyState::Pressed) => true,
+                        WEnum::Value(KeyState::Released) => false,
+                        WEnum::Value(..) => return,
+                        WEnum::Unknown(..) => return
+                    };
+
+                    let xkb_key = xkb::Keycode::new(key + 8); // says the wayland docs
+                    let key = Key::Unknown(xkb_key.raw());
+                    // let key = translate_xkb_sym(xkb_sym);
+
+                    let event = if down {
+
+                        let xkb_sym = xkb_state.key_get_one_sym(xkb_key);
+                        println!("{:?}", xkb_sym);
+
+                        // arm key-repeat timer with the correct delay and repeat rate
+                        evl.keyboard_data.repeat_key = key;
+                        evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Periodic {
+                            current: evl.keyboard_data.repeat_delay,
+                            interval: evl.keyboard_data.repeat_rate
+                        }, timerfd::SetTimeFlags::Default);
+
+                        WindowEvent::KeyDown { key, repeat: false }
+
+                    } else {
+
+                        // unarm key-repeat timer
+                        evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Disarmed, timerfd::SetTimeFlags::Default);
+
+                        WindowEvent::KeyUp { key }
+
+                    };
+
+                    evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event })
+                    
                 };
-
-                let xkb_key = xkb::Keycode::new(key + 8); // says the wayland docs
-
-                // let results = xkb_state.key_get_syms(xkb_key);
-                // for result in results {
-                //     println!("-> {:?} {:?}", direction, result);
-                // }
-
-                // let result = xkb_state.key_get_utf8(xkb_key);
-                // xkb_state.update_key(xkb::Keycode::new(xkb_key), direction);
-
-                let event = if down {
-                    WindowEvent::KeyDown { key: Key::Unknown(xkb_key.raw()), repeat: false }
-                    // TODO: shedule key-repeat
-                } else {
-                    WindowEvent::KeyUp { key: Key::Unknown(xkb_key.raw()) }
-                };
-
-                evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event })
                 
             },
 
             WlKeyboardEvent::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
 
-                let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state else { return };
-
-                xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                if let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state {
+                    xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                }
                 
             },
 
-            WlKeyboardEvent::RepeatInfo { rate, delay } => (), // TODO: impl key-repeat with timer
+            WlKeyboardEvent::RepeatInfo { rate, delay } => {
+
+                if rate > 0 {
+                    
+                    evl.keyboard_data.repeat_rate = Duration::from_millis(1000 / rate as u64);
+                    evl.keyboard_data.repeat_delay = Duration::from_millis(delay as u64);
+                
+                } else {
+
+                    evl.keyboard_data.repeat_rate = Duration::ZERO;
+                    evl.keyboard_data.repeat_delay = Duration::ZERO;
+                    
+                }
+
+            },
 
             _ => (),
             

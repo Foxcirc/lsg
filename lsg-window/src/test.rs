@@ -55,7 +55,7 @@ fn wayland() -> anyhow::Result<()> {
                 },
                 WindowEvent::Resize { size, flags } => {
                     // println!("resizing to: {:?}", size);
-                    eprintln!("FLAGS: {:?}", flags);
+                    // eprintln!("FLAGS: {:?}", flags);
                     // let size = Size { width: 300, height: 300 };
                     // ctx.resize(Size { width: 300, height: 300 });
                     ctx.resize(size);
@@ -64,12 +64,15 @@ fn wayland() -> anyhow::Result<()> {
                     // window.request_redraw();
                 },
                 WindowEvent::MouseDown { x, y, button } => {
-                    println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
+                    // println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
                 },
                 WindowEvent::MouseScroll { axis, value } => {
-                    println!("scrolling with axis = {:?}, value = {}", axis, value);
+                    // println!("scrolling with axis = {:?}, value = {}", axis, value);
+                },
+                WindowEvent::KeyDown { key, repeat } => {
+                    // println!("keydown! (repeat = {})", repeat);
                 }
-                _ => ()
+                _ => (),
             },
         }
     })?;

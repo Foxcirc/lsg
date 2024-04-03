@@ -775,6 +775,7 @@ dependencies = [
  "libc",
  "lsg-gl",
  "rustix",
+ "timerfd",
  "wayland-client",
  "wayland-egl",
  "wayland-protocols",
@@ -1255,6 +1256,15 @@ checksum = "3fdd6f064ccff2d6567adcb3873ca630700f00b5ad3f060c25b5dcfd9a4ce152"
 dependencies = [
  "cfg-if",
  "once_cell",
+]
+
+[[package]]
+name = "timerfd"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84e482e368cf7efa2c8b570f476e5b9fd9fd5e9b9219fc567832b05f13511091"
+dependencies = [
+ "rustix",
 ]
 
 [[package]]
