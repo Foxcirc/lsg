@@ -66,21 +66,25 @@ fn wayland() -> anyhow::Result<()> {
                     // window.request_redraw();
                 },
                 WindowEvent::MouseDown { x, y, button } => {
-                    // println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
+                    println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
                 },
                 WindowEvent::MouseScroll { axis, value } => {
-                    // println!("scrolling with axis = {:?}, value = {}", axis, value);
+                    println!("scrolling with axis = {:?}, value = {}", axis, value);
                 },
-                WindowEvent::KeyDown { key, repeat } => {
+                WindowEvent::KeyDown { key, .. } => {
                     if !key.modifier() {
                         if let Key::Char(chr) = key {
-                            print!("{chr}");
+                            print!("{}", chr);
                             std::io::stdout().flush().unwrap();
                         } else {
-                            println!("\n{:?} (repeat {})", key, repeat);
+                            println!("\n{:?}", key);
                         }
                     }
-                }
+                },
+                WindowEvent::KeyInput { text, .. } => {
+                    print!("{}", text);
+                    std::io::stdout().flush().unwrap();
+                },
                 _ => (),
             },
         }

@@ -5,13 +5,14 @@
 [x] User events
 [x] Correct keyboard mapping
 [x] Key repeat
+[ ] Special text input mode
+[ ] IME
 [ ] Window transparency
 [ ] Drag 'n drop
 [ ] Monitor handling
 [ ] Dpi handling / Logical Scaling
 [x] OpenGL context creation (EGL)
 [ ] Full Async
-[ ] IME
 [x] Continious Redraw + Vsync
 [ ] Handling things like sigterm as the Quit event
 [ ] Request user attention
