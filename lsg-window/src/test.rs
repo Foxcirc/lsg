@@ -88,7 +88,7 @@ fn wayland() -> anyhow::Result<()> {
                     std::io::stdout().flush().unwrap();
                 },
                 WindowEvent::TextInput { chr } => {
-                    print!("{:?}", chr);
+                    print!("{}", chr);
                     std::io::stdout().flush().unwrap();
                 },
                 _ => (),

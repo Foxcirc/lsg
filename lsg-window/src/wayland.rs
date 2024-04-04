@@ -1195,7 +1195,7 @@ fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, so
     if dir == Direction::Down {
 
         // arm key-repeat timer with the correct delay and repeat rate
-        if source == Source::Event {
+        if source == Source::Event { // only re-arm if this was NOT called from a repeated key event
             evl.keyboard_data.repeat_key = raw_key;
             evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Periodic {
                 current: evl.keyboard_data.repeat_delay,
@@ -1210,28 +1210,22 @@ fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, so
             InputMode::SingleKey => {
                 let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
                 let key = translate_xkb_sym(xkb_sym);
-                events.push(WindowEvent::KeyDown { key, repeat: false });
+                events.push(WindowEvent::KeyDown { key, repeat });
             },
             InputMode::Text => {
                 let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
                 keymap_specific.compose_state.feed(xkb_sym);
-                // println!("state: {:?}", keymap_specific.compose_state.status());
                 match keymap_specific.compose_state.status() {
                     xkb::Status::Nothing => {
-                        let text = keymap_specific.xkb_state.key_get_utf8(xkb_key);
-                        if !text.is_empty() {
-                            for chr in text.chars() {
-                                events.push(WindowEvent::TextInput { chr })
-                            }
+                        if let Some(chr) = xkb_sym.key_char() {
+                            events.push(WindowEvent::TextInput { chr })
                         } else {
-                            let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key); // TODO: verify that this (SECOND) invokation of key_get_xxx doesn't consume any mods or smth and still produces the correct key
                             let key = translate_xkb_sym(xkb_sym);
                             events.push(WindowEvent::KeyDown { key, repeat });
                         }
                     },
                     xkb::Status::Composing => {
-                        // sadly we can't just get the utf8 repr of a dead-char
-                        let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
+                        // sadly we can't just get the string repr of a dead-char
                         if let Some(chr) = translate_dead_to_normal_sym(xkb_sym).and_then(xkb::Keysym::key_char) {
                             events.push(WindowEvent::TextCompose { chr })
                         }
@@ -1242,6 +1236,7 @@ fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, so
                                 events.push(WindowEvent::TextInput { chr })
                             }
                         }
+                        keymap_specific.compose_state.reset();
                     },
                     xkb::Status::Cancelled => {},
                 }
