@@ -32,10 +32,10 @@ pub struct EventLoop<T: 'static = ()> {
     queue: Option<EventQueue<Self>>,
     wayland: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
+    nah_what_the_fuck: Option<EvlError>, // TODO: use Evl instead of EventLoop always
     proxy_data: EventLoopProxyData<T>,
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
-    // focus: Option<Focus
 }
 
 struct KeyboardData {
@@ -50,9 +50,7 @@ struct KeyboardData {
 }
 
 struct KeymapSpecificData {
-    _xkb_keymap: xkb::Keymap,
     xkb_state: xkb::State,
-    _compose_table: xkb::Table,
     compose_state: xkb::compose::State,
     pressed_keys: PressedKeys,
 }
@@ -167,6 +165,7 @@ impl<T: 'static> EventLoop<T> {
             qh,
             wayland: globals,
             events: Vec::with_capacity(4),
+            nah_what_the_fuck: None,
             proxy_data,
             mouse_data: MouseData { has_focus: 0, x: 0.0, y: 0.0 },
             keyboard_data: KeyboardData {
@@ -418,8 +417,6 @@ impl<T> Window<T> {
             guard.redraw_requested = true; // wait for the frame callback to send the redraw event
         } else {
             self.proxy.send(Event::Window { id: guard.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
-            // TODO: this event will be immediatly processed before the event loop get's a real change to run
-            //       make the event loop try processing system events first after the callback generated an event (nonblocking, just check if there are any new sys events)
         }
     }
 
@@ -870,7 +867,7 @@ impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
             match &interface[..] {
                 "wl_compositor" => evh.compositor = Some(registry.bind(name, 1, qh, ())),
                 // "wl_shm"        => evh.shm        = Some(registry.bind(name, 1, qh, ())),
-                "wl_seat"       => evh.seat       = Some(registry.bind(name, 4, qh, ())), // require version 4
+                "wl_seat"       => evh.seat       = Some(registry.bind(name, 4, qh, ())), // we require version 4 (because of key repeat)
                 "xdg_wm_base"   => evh.wm         = Some(registry.bind(name, 1, qh, ())),
                 _ => ()
             }
@@ -889,8 +886,6 @@ impl wayland_client::Dispatch<WlSeat, ()> for UninitWaylandGlobals {
     ) {
         if let WlSeatEvent::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
             evh.capabilities = Some(capabilities);
-            // TODO: enable capabilities being dynamically updated (eg. user unpluggs keyboard)
-            // we will get the keyboard and pointer later
         }
     }
 }
@@ -1061,13 +1056,17 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
 
                 // initialize keymap & keyboard state
 
-                let xkb_keymap = unsafe {
-                    xkb::Keymap::new_from_fd(
+                let xkb_keymap = {
+                    match unsafe { xkb::Keymap::new_from_fd(
                         &evl.keyboard_data.xkb_context,
                         fd, size as usize,
                         xkb::FORMAT_TEXT_V1,
                         xkb::KEYMAP_COMPILE_NO_FLAGS
-                    ).expect("todo").expect("todo")
+                    ) } {
+                        Ok(Some(val)) => val,
+                        Ok(None) => { evl.nah_what_the_fuck = Some(EvlError::InvalidKeymap); return },
+                        Err(err) => { evl.nah_what_the_fuck = Some(EvlError::Io(err));       return }
+                    }
                 };
 
                 let xkb_state = xkb::State::new(&xkb_keymap);
@@ -1078,17 +1077,19 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
                 let locale = env::var_os("LANG")
                     .unwrap_or_else(|| "en_US.UTF-8".into());
 
-                let compose_table = xkb::Table::new_from_locale(
+                let compose_table = match xkb::Table::new_from_locale(
                     &evl.keyboard_data.xkb_context,
                     &locale,
                     xkb::COMPILE_NO_FLAGS
-                ).expect("todo");
+                ) {
+                    Ok(val) => val,
+                    Err(..) => { evl.nah_what_the_fuck = Some(EvlError::InvalidLocale); return }
+                };
 
                 let compose_state = xkb::compose::State::new(&compose_table, xkb::STATE_NO_FLAGS);
 
                 evl.keyboard_data.keymap_specific = Some(KeymapSpecificData {
-                    _xkb_keymap: xkb_keymap, xkb_state, _compose_table: compose_table,
-                    compose_state, pressed_keys
+                    xkb_state, compose_state, pressed_keys
                 })
                 
             },
@@ -1113,16 +1114,18 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
 
             WlKeyboardEvent::Leave { .. } => {
 
-                let Some(ref keymap_specific) = evl.keyboard_data.keymap_specific else { return };
+                if let Some(ref keymap_specific) = evl.keyboard_data.keymap_specific {
 
-                evl.keyboard_data.has_focus = 0;
+                    evl.keyboard_data.has_focus = 0;
 
-                evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event: WindowEvent::Leave});
+                    evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event: WindowEvent::Leave});
 
-                // emit a synthetic key-up event for all keys that are still pressed
-                for key in keymap_specific.pressed_keys.keys_down() {
-                    process_key_event(evl, key.raw(), Direction::Up, Source::Event);
-                }
+                    // emit a synthetic key-up event for all keys that are still pressed
+                    for key in keymap_specific.pressed_keys.keys_down() {
+                        process_key_event(evl, key.raw(), Direction::Up, Source::Event);
+                    }
+                    
+                };
 
             },
 
@@ -1142,24 +1145,20 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
 
             WlKeyboardEvent::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
 
-                let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
-
-                keymap_specific.xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                if let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific {
+                    keymap_specific.xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                };
                 
             },
 
             WlKeyboardEvent::RepeatInfo { rate, delay } => {
 
                 if rate > 0 {
-                    
                     evl.keyboard_data.repeat_rate = Duration::from_millis(1000 / rate as u64);
                     evl.keyboard_data.repeat_delay = Duration::from_millis(delay as u64);
-                
                 } else {
-
                     evl.keyboard_data.repeat_rate = Duration::ZERO;
                     evl.keyboard_data.repeat_delay = Duration::ZERO;
-                    
                 }
 
             },
@@ -1383,6 +1382,8 @@ pub enum EvlError {
     NoDisplay,
     WaylandEgl(wayland_egl::Error),
     Io(io::Error),
+    InvalidKeymap,
+    InvalidLocale,
     Unsupported,
     EglUnsupported,
 }
@@ -1397,6 +1398,8 @@ impl fmt::Display for EvlError {
             Self::NoDisplay         => "cannot get egl display".to_string(),
             Self::WaylandEgl(value) => value.to_string(),
             Self::Io(value)         => value.to_string(),
+            Self::InvalidKeymap     => "invalid/unknown keymap".to_string(),
+            Self::InvalidKeymap     => "invalid/unknown locale".to_string(),
             Self::Unsupported       => "required wayland features not present".to_string(),
             Self::EglUnsupported    => "required egl features not present".to_string(),
         })
