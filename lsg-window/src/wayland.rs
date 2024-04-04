@@ -23,7 +23,7 @@ use wayland_protocols::xdg::shell::client::{
 use khronos_egl as egl;
 use rustix::{event::{PollFd, PollFlags, poll}, fd::AsFd};
 use xkbcommon::xkb;
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration, env};
 
 pub struct EventLoop<T: 'static = ()> {
     running: bool,
@@ -41,12 +41,19 @@ pub struct EventLoop<T: 'static = ()> {
 struct KeyboardData {
     has_focus: WindowId,
     xkb_context: xkb::Context,
-    xkb_keymap: Option<xkb::Keymap>,
-    xkb_state: Option<xkb::State>,
+    keymap_specific: Option<KeymapSpecificData>, // (re)initialized when a keymap is loaded
     repeat_timer: timerfd::TimerFd,
-    repeat_key: Key,
+    repeat_key: u32, // raw key
     repeat_rate: Duration,
     repeat_delay: Duration,
+    input_mode: InputMode,
+}
+
+struct KeymapSpecificData {
+    _xkb_keymap: xkb::Keymap,
+    xkb_state: xkb::State,
+    _compose_table: xkb::Table,
+    compose_state: xkb::compose::State,
     pressed_keys: PressedKeys,
 }
 
@@ -62,15 +69,16 @@ struct PressedKeys {
 }
 
 impl PressedKeys {
-    pub fn uninit() -> Self {
-        Self { min: xkb::Keycode::new(xkb::KEYCODE_INVALID), keys: Vec::new() }
-    }
-    pub fn initialize(&mut self, keymap: &xkb::Keymap) {
+    pub fn new(keymap: &xkb::Keymap) -> Self {
         let min = keymap.min_keycode();
         let max = keymap.max_keycode();
         let len = max.raw() - min.raw();
-        self.keys.resize(len as usize, 0);
-        self.min = min;
+        let mut keys = Vec::new();
+        keys.resize(len as usize, 0);
+        Self {
+            min,
+            keys
+        }
     }
     pub fn key_down(&mut self, key: xkb::Keycode) {
         let (byte, bit) = self.get_indicies(key);
@@ -81,7 +89,7 @@ impl PressedKeys {
         self.keys[byte] &= !(1 << bit)
     }
     pub fn keys_down(&self) -> Vec<xkb::Keycode> {
-        let mut down = Vec::new(); // TODO: remove allocation and use iterator
+        let mut down = Vec::new(); // we can't return anything that borrows self
         for (byte, val) in self.keys.iter().enumerate() {
             for bit in 0..7 {
                 if (*val & (1 << bit)) > 0 { // > 0 is important here
@@ -162,15 +170,14 @@ impl<T: 'static> EventLoop<T> {
             proxy_data,
             mouse_data: MouseData { has_focus: 0, x: 0.0, y: 0.0 },
             keyboard_data: KeyboardData {
-                xkb_context,
-                xkb_keymap: None,
-                xkb_state: None,
                 has_focus: 0,
-                repeat_timer: timerfd::TimerFd::new().expect("todo"),
-                repeat_key: Key::Unknown(0),
+                xkb_context,
+                keymap_specific: None,
+                repeat_timer: timerfd::TimerFd::new()?,
+                repeat_key: 0,
                 repeat_rate: Duration::ZERO,
                 repeat_delay: Duration::ZERO,
-                pressed_keys: PressedKeys::uninit(),
+                input_mode: InputMode::SingleKey,
             },
         };
 
@@ -250,8 +257,8 @@ impl<T: 'static> EventLoop<T> {
             if timer_events.contains(PollFlags::IN) {
                 self.keyboard_data.repeat_timer.read(); // make sure to read
                 // emit the sysnthetic key-repeat event
-                let event = WindowEvent::KeyDown { key: self.keyboard_data.repeat_key, repeat: true };
-                events.push(Event::Window { id: self.keyboard_data.has_focus, event });
+                let key = self.keyboard_data.repeat_key;
+                process_key_event(&mut self, key, Direction::Down, Source::KeyRepeat);
             }
 
         }
@@ -283,6 +290,10 @@ impl<T: 'static> EventLoop<T> {
 
     pub fn exit(&mut self) {
         self.running = false
+    }
+
+    pub fn input_mode(&mut self, mode: InputMode) {
+        self.keyboard_data.input_mode = mode;
     }
 
 }
@@ -622,7 +633,14 @@ pub enum WindowEvent {
     MouseScroll { axis: ScrollAxis, value: f64 },
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
-    KeyInput { text: String, repeat: bool },
+    TextCompose { chr: char },
+    TextInput { chr: char },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InputMode {
+    SingleKey,
+    Text,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -668,6 +686,20 @@ impl Key {
             Self::Alt | Self::AltGr | Self::Super
         )
     }
+}
+
+fn translate_dead_to_normal_sym(xkb_sym: xkb::Keysym) -> Option<xkb::Keysym> {
+
+    use xkb::Keysym;
+    
+    match xkb_sym {
+        Keysym::dead_acute      => Some(Keysym::acute),
+        Keysym::dead_grave      => Some(Keysym::grave),
+        Keysym::dead_circumflex => Some(Keysym::asciicircum),
+        Keysym::dead_tilde      => Some(Keysym::asciitilde),
+        _ => None
+    }
+    
 }
 
 /// Look at the source and see how keys are translated.
@@ -1027,21 +1059,37 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
 
             WlKeyboardEvent::Keymap { fd, size, .. } => {
 
-                let keymap = unsafe {
-                    let Ok(Some(value)) = xkb::Keymap::new_from_fd(
+                // initialize keymap & keyboard state
+
+                let xkb_keymap = unsafe {
+                    xkb::Keymap::new_from_fd(
                         &evl.keyboard_data.xkb_context,
                         fd, size as usize,
                         xkb::FORMAT_TEXT_V1,
                         xkb::KEYMAP_COMPILE_NO_FLAGS
-                    ) else { return };
-                    value
+                    ).expect("todo").expect("todo")
                 };
 
-                let state = xkb::State::new(&keymap);
+                let xkb_state = xkb::State::new(&xkb_keymap);
+                let pressed_keys = PressedKeys::new(&xkb_keymap);
 
-                evl.keyboard_data.pressed_keys.initialize(&keymap);
-                evl.keyboard_data.xkb_keymap = Some(keymap);
-                evl.keyboard_data.xkb_state = Some(state);
+                // initialize composition state
+
+                let locale = env::var_os("LANG")
+                    .unwrap_or_else(|| "en_US.UTF-8".into());
+
+                let compose_table = xkb::Table::new_from_locale(
+                    &evl.keyboard_data.xkb_context,
+                    &locale,
+                    xkb::COMPILE_NO_FLAGS
+                ).expect("todo");
+
+                let compose_state = xkb::compose::State::new(&compose_table, xkb::STATE_NO_FLAGS);
+
+                evl.keyboard_data.keymap_specific = Some(KeymapSpecificData {
+                    _xkb_keymap: xkb_keymap, xkb_state, _compose_table: compose_table,
+                    compose_state, pressed_keys
+                })
                 
             },
 
@@ -1058,43 +1106,45 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
 
                 // emit a key-down event for all keys that are pressed when entering focus
                 for raw_key in iter {
-                    process_key_event(evl, raw_key, true /* keydown */);
+                    process_key_event(evl, raw_key, Direction::Down, Source::Event);
                 }
 
             },
 
             WlKeyboardEvent::Leave { .. } => {
 
+                let Some(ref keymap_specific) = evl.keyboard_data.keymap_specific else { return };
+
                 evl.keyboard_data.has_focus = 0;
 
                 evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event: WindowEvent::Leave});
 
                 // emit a synthetic key-up event for all keys that are still pressed
-                for key in evl.keyboard_data.pressed_keys.keys_down() {
-                    process_key_event(evl, key.raw(), false);
+                for key in keymap_specific.pressed_keys.keys_down() {
+                    process_key_event(evl, key.raw(), Direction::Up, Source::Event);
                 }
 
             },
 
             WlKeyboardEvent::Key { key: raw_key, state, .. } => {
 
-                let down = match state {
-                    WEnum::Value(KeyState::Pressed) => true,
-                    WEnum::Value(KeyState::Released) => false,
+                let dir = match state {
+                    WEnum::Value(KeyState::Pressed) => Direction::Down,
+                    WEnum::Value(KeyState::Released) => Direction::Up,
                     WEnum::Value(..) => return,
                     WEnum::Unknown(..) => return
                 };
 
-                process_key_event(evl, raw_key, down);
+                process_key_event(evl, raw_key, dir, Source::Event);
 
                 
             },
 
             WlKeyboardEvent::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
 
-                if let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state {
-                    xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
-                }
+                let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
+
+                keymap_specific.xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
                 
             },
 
@@ -1118,47 +1168,106 @@ impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
             
         }
 
-        fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, down: bool) {
+    }
+}
 
-            if let Some(ref mut xkb_state) = evl.keyboard_data.xkb_state {
+#[derive(PartialEq, Eq)]
+enum Direction {
+    Down,
+    Up,
+}
 
-                let xkb_key = xkb::Keycode::new(raw_key + 8); // says the wayland docs
-                let xkb_sym = xkb_state.key_get_one_sym(xkb_key);
-                let key = translate_xkb_sym(xkb_sym);
+#[derive(PartialEq, Eq)]
+enum Source {
+    Event,
+    KeyRepeat,
+}
 
-                let event = if down {
+fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, source: Source) {
 
-                    // arm key-repeat timer with the correct delay and repeat rate
-                    evl.keyboard_data.repeat_key = key;
-                    evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Periodic {
-                        current: evl.keyboard_data.repeat_delay,
-                        interval: evl.keyboard_data.repeat_rate
-                    }, timerfd::SetTimeFlags::Default);
+    let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
 
-                    // update the key state
-                    evl.keyboard_data.pressed_keys.key_down(xkb_key);
+    let xkb_key = xkb::Keycode::new(raw_key + 8); // says the wayland docs
+    let mut events = Vec::with_capacity(1); // TODO: use a smallvec
 
-                    WindowEvent::KeyDown { key, repeat: false }
+    let repeat = source == Source::KeyRepeat;
 
-                } else {
+    if dir == Direction::Down {
 
-                    // unarm key-repeat timer
-                    evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Disarmed, timerfd::SetTimeFlags::Default);
+        // arm key-repeat timer with the correct delay and repeat rate
+        if source == Source::Event {
+            evl.keyboard_data.repeat_key = raw_key;
+            evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Periodic {
+                current: evl.keyboard_data.repeat_delay,
+                interval: evl.keyboard_data.repeat_rate
+            }, timerfd::SetTimeFlags::Default);
 
-                    // update the key state
-                    evl.keyboard_data.pressed_keys.key_up(xkb_key);
-
-                    WindowEvent::KeyUp { key }
-
-                };
-
-                evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event })
-
-            }
-            
+            // update the key state
+            keymap_specific.pressed_keys.key_down(xkb_key);
         }
 
+        match evl.keyboard_data.input_mode {
+            InputMode::SingleKey => {
+                let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
+                let key = translate_xkb_sym(xkb_sym);
+                events.push(WindowEvent::KeyDown { key, repeat: false });
+            },
+            InputMode::Text => {
+                let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
+                keymap_specific.compose_state.feed(xkb_sym);
+                // println!("state: {:?}", keymap_specific.compose_state.status());
+                match keymap_specific.compose_state.status() {
+                    xkb::Status::Nothing => {
+                        let text = keymap_specific.xkb_state.key_get_utf8(xkb_key);
+                        if !text.is_empty() {
+                            for chr in text.chars() {
+                                events.push(WindowEvent::TextInput { chr })
+                            }
+                        } else {
+                            let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key); // TODO: verify that this (SECOND) invokation of key_get_xxx doesn't consume any mods or smth and still produces the correct key
+                            let key = translate_xkb_sym(xkb_sym);
+                            events.push(WindowEvent::KeyDown { key, repeat });
+                        }
+                    },
+                    xkb::Status::Composing => {
+                        // sadly we can't just get the utf8 repr of a dead-char
+                        let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
+                        if let Some(chr) = translate_dead_to_normal_sym(xkb_sym).and_then(xkb::Keysym::key_char) {
+                            events.push(WindowEvent::TextCompose { chr })
+                        }
+                    },
+                    xkb::Status::Composed => {
+                        if let Some(text) = keymap_specific.compose_state.utf8() {
+                            for chr in text.chars() {
+                                events.push(WindowEvent::TextInput { chr })
+                            }
+                        }
+                    },
+                    xkb::Status::Cancelled => {},
+                }
+            }
+        }
+
+    } else {
+
+        // unarm key-repeat timer
+        evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Disarmed, timerfd::SetTimeFlags::Default);
+
+        // update the key state
+        keymap_specific.pressed_keys.key_up(xkb_key);
+
+        if let InputMode::SingleKey = evl.keyboard_data.input_mode {
+            let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
+            let key = translate_xkb_sym(xkb_sym);
+            events.push(WindowEvent::KeyUp { key });
+        }
+
+    };
+
+    for event in events {
+        evl.events.push(Event::Window { id: evl.keyboard_data.has_focus, event })
     }
+
 }
 
 impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {

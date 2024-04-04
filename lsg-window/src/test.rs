@@ -37,6 +37,8 @@ fn wayland() -> anyhow::Result<()> {
     window.request_redraw();
     window.transparency(false);
 
+    evl.input_mode(InputMode::Text);
+
     // run the event loop
     evl.run(move |evl, event| {
         match event {
@@ -81,8 +83,12 @@ fn wayland() -> anyhow::Result<()> {
                         }
                     }
                 },
-                WindowEvent::KeyInput { text, .. } => {
-                    print!("{}", text);
+                WindowEvent::TextCompose { chr } => {
+                    print!("\x1b[31m{}\x1b[0m", chr);
+                    std::io::stdout().flush().unwrap();
+                },
+                WindowEvent::TextInput { chr } => {
+                    print!("{:?}", chr);
                     std::io::stdout().flush().unwrap();
                 },
                 _ => (),
