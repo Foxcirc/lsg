@@ -183,7 +183,7 @@ impl GlutinState {
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
 
         use glutin::surface::GlSurface;
-        println!("resized: {:?}", size);
+        // println!("resized: {:?}", size);
 
         self.surface.resize(
             &self.context,
@@ -199,7 +199,7 @@ impl GlutinState {
 
         use glutin::surface::GlSurface;
 
-        lsg_gl::clear(1.0, 0.0, 0.0, 1.0);
+        lsg_gl::clear(1.0, 0.0, 0.0, 0.5);
         // lsg_gl::draw_arrays(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 0, 6);
         lsg_gl::draw_elements(&self.program, &self.vao, lsg_gl::Primitive::Triangles, 3);
 

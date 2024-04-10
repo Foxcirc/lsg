@@ -1,5 +1,5 @@
-use std::io::Write;
 
+use std::io::Write;
 
 #[test]
 fn wayland() -> anyhow::Result<()> {
@@ -8,14 +8,6 @@ fn wayland() -> anyhow::Result<()> {
 
     // create a new event loop, this will initialize a connection to the wayland compositor
     let mut evl = EventLoop::new()?;
-
-    // EVH SHOULD ONLY BE NEEDED FOR
-    // - Creating an EGL Instance CHECK
-    // - Opening a window CHECK
-    // - Exiting CHECK
-    // - Iterating monitors NAH
-    // - CONTINIOUS REDRAW CHECK
-    // - FOCUS events
 
     let proxy = evl.new_proxy();
     proxy.send(Event::User("Hello world!"))?;
@@ -29,22 +21,22 @@ fn wayland() -> anyhow::Result<()> {
     
     let size = Size { width: 500, height: 500 };
     let mut window = Window::new(&mut evl, size); // the actual window is stored inside the event loop, wh represents a handle to the window, it's just a usize
-    // window.force_size(Some(size));
-    // window.max_size(Some(size));
-    let ctx = EglContext::new(&egl, &window, size)?; // create an egl context for our window
+    // window.set_size(Some(size)); // TODO: test if this brings back the resizing stutter problem
+    // window.force_max_size(Some(size)); // TODO: or this
+    let mut ctx = EglContext::new(&egl, &window, size)?; // create an egl context for our window
     ctx.bind(&egl)?; // make the context current
 
-    window.request_redraw();
-    window.transparency(false);
+    window.set_transparent(true);
+    evl.set_input_mode(InputMode::SingleKey);
 
-    evl.input_mode(InputMode::Text);
+    let mut max = false;
 
     // run the event loop
     evl.run(move |evl, event| {
         match event {
             Event::Resume => {
                 window.title("lsg-test");
-                window.class("lsg-test");
+                window.application("lsg-test");
             }, // TODO: implement the suspend event
             Event::Suspend => unimplemented!(),
             Event::Quit => evl.exit(),
@@ -52,12 +44,14 @@ fn wayland() -> anyhow::Result<()> {
             Event::Window { id: _id, event } => match event {
                 WindowEvent::Close => evl.quit(),
                 WindowEvent::Redraw => {
-                    lsg_gl::clear(1.0, 0.0, 0.0, 1.0);
+                    lsg_gl::clear(0.0, 0.0, 0.0, 0.0);
                     let token = window.pre_present_notify();
-                    ctx.swap_buffers(&egl, token).unwrap();
-                    // window.request_redraw();
+                    // ctx.swap_buffers(&egl, token).unwrap();
+                    let damage = [Rect::new(0, 0, 100, 100)];
+                    ctx.swap_buffers(&egl, &damage, token).unwrap();
+                    window.request_redraw(token); // fuck. you.
                 },
-                WindowEvent::Resize { size, flags } => {
+                WindowEvent::Resize { size, .. } => {
                     // println!("resizing to: {:?}", size);
                     // eprintln!("FLAGS: {:?}", flags);
                     // let size = Size { width: 300, height: 300 };
@@ -74,6 +68,10 @@ fn wayland() -> anyhow::Result<()> {
                     println!("scrolling with axis = {:?}, value = {}", axis, value);
                 },
                 WindowEvent::KeyDown { key, .. } => {
+                    if let Key::Tab = key {
+                        max = !max;
+                        window.fullscreen(max);
+                    }
                     if !key.modifier() {
                         if let Key::Char(chr) = key {
                             print!("{}", chr);

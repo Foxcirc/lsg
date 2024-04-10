@@ -5,23 +5,26 @@
 [x] User events
 [x] Correct keyboard mapping
 [x] Key repeat
-[ ] Special text input mode
+[x] Special text input mode & Dead keys
 [ ] IME
-[ ] Window transparency
+[x] Window transparency
 [ ] Drag 'n drop
 [ ] Monitor handling
+[x] Fullscreen (no custom video modes for now)
 [ ] Dpi handling / Logical Scaling
 [x] OpenGL context creation (EGL)
+[x] Damage areas (OH YEAH BABY)
 [ ] Full Async
 [x] Continious Redraw + Vsync
 [ ] Handling things like sigterm as the Quit event
 [ ] Request user attention
 [ ] Clean up & TODO's
 
-# Outsources platform features
+# Outsourced platform features
 [ ] Clipboard
 [ ] Notifications
 [ ] System tray
+[ ] File manager
 
 # Platforms that will be supported
 - Linux (Wayland only)

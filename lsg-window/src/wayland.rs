@@ -3,6 +3,7 @@ use wayland_client::{
     protocol::{
         wl_registry::{WlRegistry, Event as WlRegistryEvent},
         wl_compositor::WlCompositor,
+        wl_output::{WlOutput, Event as WlOutputEvent},
         // wl_shm::WlShm,
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
         wl_surface::{WlSurface, Event as WlSurfaceEvent},
@@ -11,7 +12,7 @@ use wayland_client::{
         wl_pointer::{WlPointer, Event as WlPointerEvent, ButtonState, Axis},
         wl_region::WlRegion,
     },
-    WEnum, Proxy, QueueHandle, EventQueue
+    WEnum, Proxy, QueueHandle, EventQueue, globals::{registry_queue_init, GlobalList, GlobalListContents, BindError}
 };
 
 use wayland_protocols::xdg::shell::client::{
@@ -25,7 +26,7 @@ use rustix::{event::{PollFd, PollFlags, poll}, fd::AsFd};
 use xkbcommon::xkb;
 use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration, env};
 
-pub struct EventLoop<T: 'static = ()> {
+pub struct EventLoop<T: 'static /*  = () */> { // TODO: reenable the default type param (= ()) in the end
     running: bool,
     con: wayland_client::Connection,
     qh: QueueHandle<Self>,
@@ -122,33 +123,9 @@ impl<T: 'static> EventLoop<T> {
 
         let con = wayland_client::Connection::connect_to_env()?;
 
-        // initial setup
-        let globals = {
-            
-            let mut queue = con.new_event_queue();
-            let qh = queue.handle();
-
-            let mut globals = UninitWaylandGlobals::default();
-
-            // register wayland globals
-            let display = con.display();
-            display.get_registry(&qh, ());
-
-            // wait for the request to be processed
-            let mut count = 20; // try max 20 rounds
-            while globals.partial() && count > 0 {
-                queue.roundtrip(&mut globals)?;
-                queue.dispatch_pending(&mut globals)?;
-                count -= 1;
-            }
-
-            // assert that all the globals are actually bound
-            globals.finalize().ok_or(EvlError::Unsupported)?
-
-        };
-
-        let queue = con.new_event_queue();
+        let (globals, queue) = registry_queue_init::<Self>(&con).unwrap();
         let qh = queue.handle();
+        let wayland = WaylandState::from_globals(globals, &qh)?;
 
         let proxy_data = {
             let (sender, receiver) = channel();
@@ -163,7 +140,7 @@ impl<T: 'static> EventLoop<T> {
             con,
             queue: Some(queue),
             qh,
-            wayland: globals,
+            wayland,
             events: Vec::with_capacity(4),
             nah_what_the_fuck: None,
             proxy_data,
@@ -187,15 +164,6 @@ impl<T: 'static> EventLoop<T> {
     pub fn run<F: for<'a> FnMut(&'a mut Self, Event<T>)>(mut self, mut cb: F) -> Result<(), EvlError> {
 
         let Some(mut queue) = self.queue.take() else { unreachable!() };
-        let qh = queue.handle();
-
-        // connect keyboard and pointer input
-        if self.wayland.capabilities.contains(WlSeatCapability::Keyboard) {
-            self.wayland.seat.get_keyboard(&qh, ());
-        }
-        if self.wayland.capabilities.contains(WlSeatCapability::Pointer) {
-            self.wayland.seat.get_pointer(&qh, ());
-        }
 
         self.events.push(Event::Resume);
 
@@ -211,7 +179,7 @@ impl<T: 'static> EventLoop<T> {
 
             // foreward the events to the callback
             for event in events.drain(..) {
-                cb(&mut self, event)
+                    cb(&mut self, event)
             }
             
             if !self.running { break } // stop if `exit` was called
@@ -291,7 +259,7 @@ impl<T: 'static> EventLoop<T> {
         self.running = false
     }
 
-    pub fn input_mode(&mut self, mode: InputMode) {
+    pub fn set_input_mode(&mut self, mode: InputMode) {
         self.keyboard_data.input_mode = mode;
     }
 
@@ -319,35 +287,18 @@ impl<T> EventLoopProxy<T> {
 struct WaylandState {
     compositor: WlCompositor,
     // shm: WlShm,
+    output: WlOutput,
     seat: WlSeat,
-    capabilities: WlSeatCapability,
     wm: XdgWmBase,
 }
 
-#[derive(Default, Debug)]
-struct UninitWaylandGlobals {
-    compositor: Option<WlCompositor>,
-    // shm: Option<WlShm>,
-    seat: Option<WlSeat>,
-    capabilities: Option<WlSeatCapability>,
-    wm: Option<XdgWmBase>,
-}
-
-impl UninitWaylandGlobals {
-    pub(crate) fn partial(&self) -> bool {
-        self.compositor.is_none() ||
-        // self.shm.is_none() ||
-        self.seat.is_none() ||
-        self.capabilities.is_none() ||
-        self.wm.is_none()
-    }
-    pub(crate) fn finalize(self) -> Option<WaylandState> {
-        Some(WaylandState {
-            compositor: self.compositor?,
-            // shm: self.shm?,
-            seat: self.seat?,
-            capabilities: self.capabilities?,
-            wm: self.wm?
+impl WaylandState {
+    pub fn from_globals<T>(globals: GlobalList, qh: &QueueHandle<EventLoop<T>>) -> Result<Self, BindError> {
+        Ok(Self {
+            compositor: globals.bind(qh, 4..=4, ())?,
+            output: globals.bind(qh, 1..=1, ())?,
+            seat: globals.bind(qh, 4..=4, ())?,
+            wm: globals.bind(qh, 1..=1, ())?,
         })
     }
 }
@@ -380,7 +331,6 @@ struct WindowShared {
 
 impl<T> Window<T> {
     
-    /// The window will initially be hidden, so you can setup title etc.
     pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
         let surface = evl.wayland.compositor.create_surface(&evl.qh, ());
@@ -411,58 +361,67 @@ impl<T> Window<T> {
         
     }
 
-    pub fn request_redraw(&mut self) {
+    pub fn request_redraw(&mut self, _token: PresentToken) {
         let mut guard = self.shared.lock().unwrap();
-         if guard.frame_callback_registered { // was pre-present-notify called?
-            guard.redraw_requested = true; // wait for the frame callback to send the redraw event
-        } else {
-            self.proxy.send(Event::Window { id: guard.id, event: WindowEvent::Redraw }).unwrap(); // immediatly send the event
-        }
+        guard.redraw_requested = true;
     }
 
     pub fn pre_present_notify(&mut self) -> PresentToken {
-        // it seems you have request the frame callback before swapping buffers
-        // otherwise the callback will never fire because the compositor thinks the content didn't change
+        // note: it seems you have request the frame callback before swapping buffers
+        //       otherwise the callback will never fire because the compositor thinks the content didn't change
         let mut guard = self.shared.lock().unwrap();
-         if guard.frame_callback_registered {
+        if !guard.frame_callback_registered {
             guard.frame_callback_registered = true;
             self.surface.frame(&self.qh, Arc::clone(&self.shared));
             self.surface.commit();
         }
-        PresentToken(())
+        PresentToken { _inner: () }
     }
 
     pub fn title<S: Into<String>>(&self, text: S) {
         self.xdg_toplevel.set_title(text.into());
     }
 
-    pub fn class<S: Into<String>>(&self, text: S) {
+    pub fn application<S: Into<String>>(&self, text: S) {
         self.xdg_toplevel.set_app_id(text.into());
     }
 
-    pub fn transparency(&self, value: bool) {
+    pub fn set_transparent(&self, value: bool) {
         if value {
             self.surface.set_opaque_region(None);
+            self.surface.commit();
         } else {
             let region = self.compositor.create_region(&self.qh, ());
             region.add(0, 0, i32::MAX, i32::MAX);
             self.surface.set_opaque_region(Some(&region));
+            self.surface.commit();
         }
     }
 
-    pub fn fullscreen(&self, _mode: bool) {
-        todo!();
-        // self.xdg_toplevel.set_fullscreen();
-        // self.surface.commit();
+    pub fn maximized(&self, value: bool) {
+        if value {
+            self.xdg_toplevel.set_maximized();
+        } else {
+            self.xdg_toplevel.unset_maximized();
+        };
+        self.surface.commit();
     }
 
-    pub fn force_min_size(&mut self, optional_size: Option<Size>) {
+    pub fn fullscreen(&self, value: bool) {
+        if value {
+            self.xdg_toplevel.set_fullscreen(None);
+        } else {
+            self.xdg_toplevel.unset_fullscreen();
+        };
+    }
+
+    pub fn min_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
         self.surface.commit();
     }
 
-    pub fn force_max_size(&mut self, optional_size: Option<Size>) {
+    pub fn max_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
         self.surface.commit();
@@ -483,10 +442,54 @@ pub struct Size {
     pub height: u32
 }
 
-pub struct PresentToken(());
+impl Size {
+    pub const INFINITE: Size = Size { width: u32::MAX, height: u32::MAX };
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Pos {
+    pub x: u32,
+    pub y: u32
+}
+
+impl Pos {
+    pub const ORIGIN: Pos = Pos { x: 0, y: 0 };
+}
+
+/// A rectangular region on a surface.
+///
+/// The origin is in the top left of the surface.
+/// Normally EGL specifies the origin in the bottom left of the surface but this is **NOT**
+/// what this library does. We recalculate the origin for consistency with windowing systems.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Rect {
+    pub const INFINITE: Self = Self::new(0, 0, i32::MAX, i32::MAX);
+    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
+        Self { x, y, w, h}
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PresentToken { _inner: () }
+
+type FnSwapBuffersWithDamage = fn(
+    khronos_egl::EGLDisplay,
+    khronos_egl::EGLSurface,
+    *const void /* damage rect array */,
+    khronos_egl::Int
+) -> khronos_egl::Int;
 
 pub struct EglInstance {
-    lib: egl::Instance<egl::Static>,
+    lib: Arc<egl::DynamicInstance>,
+    swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
     display: egl::Display,
     config: egl::Config,
 }
@@ -496,7 +499,12 @@ impl EglInstance {
     /// Should be only be called once. Although initializing multiple instances is not a hard error.
     pub fn new<T>(evh: &mut EventLoop<T>) -> Result<EglInstance, EvlError> {
         
-        let lib = egl::Instance::new(egl::Static);
+        let loaded = unsafe {
+            egl::DynamicInstance::<egl::EGL1_5>::load_required()
+                .map_err(|_| EvlError::EglUnsupported)?
+        };
+
+        let lib = Arc::new(loaded);
 
         let wl_display = evh.con.display().id().as_ptr();
         let egl_display = unsafe {
@@ -505,6 +513,12 @@ impl EglInstance {
 
         lib.initialize(egl_display)?;
 
+    	// side note: const EGL_EXTENSIONS = 0x3055
+
+        let func = lib.get_proc_address("eglSwapBuffersWithDamageKHR");
+        let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
+            unsafe { mem::transmute(func) };
+
         let config = {
             let attribs = [
                 egl::SURFACE_TYPE, egl::WINDOW_BIT,
@@ -512,6 +526,7 @@ impl EglInstance {
                 egl::RED_SIZE, 8,
                 egl::GREEN_SIZE, 8,
                 egl::BLUE_SIZE, 8,
+                egl::ALPHA_SIZE, 8,
                 egl::NONE
             ];
             lib.choose_first_config(egl_display, &attribs)?
@@ -520,6 +535,7 @@ impl EglInstance {
 
         Ok(Self {
             lib,
+            swap_buffers_with_damage,
             display: egl_display,
             config,
         })
@@ -534,7 +550,10 @@ impl EglInstance {
 
 /// One-per-window egl context.
 pub struct EglContext {
-    wl_egl_surface: wayland_egl::WlEglSurface, // needs to be kept alive
+    wl_egl_surface: wayland_egl::WlEglSurface, // note: needs to be kept alive
+    width: u32, // updated in resize
+    height: u32,
+    damage_rects: Vec<Rect>, // only here to save some allocations
     egl_surface: egl::Surface,
     egl_context: egl::Context,
 }
@@ -547,7 +566,7 @@ impl EglContext {
         let context = {
             let attribs = [
                 egl::CONTEXT_MAJOR_VERSION, 4,
-                egl::CONTEXT_MINOR_VERSION, 0,
+                egl::CONTEXT_MINOR_VERSION, 0, // TODO: add context options so the version etc. can be configured
                 egl::CONTEXT_CLIENT_VERSION, 3,
                 egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
                 egl::NONE,
@@ -568,6 +587,9 @@ impl EglContext {
 
         Ok(Self {
             wl_egl_surface,
+            width: size.width,
+            height: size.height,
+            damage_rects: Vec::with_capacity(2),
             egl_surface: surface,
             egl_context: context,
         })
@@ -575,7 +597,7 @@ impl EglContext {
     }
 
     /// Make this context current.
-    pub fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+    pub fn bind(&mut self, instance: &EglInstance) -> Result<(), egl::Error> {
 
         instance.lib.make_current(
             instance.display,
@@ -587,16 +609,36 @@ impl EglContext {
     }
 
     /// Returns an error if this context is not the current one.
-    pub fn swap_buffers(&self, instance: &EglInstance, _token: PresentToken) -> Result<(), EvlError> {
+    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect], _token: PresentToken) -> Result<(), EvlError> {
 
-        instance.lib.swap_buffers(instance.display, self.egl_surface)?;
+        // YES IT WORKS, EVEN W/ DAMAGE TRACKING!
+
+        // recalculate the origin of the rects to be in the top left
+
+        self.damage_rects.clear();
+        self.damage_rects.extend_from_slice(damage);
+
+        for rect in self.damage_rects.iter_mut() {
+            rect.y = self.width as i32 - rect.y - rect.h;
+        }
+
+        if let Some(func) = instance.swap_buffers_with_damage {
+            // swap with damage
+            (func)(instance.display.as_ptr(), self.egl_surface.as_ptr(), self.damage_rects.as_ptr().cast(), damage.len() as khronos_egl::Int);
+        } else {
+            // normal swap (if the extension is unsupported)
+            instance.lib.swap_buffers(instance.display, self.egl_surface)?;
+        }
 
         Ok(())
 
     }
 
     /// Don't forget to also resize your opengl viewport!
-    pub fn resize(&self, size: Size) {
+    pub fn resize(&mut self, size: Size) {
+
+        self.width = size.width;
+        self.height = size.height;
 
         self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
         
@@ -647,11 +689,10 @@ pub enum MouseButton {
     Middle,
     X1,
     X2,
-    Unknown,
+    Unknown(u32),
 }
 
-#[derive(Debug, Clone, Copy)] // TODO: write a debug impl
-#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
 pub enum Key {
     Escape,
     Tab,
@@ -854,43 +895,66 @@ pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
 
 }
 
-impl wayland_client::Dispatch<WlRegistry, ()> for UninitWaylandGlobals {
+macro_rules! ignore {
+    ($prxy:ident, $usr:tt) => {
+        fn event(
+            _: &mut Self,
+            _: &$prxy,
+            _: <$prxy as wayland_client::Proxy>::Event,
+            _: &$usr,
+            _: &wayland_client::Connection,
+            _: &wayland_client::QueueHandle<Self>
+        ) { () }
+    };
+}
+
+impl<T> wayland_client::Dispatch<WlRegistry, GlobalListContents> for EventLoop<T> {
+    ignore!(WlRegistry, GlobalListContents);
+}
+
+impl<T> wayland_client::Dispatch<WlOutput, ()> for EventLoop<T> {
     fn event(
-        evh: &mut Self,
-        registry: &WlRegistry,
-        event: WlRegistryEvent,
+        _evl: &mut Self,
+        _seat: &WlOutput,
+        event: WlOutputEvent,
+        _data: &(),
+        _con: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>
+    ) {
+
+        if let WlOutputEvent::Mode { flags, width, height, refresh } = event {
+            println!("{flags:?}, {width:?}, {height:?}, {refresh:?}");
+        }
+
+        else if let WlOutputEvent::Scale { factor } = event {
+            println!("scale factor changed: {factor}");
+        }
+        
+    }
+}
+
+
+impl<T> wayland_client::Dispatch<WlSeat, ()> for EventLoop<T> {
+    fn event(
+        _evl: &mut Self,
+        seat: &WlSeat,
+        event: WlSeatEvent,
         _data: &(),
         _con: &wayland_client::Connection,
         qh: &wayland_client::QueueHandle<Self>
     ) {
-        if let WlRegistryEvent::Global { name, interface, .. } = event {
-            match &interface[..] {
-                "wl_compositor" => evh.compositor = Some(registry.bind(name, 1, qh, ())),
-                // "wl_shm"        => evh.shm        = Some(registry.bind(name, 1, qh, ())),
-                "wl_seat"       => evh.seat       = Some(registry.bind(name, 4, qh, ())), // we require version 4 (because of key repeat)
-                "xdg_wm_base"   => evh.wm         = Some(registry.bind(name, 1, qh, ())),
-                _ => ()
+        if let WlSeatEvent::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
+            if capabilities.contains(WlSeatCapability::Keyboard) {
+                seat.get_keyboard(qh, ());
+            }
+            if capabilities.contains(WlSeatCapability::Pointer) {
+                seat.get_pointer(qh, ());
             }
         }
     }
 }
 
-impl wayland_client::Dispatch<WlSeat, ()> for UninitWaylandGlobals {
-    fn event(
-        evh: &mut Self,
-        _seat: &WlSeat,
-        event: WlSeatEvent,
-        _data: &(),
-        _con: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<Self>
-    ) {
-        if let WlSeatEvent::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
-            evh.capabilities = Some(capabilities);
-        }
-    }
-}
-
-impl wayland_client::Dispatch<XdgWmBase, ()> for UninitWaylandGlobals {
+impl<T> wayland_client::Dispatch<XdgWmBase, ()> for EventLoop<T> {
     fn event(
         _: &mut Self,
         wm: &XdgWmBase,
@@ -1000,21 +1064,8 @@ impl<T> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for Event
     }
 }
 
-macro_rules! ignore {
-    ($prxy:ident) => {
-        fn event(
-            _: &mut Self,
-            _: &$prxy,
-            _: <$prxy as wayland_client::Proxy>::Event,
-            _: &(),
-            _: &wayland_client::Connection,
-            _: &wayland_client::QueueHandle<Self>
-        ) { () }
-    };
-}
-
 // global events
-impl wayland_client::Dispatch<WlCompositor, ()> for UninitWaylandGlobals { ignore!(WlCompositor); }
+impl<T> wayland_client::Dispatch<WlCompositor, ()> for EventLoop<T> { ignore!(WlCompositor, ()); }
 
 // surface events
 impl<T> wayland_client::Dispatch<WlSurface, ()> for EventLoop<T> {
@@ -1037,7 +1088,7 @@ impl<T> wayland_client::Dispatch<WlSurface, ()> for EventLoop<T> {
 }
 
 // region events
-impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion); }
+impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion, ()); }
 
 // input events
 impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
@@ -1187,7 +1238,7 @@ fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, so
     let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
 
     let xkb_key = xkb::Keycode::new(raw_key + 8); // says the wayland docs
-    let mut events = Vec::with_capacity(1); // TODO: use a smallvec
+    let mut events = Vec::with_capacity(1); // TODO: use a smallvec OR use smallstring and only one event
 
     let repeat = source == Source::KeyRepeat;
 
@@ -1321,7 +1372,7 @@ impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
                     BTN_MIDDLE => MouseButton::Middle,
                     BTN_BACK    | BTN_SIDE  => MouseButton::X1,
                     BTN_FORWARD | BTN_EXTRA => MouseButton::X2,
-                    _ => MouseButton::Unknown,
+                    other => MouseButton::Unknown(other),
                 };
 
                 let down = match state {
@@ -1377,6 +1428,7 @@ pub enum ScrollAxis {
 pub enum EvlError {
     Connect(wayland_client::ConnectError),
     Wayland(wayland_client::backend::WaylandError),
+    BindGlobals(BindError),
     Dispatch(wayland_client::DispatchError),
     Egl(egl::Error),
     NoDisplay,
@@ -1393,13 +1445,14 @@ impl fmt::Display for EvlError {
         write!(f, "windowing error: {}", match self {
             Self::Connect(value)    => value.to_string(),
             Self::Wayland(value)    => value.to_string(),
+            Self::BindGlobals(value) => value.to_string(),
             Self::Dispatch(value)   => value.to_string(),
             Self::Egl(value)        => value.to_string(),
             Self::NoDisplay         => "cannot get egl display".to_string(),
             Self::WaylandEgl(value) => value.to_string(),
             Self::Io(value)         => value.to_string(),
             Self::InvalidKeymap     => "invalid/unknown keymap".to_string(),
-            Self::InvalidKeymap     => "invalid/unknown locale".to_string(),
+            Self::InvalidLocale     => "invalid/unknown locale".to_string(),
             Self::Unsupported       => "required wayland features not present".to_string(),
             Self::EglUnsupported    => "required egl features not present".to_string(),
         })
@@ -1417,6 +1470,12 @@ impl From<wayland_client::ConnectError> for EvlError {
 impl From<wayland_client::backend::WaylandError> for EvlError {
     fn from(value: wayland_client::backend::WaylandError) -> Self {
         Self::Wayland(value)
+    }
+}
+
+impl From<BindError> for EvlError {
+    fn from(value: BindError) -> Self {
+        Self::BindGlobals(value)
     }
 }
 
