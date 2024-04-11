@@ -47,7 +47,7 @@ fn wayland() -> anyhow::Result<()> {
             Event::Quit => evl.exit(),
             Event::MonitorUpdate { id, state } => {
                 println!("new monitor with id {id}: {state:?}");
-                println!("refresh as fps: {}", state.fps());
+                println!("refresh as fps: {}", state.info.fps());
             },
             Event::MonitorRemove { .. } => todo!(),
             Event::Window { id: _id, event } => match event {
@@ -85,7 +85,7 @@ fn wayland() -> anyhow::Result<()> {
                 WindowEvent::KeyDown { key, .. } => {
                     if let Key::Tab = key {
                         max = !max;
-                        window.fullscreen(max);
+                        window.fullscreen(max, None);
                     }
                     if !key.modifier() {
                         if let Key::Char(chr) = key {

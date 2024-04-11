@@ -295,7 +295,7 @@ fn get_monitor_id(output: &WlOutput) -> MonitorId {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct Monitor {
+pub struct MonitorInfo {
     pub name: String,
     pub description: String,
     pub size: Size,
@@ -303,11 +303,24 @@ pub struct Monitor {
     pub refresh: u32,
 }
 
-impl Monitor {
+impl MonitorInfo {
     /// Trimmed conversion.
     pub fn fps(&self) -> u32 {
         self.refresh / 1000
     }    
+}
+
+#[derive(Clone)]
+pub struct Monitor {
+    /// Information about the monitor.
+    pub info: MonitorInfo,
+    wl_output: WlOutput,
+}
+
+impl fmt::Debug for Monitor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Monitor {{ info: {:?}, ... }}", self.info)
+    }
 }
 
 pub struct EvlProxy<T> {
@@ -512,9 +525,10 @@ impl<T: 'static + Send> Window<T> {
         self.surface.commit();
     }
 
-    pub fn fullscreen(&self, value: bool) {
+    pub fn fullscreen(&self, value: bool, monitor: Option<&Monitor>) {
         if value {
-            self.xdg_toplevel.set_fullscreen(None);
+            let wl_output = monitor.map(|val| &val.wl_output);
+            self.xdg_toplevel.set_fullscreen(wl_output);
         } else {
             self.xdg_toplevel.unset_fullscreen();
         };
@@ -589,7 +603,7 @@ impl<T: 'static + Send> ops::Deref for LayerWindow<T> {
 
 impl<T: 'static + Send> LayerWindow<T> {
 
-    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer) -> Self {
+    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Self {
 
         let base = BaseWindow::new(evl, size);
 
@@ -600,9 +614,11 @@ impl<T: 'static + Send> LayerWindow<T> {
             WindowLayer::Overlay    => Layer::Overlay,
         };
 
+        let wl_output = monitor.map(|val| &val.wl_output);
+
         // layer-shell role
         let zwlr_surface = evl.wayland.layer_shell.get_layer_surface(
-            &base.surface, None, wl_layer, evl.app_name.clone(),
+            &base.surface, wl_output, wl_layer, evl.app_name.clone(),
             &evl.qh, Arc::clone(&base.shared)
         );
 
@@ -1166,19 +1182,19 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents>
 
 // TODO: handle releasing / destroying objects properly to not leak memory (not necesserily right here but in general)
 
-fn process_new_output<T: 'static + Send>(monitor_data: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<EventLoop<T>>) {
-    let monitor = Monitor::default();
-    let output = registry.bind(name, 2, qh, Mutex::new(monitor)); // first time in my life using Mutex without an Arc
+fn process_new_output<T: 'static + Send>(monitor_list: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<EventLoop<T>>) {
+    let info = MonitorInfo::default();
+    let output = registry.bind(name, 2, qh, Mutex::new(info)); // first time in my life using Mutex without an Arc
     let id = get_monitor_id(&output);
-    monitor_data.insert(id);
+    monitor_list.insert(id);
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<Monitor>> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for EventLoop<T> {
     fn event(
         evl: &mut Self,
-        output: &WlOutput,
+        wl_output: &WlOutput,
         event: WlOutputEvent,
-        data: &Mutex<Monitor>,
+        data: &Mutex<MonitorInfo>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
@@ -1204,8 +1220,11 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<Monitor>> for E
                 }
             },
             WlOutputEvent::Done => {
-                let id = get_monitor_id(output);
-                evl.events.push(Event::MonitorUpdate { id, state: guard.clone() });
+                let id = get_monitor_id(wl_output);
+                evl.events.push(Event::MonitorUpdate { id, state: Monitor {
+                    info: guard.clone(),
+                    wl_output: wl_output.clone(),
+                } });
             },
             _ => (),
         }
