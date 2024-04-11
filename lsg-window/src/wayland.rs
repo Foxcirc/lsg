@@ -3,8 +3,6 @@ use wayland_client::{
     protocol::{
         wl_registry::{WlRegistry, Event as WlRegistryEvent},
         wl_compositor::WlCompositor,
-        wl_output::{WlOutput, Event as WlOutputEvent},
-        // wl_shm::WlShm,
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
         wl_surface::{WlSurface, Event as WlSurfaceEvent},
         wl_callback::{WlCallback, Event as WlCallbackEvent},
@@ -26,15 +24,15 @@ use rustix::{event::{PollFd, PollFlags, poll}, fd::AsFd};
 use xkbcommon::xkb;
 use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration, env};
 
-pub struct EventLoop<T: 'static /*  = () */> { // TODO: reenable the default type param (= ()) in the end
+pub struct EventLoop<T: 'static + Send /*  = () */> { // TODO: reenable the default type param (= ()) in the end
     running: bool,
     con: wayland_client::Connection,
     qh: QueueHandle<Self>,
     queue: Option<EventQueue<Self>>,
     wayland: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
-    nah_what_the_fuck: Option<EvlError>, // TODO: use Evl instead of EventLoop always
-    proxy_data: EventLoopProxyData<T>,
+    nah_what_the_fuck: Option<EvlError>,
+    proxy_data: EvlProxyData<T>,
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
 }
@@ -105,19 +103,19 @@ impl PressedKeys {
     }
 }
 
-struct EventLoopProxyData<T> {
+struct EvlProxyData<T> {
     pub eventfd: RawFd,
     pub sender: Sender<Event<T>>,
     pub receiver: Receiver<Event<T>>
 }
 
-impl<T> Drop for EventLoopProxyData<T> {
+impl<T> Drop for EvlProxyData<T> {
     fn drop(&mut self) {
         unsafe { libc::close(self.eventfd) };
     }
 }
 
-impl<T: 'static> EventLoop<T> {
+impl<T: 'static + Send> EventLoop<T> {
 
     pub fn new() -> Result<Self, EvlError> {
 
@@ -130,7 +128,7 @@ impl<T: 'static> EventLoop<T> {
         let proxy_data = {
             let (sender, receiver) = channel();
             let eventfd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) }; // TODO: use rustix eventfd when it is fixed
-            EventLoopProxyData { eventfd, sender, receiver }
+            EvlProxyData { eventfd, sender, receiver }
         };
 
         let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
@@ -144,7 +142,11 @@ impl<T: 'static> EventLoop<T> {
             events: Vec::with_capacity(4),
             nah_what_the_fuck: None,
             proxy_data,
-            mouse_data: MouseData { has_focus: 0, x: 0.0, y: 0.0 },
+            mouse_data: MouseData {
+                has_focus: 0,
+                x: 0.0,
+                y: 0.0
+            },
             keyboard_data: KeyboardData {
                 has_focus: 0,
                 xkb_context,
@@ -234,9 +236,9 @@ impl<T: 'static> EventLoop<T> {
         
     }
 
-    pub fn new_proxy(&self) -> EventLoopProxy<T> {
+    pub fn new_proxy(&self) -> EvlProxy<T> {
 
-        EventLoopProxy {
+        EvlProxy {
             sender: self.proxy_data.sender.clone(),
             eventfd: self.proxy_data.eventfd, // we can share the fd, no problemo
         }
@@ -265,12 +267,12 @@ impl<T: 'static> EventLoop<T> {
 
 }
 
-pub struct EventLoopProxy<T> {
+pub struct EvlProxy<T> {
     sender: Sender<Event<T>>,
     eventfd: RawFd,
 }
 
-impl<T> EventLoopProxy<T> {
+impl<T> EvlProxy<T> {
 
     pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
 
@@ -286,18 +288,13 @@ impl<T> EventLoopProxy<T> {
 
 struct WaylandState {
     compositor: WlCompositor,
-    // shm: WlShm,
-    output: WlOutput,
-    seat: WlSeat,
     wm: XdgWmBase,
 }
 
 impl WaylandState {
-    pub fn from_globals<T>(globals: GlobalList, qh: &QueueHandle<EventLoop<T>>) -> Result<Self, BindError> {
+    pub fn from_globals<T: 'static + Send>(globals: GlobalList, qh: &QueueHandle<EventLoop<T>>) -> Result<Self, BindError> {
         Ok(Self {
-            compositor: globals.bind(qh, 4..=4, ())?,
-            output: globals.bind(qh, 1..=1, ())?,
-            seat: globals.bind(qh, 4..=4, ())?,
+            compositor: globals.bind(qh, 4..=6, ())?,
             wm: globals.bind(qh, 1..=1, ())?,
         })
     }
@@ -308,11 +305,10 @@ fn get_window_id(surface: &WlSurface) -> WindowId {
     surface.id().protocol_id()
 }
 
-pub struct Window<T: 'static> {
+pub struct Window<T: 'static + Send> {
     // our data
-    shared: Arc<Mutex<WindowShared>>, // needs to be accessed by some callbacks
+    shared: Arc<Mutex<WindowShared<T>>>, // needs to be accessed by some callbacks
     // wayland state
-    proxy: EventLoopProxy<T>,
     qh: QueueHandle<EventLoop<T>>,
     compositor: WlCompositor,
     surface: WlSurface,
@@ -320,8 +316,9 @@ pub struct Window<T: 'static> {
     xdg_toplevel: XdgToplevel,
 }
 
-struct WindowShared {
+struct WindowShared<T> {
     id: WindowId,
+    proxy: EvlProxy<T>,
     new_width: u32,
     new_height: u32,
     flags: ConfigureFlags,
@@ -329,14 +326,13 @@ struct WindowShared {
     redraw_requested: bool,
 }
 
-impl<T> Window<T> {
+impl<T: Send> Window<T> {
     
     pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
-        let surface = evl.wayland.compositor.create_surface(&evl.qh, ());
-
         let shared = Arc::new(Mutex::new(WindowShared {
-            id: get_window_id(&surface),
+            id: 0,
+            proxy: evl.new_proxy(),
             new_width:  size.width,
             new_height: size.height,
             flags: ConfigureFlags::default(),
@@ -344,14 +340,18 @@ impl<T> Window<T> {
             redraw_requested: false
         }));
 
+        let surface = evl.wayland.compositor.create_surface(&evl.qh, Arc::clone(&shared));
         let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &evl.qh, Arc::clone(&shared));
         let xdg_toplevel = xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared));
+
+        let mut guard = shared.lock().unwrap();
+        guard.id = get_window_id(&surface);
+        drop(guard);
 
         surface.commit();
 
         Self {
             shared,
-            proxy: evl.new_proxy(),
             qh: evl.qh.clone(),
             compositor: evl.wayland.compositor.clone(),
             surface,
@@ -497,7 +497,7 @@ pub struct EglInstance {
 impl EglInstance {
 
     /// Should be only be called once. Although initializing multiple instances is not a hard error.
-    pub fn new<T>(evh: &mut EventLoop<T>) -> Result<EglInstance, EvlError> {
+    pub fn new<T: 'static + Send>(evh: &mut EventLoop<T>) -> Result<EglInstance, EvlError> {
         
         let loaded = unsafe {
             egl::DynamicInstance::<egl::EGL1_5>::load_required()
@@ -561,7 +561,7 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T>(instance: &EglInstance, window: &Window<T>, size: Size) -> Result<Self, EvlError> {
+    pub fn new<T: 'static + Send>(instance: &EglInstance, window: &Window<T>, size: Size) -> Result<Self, EvlError> {
 
         let context = {
             let attribs = [
@@ -653,7 +653,7 @@ pub enum Event<T> {
     Suspend,
     /// Your app should quit.
     Quit,
-    /// Your own events. See [`EventLoopProxy`].
+    /// Your own events. See [`EvlProxy`].
     User(T),
     /// An event that belongs to a specific window. (Eg. focus, mouse movement)
     Window { id: WindowId, event: WindowEvent },
@@ -664,6 +664,7 @@ pub enum WindowEvent {
     Close,
     Resize { size: Size, flags: ConfigureFlags },
     Redraw,
+    Rescale { scale: f64 },
     Enter,
     Leave,
     MouseMotion { x: f64, y: f64 },
@@ -908,33 +909,29 @@ macro_rules! ignore {
     };
 }
 
-impl<T> wayland_client::Dispatch<WlRegistry, GlobalListContents> for EventLoop<T> {
-    ignore!(WlRegistry, GlobalListContents);
-}
-
-impl<T> wayland_client::Dispatch<WlOutput, ()> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for EventLoop<T> {
     fn event(
         _evl: &mut Self,
-        _seat: &WlOutput,
-        event: WlOutputEvent,
-        _data: &(),
+        registry: &WlRegistry,
+        event: WlRegistryEvent,
+        _data: &GlobalListContents,
         _con: &wayland_client::Connection,
-        _qh: &wayland_client::QueueHandle<Self>
+        qh: &wayland_client::QueueHandle<Self>
     ) {
 
-        if let WlOutputEvent::Mode { flags, width, height, refresh } = event {
-            println!("{flags:?}, {width:?}, {height:?}, {refresh:?}");
+        if let WlRegistryEvent::Global { name, interface, .. } = event {
+
+            if &interface == "wl_seat" {
+                let _seat: WlSeat = registry.bind(name, 1, qh, ());
+            }
+            
         }
 
-        else if let WlOutputEvent::Scale { factor } = event {
-            println!("scale factor changed: {factor}");
-        }
-        
     }
+
 }
 
-
-impl<T> wayland_client::Dispatch<WlSeat, ()> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for EventLoop<T> {
     fn event(
         _evl: &mut Self,
         seat: &WlSeat,
@@ -954,7 +951,7 @@ impl<T> wayland_client::Dispatch<WlSeat, ()> for EventLoop<T> {
     }
 }
 
-impl<T> wayland_client::Dispatch<XdgWmBase, ()> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgWmBase, ()> for EventLoop<T> {
     fn event(
         _: &mut Self,
         wm: &XdgWmBase,
@@ -969,12 +966,12 @@ impl<T> wayland_client::Dispatch<XdgWmBase, ()> for EventLoop<T> {
     }
 }
 
-impl<T> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared<T>>>> for EventLoop<T> {
     fn event(
         evl: &mut Self,
         xdg_surface: &XdgSurface,
         event: XdgSurfaceEvent,
-        shared: &Arc<Mutex<WindowShared>>,
+        shared: &Arc<Mutex<WindowShared<T>>>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
@@ -1001,12 +998,12 @@ impl<T> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for Event
     }
 }
 
-impl<T> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared<T>>>> for EventLoop<T> {
     fn event(
         evl: &mut Self,
         _surface: &XdgToplevel,
         event: XdgToplevelEvent,
-        shared: &Arc<Mutex<WindowShared>>,
+        shared: &Arc<Mutex<WindowShared<T>>>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
@@ -1046,12 +1043,12 @@ fn read_configure_flags(states: Vec<u8>) -> ConfigureFlags {
         })
 }
 
-impl<T> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared<T>>>> for EventLoop<T> {
     fn event(
         evl: &mut Self,
         _cb: &WlCallback,
         _event: WlCallbackEvent,
-        shared: &Arc<Mutex<WindowShared>>,
+        shared: &Arc<Mutex<WindowShared<T>>>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
@@ -1065,33 +1062,37 @@ impl<T> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for Event
 }
 
 // global events
-impl<T> wayland_client::Dispatch<WlCompositor, ()> for EventLoop<T> { ignore!(WlCompositor, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlCompositor, ()> for EventLoop<T> { ignore!(WlCompositor, ()); }
 
 // surface events
-impl<T> wayland_client::Dispatch<WlSurface, ()> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlSurface, Arc<Mutex<WindowShared<T>>>> for EventLoop<T> {
     fn event(
             _evl: &mut Self,
             _proxy: &WlSurface,
-            _event: WlSurfaceEvent,
-            _data: &(),
+            event: WlSurfaceEvent,
+            data: &Arc<Mutex<WindowShared<T>>>,
             _conn: &wayland_client::Connection,
             _qhandle: &QueueHandle<Self>,
         ) {
 
-        // match event {
-        //     WlSurfaceEvent::Enter { output }
-        // }
+        if let WlSurfaceEvent::PreferredBufferScale { factor } = event {
 
-        // TODO: impl fullscreen on current output here
+            let guard = data.lock().unwrap();
+            guard.proxy.send(Event::Window {
+                id: guard.id,
+                event: WindowEvent::Rescale { scale: factor as f64 }
+            }).unwrap();
+            
+        }
         
     }
 }
 
 // region events
-impl<T> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlRegion, ()> for EventLoop<T> { ignore!(WlRegion, ()); }
 
 // input events
-impl<T> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T> {
     fn event(
             evl: &mut Self,
             _proxy: &WlKeyboard,
@@ -1233,7 +1234,7 @@ enum Source {
     KeyRepeat,
 }
 
-fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, source: Source) {
+fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, source: Source) {
 
     let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
 
@@ -1315,7 +1316,7 @@ fn process_key_event<T>(evl: &mut EventLoop<T>, raw_key: u32, dir: Direction, so
 
 }
 
-impl<T> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T> {
     fn event(
             evl: &mut Self,
             _proxy: &WlPointer,

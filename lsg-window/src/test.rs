@@ -61,6 +61,9 @@ fn wayland() -> anyhow::Result<()> {
                     // window.fullscreen();
                     // window.request_redraw();
                 },
+                WindowEvent::Rescale { scale } => {
+                    println!("NEW SCALE: {scale}");
+                }
                 WindowEvent::MouseDown { x, y, button } => {
                     println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
                 },

@@ -9,9 +9,8 @@
 [ ] IME
 [x] Window transparency
 [ ] Drag 'n drop
-[ ] Monitor handling
 [x] Fullscreen (no custom video modes for now)
-[ ] Dpi handling / Logical Scaling
+[ ] Dpi handling / Logical Scaling (this is fucking hard)
 [x] OpenGL context creation (EGL)
 [x] Damage areas (OH YEAH BABY)
 [ ] Full Async
@@ -20,14 +19,15 @@
 [ ] Request user attention
 [ ] Clean up & TODO's
 
-# Outsourced platform features
+# Other platform features
 [ ] Clipboard
 [ ] Notifications
 [ ] System tray
 [ ] File manager
+[ ] Screen saver (idle inhibition)
 
 # Platforms that will be supported
-- Linux (Wayland only)
+- Linux (Wayland is the main focus)
 - Windows
 - Android
 
