@@ -1,10 +1,10 @@
 
 use wayland_client::{
     protocol::{
-        wl_registry::{WlRegistry, Event as WlRegistryEvent},
+        wl_registry::WlRegistry,
         wl_compositor::WlCompositor,
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
-        wl_surface::{WlSurface, Event as WlSurfaceEvent},
+        wl_surface::WlSurface,
         wl_callback::{WlCallback, Event as WlCallbackEvent},
         wl_keyboard::{WlKeyboard, Event as WlKeyboardEvent, KeyState},
         wl_pointer::{WlPointer, Event as WlPointerEvent, ButtonState, Axis},
@@ -13,25 +13,39 @@ use wayland_client::{
     WEnum, Proxy, QueueHandle, EventQueue, globals::{registry_queue_init, GlobalList, GlobalListContents, BindError}
 };
 
-use wayland_protocols::xdg::shell::client::{
-    xdg_wm_base::{XdgWmBase, Event as XdgWmBaseEvent},
-    xdg_surface::{XdgSurface, Event as XdgSurfaceEvent},
-    xdg_toplevel::{XdgToplevel, Event as XdgToplevelEvent, State as XdgToplevelState},
+use wayland_protocols::xdg::{
+    shell::client::{
+        xdg_wm_base::{XdgWmBase, Event as XdgWmBaseEvent},
+        xdg_surface::{XdgSurface, Event as XdgSurfaceEvent},
+        xdg_toplevel::{XdgToplevel, Event as XdgToplevelEvent, State as XdgToplevelState},
+    },
+    decoration::zv1::client::{zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, zxdg_toplevel_decoration_v1::{ZxdgToplevelDecorationV1, Event as ZxdgDecorationEvent, Mode as ZxdgDecorationMode}},
+};
+
+use wayland_protocols::wp::{
+    fractional_scale::v1::client::{wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, wp_fractional_scale_v1::{WpFractionalScaleV1, Event as WpFractionalScaleV1Event}},
+    viewporter::client::{wp_viewporter::WpViewporter, wp_viewport::WpViewport},
+};
+
+use wayland_protocols_wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer},
+    zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Event as ZwlrLayerSurfaceEvent, Anchor, KeyboardInteractivity},
 };
 
 use khronos_egl as egl;
 use rustix::{event::{PollFd, PollFlags, poll}, fd::AsFd};
 use xkbcommon::xkb;
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration, env};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration, env, ops};
 
 pub struct EventLoop<T: 'static + Send /*  = () */> { // TODO: reenable the default type param (= ()) in the end
+    app_name: String,
     running: bool,
     con: wayland_client::Connection,
     qh: QueueHandle<Self>,
     queue: Option<EventQueue<Self>>,
     wayland: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
-    nah_what_the_fuck: Option<EvlError>,
+    reported_error: Option<EvlError>,
     proxy_data: EvlProxyData<T>,
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
@@ -117,7 +131,7 @@ impl<T> Drop for EvlProxyData<T> {
 
 impl<T: 'static + Send> EventLoop<T> {
 
-    pub fn new() -> Result<Self, EvlError> {
+    pub fn new(app_name: &str) -> Result<Self, EvlError> {
 
         let con = wayland_client::Connection::connect_to_env()?;
 
@@ -134,13 +148,14 @@ impl<T: 'static + Send> EventLoop<T> {
         let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
 
         let this = EventLoop {
+            app_name: app_name.to_string(),
             running: true,
             con,
             queue: Some(queue),
             qh,
             wayland,
             events: Vec::with_capacity(4),
-            nah_what_the_fuck: None,
+            reported_error: None,
             proxy_data,
             mouse_data: MouseData {
                 has_focus: 0,
@@ -210,6 +225,7 @@ impl<T: 'static + Send> EventLoop<T> {
             // new events from the wayland connection
             if wl_events.contains(PollFlags::IN) {
                 guard.read()?;
+                if let Some(error) = self.reported_error { return Err(error) };
             } else if wl_events.contains(PollFlags::ERR) {
                 return Err(EvlError::Io(io::Error::last_os_error()));
             }
@@ -261,7 +277,7 @@ impl<T: 'static + Send> EventLoop<T> {
         self.running = false
     }
 
-    pub fn set_input_mode(&mut self, mode: InputMode) {
+    pub fn input(&mut self, mode: InputMode) {
         self.keyboard_data.input_mode = mode;
     }
 
@@ -289,14 +305,27 @@ impl<T> EvlProxy<T> {
 struct WaylandState {
     compositor: WlCompositor,
     wm: XdgWmBase,
+    viewport_mgr: WpViewporter,
+    frac_scaling_mgr: WpFractionalScaleManagerV1,
+    decoration_mgr: ZxdgDecorationManagerV1,
+    layer_shell:ZwlrLayerShellV1,
 }
 
 impl WaylandState {
     pub fn from_globals<T: 'static + Send>(globals: GlobalList, qh: &QueueHandle<EventLoop<T>>) -> Result<Self, BindError> {
+
+        // bind wl_seat, we don't need to access it though
+        let _seat: WlSeat = globals.bind(qh, 1..=1, ())?;
+
         Ok(Self {
             compositor: globals.bind(qh, 4..=6, ())?,
             wm: globals.bind(qh, 1..=1, ())?,
+            viewport_mgr: globals.bind(qh, 1..=1, ())?,
+            frac_scaling_mgr: globals.bind(qh, 1..=1, ())?,
+            decoration_mgr: globals.bind(qh, 1..=1, ())?,
+            layer_shell: globals.bind(qh, 1..=1, ())?,
         })
+
     }
 }
 
@@ -305,30 +334,19 @@ fn get_window_id(surface: &WlSurface) -> WindowId {
     surface.id().protocol_id()
 }
 
-pub struct Window<T: 'static + Send> {
+pub struct BaseWindow<T: 'static + Send> {
     // our data
+    id: WindowId, // also found in `shared`
     shared: Arc<Mutex<WindowShared<T>>>, // needs to be accessed by some callbacks
     // wayland state
     qh: QueueHandle<EventLoop<T>>,
     compositor: WlCompositor,
     surface: WlSurface,
-    _xdg_surface: XdgSurface,
-    xdg_toplevel: XdgToplevel,
 }
 
-struct WindowShared<T> {
-    id: WindowId,
-    proxy: EvlProxy<T>,
-    new_width: u32,
-    new_height: u32,
-    flags: ConfigureFlags,
-    frame_callback_registered: bool,
-    redraw_requested: bool,
-}
+impl<T: 'static + Send> BaseWindow<T> {
 
-impl<T: Send> Window<T> {
-    
-    pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
+    pub(crate) fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
         let shared = Arc::new(Mutex::new(WindowShared {
             id: 0,
@@ -337,36 +355,40 @@ impl<T: Send> Window<T> {
             new_height: size.height,
             flags: ConfigureFlags::default(),
             frame_callback_registered: false,
-            redraw_requested: false
+            redraw_requested: false,
+            // need to access some wayland objects
+            viewport: None,
         }));
 
         let surface = evl.wayland.compositor.create_surface(&evl.qh, Arc::clone(&shared));
-        let xdg_surface = evl.wayland.wm.get_xdg_surface(&surface, &evl.qh, Arc::clone(&shared));
-        let xdg_toplevel = xdg_surface.get_toplevel(&evl.qh, Arc::clone(&shared));
+
+        // fractional scaling
+        let viewport = evl.wayland.viewport_mgr.get_viewport(&surface, &evl.qh, ());
+        let _frac_scale = evl.wayland.frac_scaling_mgr.get_fractional_scale(&surface, &evl.qh, Arc::clone(&shared));
+
+        let id = get_window_id(&surface);
 
         let mut guard = shared.lock().unwrap();
-        guard.id = get_window_id(&surface);
+        guard.id = id;
+        guard.viewport = Some(viewport);
         drop(guard);
 
-        surface.commit();
-
         Self {
+            id,
             shared,
             qh: evl.qh.clone(),
             compositor: evl.wayland.compositor.clone(),
             surface,
-            _xdg_surface: xdg_surface,
-            xdg_toplevel
         }
         
     }
 
-    pub fn request_redraw(&mut self, _token: PresentToken) {
+    pub fn request_redraw(&self, _token: PresentToken) {
         let mut guard = self.shared.lock().unwrap();
         guard.redraw_requested = true;
     }
 
-    pub fn pre_present_notify(&mut self) -> PresentToken {
+    pub fn pre_present_notify(&self) -> PresentToken {
         // note: it seems you have request the frame callback before swapping buffers
         //       otherwise the callback will never fire because the compositor thinks the content didn't change
         let mut guard = self.shared.lock().unwrap();
@@ -378,15 +400,7 @@ impl<T: Send> Window<T> {
         PresentToken { _inner: () }
     }
 
-    pub fn title<S: Into<String>>(&self, text: S) {
-        self.xdg_toplevel.set_title(text.into());
-    }
-
-    pub fn application<S: Into<String>>(&self, text: S) {
-        self.xdg_toplevel.set_app_id(text.into());
-    }
-
-    pub fn set_transparent(&self, value: bool) {
+    pub fn transparency(&self, value: bool) {
         if value {
             self.surface.set_opaque_region(None);
             self.surface.commit();
@@ -396,6 +410,64 @@ impl<T: Send> Window<T> {
             self.surface.set_opaque_region(Some(&region));
             self.surface.commit();
         }
+    }
+    
+}
+
+struct WindowShared<T> {
+    id: WindowId,
+    proxy: EvlProxy<T>,
+    new_width: u32,
+    new_height: u32,
+    flags: ConfigureFlags,
+    frame_callback_registered: bool,
+    redraw_requested: bool,
+    // need to access some wayland objects
+    viewport: Option<WpViewport>,
+}
+
+pub struct Window<T: 'static + Send> {
+    base: BaseWindow<T>,
+    xdg_toplevel: XdgToplevel,
+    xdg_decoration: ZxdgToplevelDecorationV1,
+}
+
+impl<T: 'static + Send> ops::Deref for Window<T> {
+    type Target = BaseWindow<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl<T: 'static + Send> Window<T> {
+    
+    pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
+
+        let base = BaseWindow::new(evl, size);
+
+        // xdg-top-level role (+ init decoration manager)
+        let xdg_surface = evl.wayland.wm.get_xdg_surface(&base.surface, &evl.qh, Arc::clone(&base.shared));
+        let xdg_toplevel = xdg_surface.get_toplevel(&evl.qh, Arc::clone(&base.shared));
+        let xdg_decoration = evl.wayland.decoration_mgr.get_toplevel_decoration(&xdg_toplevel, &evl.qh, base.id);
+        xdg_toplevel.set_app_id(evl.app_name.clone());
+
+        base.surface.commit();
+
+        Self {
+            base,
+            xdg_toplevel,
+            xdg_decoration,
+        }
+        
+    }
+
+    pub fn decorations(&mut self, value: bool) {
+        let mode = if value { ZxdgDecorationMode::ServerSide } else { ZxdgDecorationMode::ClientSide };
+        self.xdg_decoration.set_mode(mode);
+    }
+
+    pub fn title<S: Into<String>>(&self, text: S) {
+        self.xdg_toplevel.set_title(text.into());
     }
 
     pub fn maximized(&self, value: bool) {
@@ -434,6 +506,120 @@ impl<T: Send> Window<T> {
         self.surface.commit();
     }
 
+}
+
+// TODO: add PopupWindow
+
+/// The layers are ordered from bottom most to top most.
+pub enum WindowLayer {
+    // Below everything.
+    // eg. desktop widgets, file icons
+    Background,
+    // Always below normal programs.
+    Bottom,
+    // Always above normal programs.
+    // eg. fullscreen windows, windows task manager
+    Top,
+    // Above everything.
+    // eg. key-press display, fps counter, notifications
+    Overlay
+}
+
+pub enum WindowAnchor {
+    Top,
+    Bottom,
+    Left,
+    Right
+}
+
+/// Keyboard window interactivity.
+pub enum KbInteractivity {
+    /// Window can't have keyboard focus.
+    None,
+    // /// Allows the window to be focused like normal windows.
+    // Normal,
+    /// Top/Overlay windows will grab keyboard focus
+    Exclusive
+}
+
+pub struct LayerWindow<T: 'static + Send> {
+    base: BaseWindow<T>,
+    zwlr_surface: ZwlrLayerSurfaceV1,
+}
+
+impl<T: 'static + Send> ops::Deref for LayerWindow<T> {
+    type Target = BaseWindow<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl<T: 'static + Send> LayerWindow<T> {
+
+    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer) -> Self {
+
+        let base = BaseWindow::new(evl, size);
+
+        let wl_layer = match layer {
+            WindowLayer::Background => Layer::Background,
+            WindowLayer::Bottom     => Layer::Bottom,
+            WindowLayer::Top        => Layer::Top,
+            WindowLayer::Overlay    => Layer::Overlay,
+        };
+
+        // layer-shell role
+        let zwlr_surface = evl.wayland.layer_shell.get_layer_surface(
+            &base.surface, None, wl_layer, evl.app_name.clone(),
+            &evl.qh, Arc::clone(&base.shared)
+        );
+
+        zwlr_surface.set_size(size.width, size.height);
+
+        base.surface.commit();
+
+        Self {
+            base,
+            zwlr_surface,
+        }
+        
+    }
+
+    pub fn anchor(&self, anchor: WindowAnchor) {
+
+        let wl_anchor = match anchor {
+            WindowAnchor::Top => Anchor::Top,
+            WindowAnchor::Bottom => Anchor::Bottom,
+            WindowAnchor::Left => Anchor::Left,
+            WindowAnchor::Right => Anchor::Right,
+        };
+
+        self.zwlr_surface.set_anchor(wl_anchor);
+        self.base.surface.commit();
+       
+    }
+
+    pub fn margin(&self, value: u32) {
+
+        let n = value as i32;
+
+        self.zwlr_surface.set_margin(n, n, n, n);
+        self.base.surface.commit();
+
+    }
+
+    pub fn interactivity(&self, value: KbInteractivity) {
+
+        let wl_intr = match value {
+            KbInteractivity::None => KeyboardInteractivity::None,
+            // KbInteractivity::Normal => KeyboardInteractivity::OnDemand,
+            KbInteractivity::Exclusive => KeyboardInteractivity::Exclusive,
+        };
+
+        self.zwlr_surface.set_keyboard_interactivity(wl_intr);
+        self.base.surface.commit();
+        
+    }
+    
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -561,7 +747,7 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T: 'static + Send>(instance: &EglInstance, window: &Window<T>, size: Size) -> Result<Self, EvlError> {
+    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &EglInstance, window: &W, size: Size) -> Result<Self, EvlError> {
 
         let context = {
             let attribs = [
@@ -597,7 +783,7 @@ impl EglContext {
     }
 
     /// Make this context current.
-    pub fn bind(&mut self, instance: &EglInstance) -> Result<(), egl::Error> {
+    pub fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
 
         instance.lib.make_current(
             instance.display,
@@ -623,7 +809,7 @@ impl EglContext {
         }
 
         if let Some(func) = instance.swap_buffers_with_damage {
-            // swap with damage
+            // swap with damage, if the fn could be found
             (func)(instance.display.as_ptr(), self.egl_surface.as_ptr(), self.damage_rects.as_ptr().cast(), damage.len() as khronos_egl::Int);
         } else {
             // normal swap (if the extension is unsupported)
@@ -665,6 +851,7 @@ pub enum WindowEvent {
     Resize { size: Size, flags: ConfigureFlags },
     Redraw,
     Rescale { scale: f64 },
+    Decorations { active: bool },
     Enter,
     Leave,
     MouseMotion { x: f64, y: f64 },
@@ -909,27 +1096,35 @@ macro_rules! ignore {
     };
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for EventLoop<T> { ignore!(WlRegistry, GlobalListContents); }
+
+impl<T: 'static + Send> wayland_client::Dispatch<WpViewporter, ()> for EventLoop<T> { ignore!(WpViewporter, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WpViewport, ()> for EventLoop<T> { ignore!(WpViewport, ()); }
+
+impl<T: 'static + Send> wayland_client::Dispatch<ZxdgDecorationManagerV1, ()> for EventLoop<T> { ignore!(ZxdgDecorationManagerV1, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, WindowId> for EventLoop<T> {
     fn event(
-        _evl: &mut Self,
-        registry: &WlRegistry,
-        event: WlRegistryEvent,
-        _data: &GlobalListContents,
+        evl: &mut Self,
+        _deco: &ZxdgToplevelDecorationV1,
+        event: <ZxdgToplevelDecorationV1 as Proxy>::Event,
+        data: &WindowId,
         _con: &wayland_client::Connection,
-        qh: &wayland_client::QueueHandle<Self>
+        _qh: &wayland_client::QueueHandle<Self>
     ) {
-
-        if let WlRegistryEvent::Global { name, interface, .. } = event {
-
-            if &interface == "wl_seat" {
-                let _seat: WlSeat = registry.bind(name, 1, qh, ());
-            }
-            
-        }
-
+    
+    if let ZxdgDecorationEvent::Configure { mode } = event {
+        let event = match mode {
+            WEnum::Value(ZxdgDecorationMode::ServerSide) => WindowEvent::Decorations { active: true },
+            WEnum::Value(ZxdgDecorationMode::ClientSide) => WindowEvent::Decorations { active: false },
+            _ => return,
+        };
+        evl.events.push(Event::Window { id: *data, event });
     }
 
+    }
 }
+
+impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleManagerV1, ()> for EventLoop<T> { ignore!(WpFractionalScaleManagerV1, ()); }
 
 impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for EventLoop<T> {
     fn event(
@@ -982,9 +1177,14 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowSha
 
             let guard = shared.lock().unwrap();
 
-            // foreward the final configuration state to the user
             let width  = guard.new_width;
             let height = guard.new_height;
+
+            // update the window's viewport destination
+            let Some(ref viewport) = guard.viewport else { unreachable!() };
+            viewport.set_destination(width as i32, height as i32);
+
+            // foreward the final configuration state to the user
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
                 size: Size { width, height },
                 flags: guard.flags
@@ -1022,6 +1222,60 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowSh
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
         }
 
+    }
+}
+
+impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerShellV1, ()> for EventLoop<T> {
+    ignore!(ZwlrLayerShellV1, ());
+}
+
+impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<WindowShared<T>>>> for EventLoop<T> {
+    fn event(
+        evl: &mut Self,
+        zwlr_surface: &ZwlrLayerSurfaceV1,
+        event: ZwlrLayerSurfaceEvent,
+        shared: &Arc<Mutex<WindowShared<T>>>,
+        _con: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>
+    ) {
+
+        let mut guard = shared.lock().unwrap();
+
+        if let ZwlrLayerSurfaceEvent::Configure { width, height, serial } = event {
+            
+            // TODO: remove code duplication between this and xdg configure
+
+            // ack the configure
+            zwlr_surface.ack_configure(serial);
+
+            if width > 0 && height > 0 {
+                guard.new_width  = width  as u32;
+                guard.new_height = height as u32;
+            }
+
+            let width  = guard.new_width;
+            let height = guard.new_height;
+
+            // update the window's viewport destination
+            let Some(ref viewport) = guard.viewport else { unreachable!() };
+            viewport.set_destination(width as i32, height as i32);
+
+            // foreward the final configuration state to the user
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
+                size: Size { width, height },
+                flags: guard.flags
+            } });
+            
+            if !guard.redraw_requested {
+                evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
+            }
+
+        }
+
+        else if let ZwlrLayerSurfaceEvent::Closed = event {
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
+        }
+    
     }
 }
 
@@ -1064,23 +1318,29 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
 // global events
 impl<T: 'static + Send> wayland_client::Dispatch<WlCompositor, ()> for EventLoop<T> { ignore!(WlCompositor, ()); }
 
-// surface events
+// surface events (like moving onto an output etc.)
 impl<T: 'static + Send> wayland_client::Dispatch<WlSurface, Arc<Mutex<WindowShared<T>>>> for EventLoop<T> {
+    #![allow(unused_parens)] ignore!(WlSurface, (Arc<Mutex<WindowShared<T>>>));
+}
+
+impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, Arc<Mutex<WindowShared<T>>>> for EventLoop<T> {
     fn event(
             _evl: &mut Self,
-            _proxy: &WlSurface,
-            event: WlSurfaceEvent,
+            _proxy: &WpFractionalScaleV1,
+            event: WpFractionalScaleV1Event,
             data: &Arc<Mutex<WindowShared<T>>>,
             _conn: &wayland_client::Connection,
-            _qhandle: &QueueHandle<Self>,
+            _qh: &QueueHandle<Self>,
         ) {
 
-        if let WlSurfaceEvent::PreferredBufferScale { factor } = event {
+        if let WpFractionalScaleV1Event::PreferredScale { scale } = event {
 
+            // TODO: investigate why this event is emitted on every redraw for LayerWindow
+            
             let guard = data.lock().unwrap();
             guard.proxy.send(Event::Window {
                 id: guard.id,
-                event: WindowEvent::Rescale { scale: factor as f64 }
+                event: WindowEvent::Rescale { scale: scale as f64 / 120.0 }
             }).unwrap();
             
         }
@@ -1116,8 +1376,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T
                         xkb::KEYMAP_COMPILE_NO_FLAGS
                     ) } {
                         Ok(Some(val)) => val,
-                        Ok(None) => { evl.nah_what_the_fuck = Some(EvlError::InvalidKeymap); return },
-                        Err(err) => { evl.nah_what_the_fuck = Some(EvlError::Io(err));       return }
+                        Ok(None) => { evl.reported_error = Some(EvlError::InvalidKeymap); return },
+                        Err(err) => { evl.reported_error = Some(EvlError::Io(err));       return }
                     }
                 };
 
@@ -1135,7 +1395,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T
                     xkb::COMPILE_NO_FLAGS
                 ) {
                     Ok(val) => val,
-                    Err(..) => { evl.nah_what_the_fuck = Some(EvlError::InvalidLocale); return }
+                    Err(..) => { evl.reported_error = Some(EvlError::InvalidLocale); return }
                 };
 
                 let compose_state = xkb::compose::State::new(&compose_table, xkb::STATE_NO_FLAGS);

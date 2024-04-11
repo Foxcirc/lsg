@@ -8,9 +8,13 @@
 [x] Special text input mode & Dead keys
 [ ] IME
 [x] Window transparency
+[ ] Window levels (always-on-top, always-on-bottom)
+[ ] Pop-Up windows
 [ ] Drag 'n drop
+[ ] Monitor handling
 [x] Fullscreen (no custom video modes for now)
-[ ] Dpi handling / Logical Scaling (this is fucking hard)
+[x] Dpi handling / Logical Scaling (this is fucking hard) (TODO: test)
+[ ] enabling or disabling server side decorations (hyprland forces server-side decorations)
 [x] OpenGL context creation (EGL)
 [x] Damage areas (OH YEAH BABY)
 [ ] Full Async

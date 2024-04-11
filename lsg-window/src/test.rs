@@ -7,7 +7,7 @@ fn wayland() -> anyhow::Result<()> {
     use crate::wayland::*;
 
     // create a new event loop, this will initialize a connection to the wayland compositor
-    let mut evl = EventLoop::new()?;
+    let mut evl = EventLoop::new("lsg-test")?;
 
     let proxy = evl.new_proxy();
     proxy.send(Event::User("Hello world!"))?;
@@ -19,15 +19,20 @@ fn wayland() -> anyhow::Result<()> {
         egl.get_proc_address(name).unwrap() as *const _
     );
     
-    let size = Size { width: 500, height: 500 };
-    let mut window = Window::new(&mut evl, size); // the actual window is stored inside the event loop, wh represents a handle to the window, it's just a usize
-    // window.set_size(Some(size)); // TODO: test if this brings back the resizing stutter problem
-    // window.force_max_size(Some(size)); // TODO: or this
+    let size = Size { width: 1920 , height: 1080 };
+    let window = Window::new(&mut evl, size);
+    // window.force_size(Some(size));
+
+    // window.margin(20);
+    // window.anchor(WindowAnchor::Right);
+    // window.interactivity(KbInteractivity::None);
+    
     let mut ctx = EglContext::new(&egl, &window, size)?; // create an egl context for our window
     ctx.bind(&egl)?; // make the context current
 
-    window.set_transparent(true);
-    evl.set_input_mode(InputMode::SingleKey);
+    window.transparency(true);
+
+    evl.input(InputMode::SingleKey);
 
     let mut max = false;
 
@@ -35,8 +40,7 @@ fn wayland() -> anyhow::Result<()> {
     evl.run(move |evl, event| {
         match event {
             Event::Resume => {
-                window.title("lsg-test");
-                window.application("lsg-test");
+                // window.title("no-test");
             }, // TODO: implement the suspend event
             Event::Suspend => unimplemented!(),
             Event::Quit => evl.exit(),
@@ -44,7 +48,7 @@ fn wayland() -> anyhow::Result<()> {
             Event::Window { id: _id, event } => match event {
                 WindowEvent::Close => evl.quit(),
                 WindowEvent::Redraw => {
-                    lsg_gl::clear(0.0, 0.0, 0.0, 0.0);
+                    lsg_gl::clear(0.3, 0.1, 0.6, 0.0);
                     let token = window.pre_present_notify();
                     // ctx.swap_buffers(&egl, token).unwrap();
                     let damage = [Rect::new(0, 0, 100, 100)];
@@ -63,6 +67,9 @@ fn wayland() -> anyhow::Result<()> {
                 },
                 WindowEvent::Rescale { scale } => {
                     println!("NEW SCALE: {scale}");
+                },
+                WindowEvent::Decorations { active } => {
+                    println!("server side decorations are: {}", if active { "enabled" } else { "disabled" });
                 }
                 WindowEvent::MouseDown { x, y, button } => {
                     println!("mouse down at ({}, {}) ({:?} button)", x, y, button);

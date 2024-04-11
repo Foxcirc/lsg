@@ -13,6 +13,7 @@ rustix = { version = "0.38.31", features = ["event"] }
 libc = "0.2.153" # TODO: Maybe I can remove this dep and just use rustix in the future but this version of rustix is bugged
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
 timerfd = "1.6.0"
+wayland-protocols-wlr = { version = "0.2.0", features = ["client", "wayland-client"] }
 
 [dev-dependencies]
 lsg-gl = { path = "../lsg-gl" }
