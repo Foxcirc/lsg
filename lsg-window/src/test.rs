@@ -39,12 +39,17 @@ fn wayland() -> anyhow::Result<()> {
     // run the event loop
     evl.run(move |evl, event| {
         match event {
+            Event::User(message) => println!("{}", message),
             Event::Resume => {
                 // window.title("no-test");
             }, // TODO: implement the suspend event
             Event::Suspend => unimplemented!(),
             Event::Quit => evl.exit(),
-            Event::User(message) => println!("{}", message),
+            Event::MonitorUpdate { id, state } => {
+                println!("new monitor with id {id}: {state:?}");
+                println!("refresh as fps: {}", state.fps());
+            },
+            Event::MonitorRemove { .. } => todo!(),
             Event::Window { id: _id, event } => match event {
                 WindowEvent::Close => evl.quit(),
                 WindowEvent::Redraw => {

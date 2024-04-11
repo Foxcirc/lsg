@@ -43,6 +43,7 @@ button.title("...");
 button.lock().title = "..."
 button.title = "..."; button.updt();
 button.updt(|it| it.title = "...");
+button.title.set("xxx"); // <= this is it
 
 --------------------
 
@@ -58,10 +59,6 @@ struct Button {
 impl Button {
 	fn new() -> Arc<Self> { ... }
 }
-
--------------------
-
-IN BETWEEN FRAMES EVENT
 
 --------------------
 

@@ -1,7 +1,7 @@
 
 use wayland_client::{
     protocol::{
-        wl_registry::WlRegistry,
+        wl_registry::{WlRegistry, Event as WlRegistryEvent},
         wl_compositor::WlCompositor,
         wl_seat::{WlSeat, Event as WlSeatEvent, Capability as WlSeatCapability},
         wl_surface::WlSurface,
@@ -9,6 +9,7 @@ use wayland_client::{
         wl_keyboard::{WlKeyboard, Event as WlKeyboardEvent, KeyState},
         wl_pointer::{WlPointer, Event as WlPointerEvent, ButtonState, Axis},
         wl_region::WlRegion,
+        wl_output::{WlOutput, Event as WlOutputEvent, Mode as WlOutputMode},
     },
     WEnum, Proxy, QueueHandle, EventQueue, globals::{registry_queue_init, GlobalList, GlobalListContents, BindError}
 };
@@ -35,7 +36,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 use khronos_egl as egl;
 use rustix::{event::{PollFd, PollFlags, poll}, fd::AsFd};
 use xkbcommon::xkb;
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration, env, ops};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex}, io, os::fd::{RawFd, BorrowedFd}, time::Duration, env, ops, collections::HashSet};
 
 pub struct EventLoop<T: 'static + Send /*  = () */> { // TODO: reenable the default type param (= ()) in the end
     app_name: String,
@@ -49,6 +50,7 @@ pub struct EventLoop<T: 'static + Send /*  = () */> { // TODO: reenable the defa
     proxy_data: EvlProxyData<T>,
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
+    monitor_data: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
 }
 
 struct KeyboardData {
@@ -135,9 +137,11 @@ impl<T: 'static + Send> EventLoop<T> {
 
         let con = wayland_client::Connection::connect_to_env()?;
 
+        let mut monitor_data = HashSet::with_capacity(1);
+
         let (globals, queue) = registry_queue_init::<Self>(&con).unwrap();
         let qh = queue.handle();
-        let wayland = WaylandState::from_globals(globals, &qh)?;
+        let wayland = WaylandState::from_globals(&mut monitor_data, globals, &qh)?;
 
         let proxy_data = {
             let (sender, receiver) = channel();
@@ -172,6 +176,7 @@ impl<T: 'static + Send> EventLoop<T> {
                 repeat_delay: Duration::ZERO,
                 input_mode: InputMode::SingleKey,
             },
+            monitor_data,
         };
 
         Ok(this)
@@ -283,6 +288,28 @@ impl<T: 'static + Send> EventLoop<T> {
 
 }
 
+pub type MonitorId = u32;
+
+fn get_monitor_id(output: &WlOutput) -> MonitorId {
+    output.id().protocol_id()
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Monitor {
+    pub name: String,
+    pub description: String,
+    pub size: Size,
+    /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
+    pub refresh: u32,
+}
+
+impl Monitor {
+    /// Trimmed conversion.
+    pub fn fps(&self) -> u32 {
+        self.refresh / 1000
+    }    
+}
+
 pub struct EvlProxy<T> {
     sender: Sender<Event<T>>,
     eventfd: RawFd,
@@ -312,16 +339,21 @@ struct WaylandState {
 }
 
 impl WaylandState {
-    pub fn from_globals<T: 'static + Send>(globals: GlobalList, qh: &QueueHandle<EventLoop<T>>) -> Result<Self, BindError> {
+    pub fn from_globals<T: 'static + Send>(monitor_data: &mut HashSet<MonitorId>, globals: GlobalList, qh: &QueueHandle<EventLoop<T>>) -> Result<Self, BindError> {
+
+        // bind the primary monitor we already retreived
+        globals.contents().with_list(|list| for val in list {
+            if &val.interface == "wl_output" { process_new_output(monitor_data, globals.registry(), val.name, qh); }
+        });
 
         // bind wl_seat, we don't need to access it though
-        let _seat: WlSeat = globals.bind(qh, 1..=1, ())?;
+        let _wl_seat: WlSeat = globals.bind(qh, 1..=1, ())?;
 
         Ok(Self {
             compositor: globals.bind(qh, 4..=6, ())?,
             wm: globals.bind(qh, 1..=1, ())?,
             viewport_mgr: globals.bind(qh, 1..=1, ())?,
-            frac_scaling_mgr: globals.bind(qh, 1..=1, ())?,
+            frac_scaling_mgr: globals.bind(qh, 1..=1, ())?, // TODO: only bind if exists (check like above)
             decoration_mgr: globals.bind(qh, 1..=1, ())?,
             layer_shell: globals.bind(qh, 1..=1, ())?,
         })
@@ -330,6 +362,7 @@ impl WaylandState {
 }
 
 pub type WindowId = u32;
+
 fn get_window_id(surface: &WlSurface) -> WindowId {
     surface.id().protocol_id()
 }
@@ -833,14 +866,22 @@ impl EglContext {
 }
 
 pub enum Event<T> {
+    /// Your own events. See [`EvlProxy`].
+    User(T),
     /// Your app was resumed from the background or started and should show it's view.
     Resume,
     /// Your app's view should be destroyed but it can keep running in the background.
     Suspend,
     /// Your app should quit.
     Quit,
-    /// Your own events. See [`EvlProxy`].
-    User(T),
+    /// A monitor was discovered or updated.
+    MonitorUpdate { id: MonitorId, state: Monitor },
+    /// A monitor was removed.
+    MonitorRemove { id: MonitorId },
+    /// A  mouse, keyboard or touch device was discovered or removed.
+    /// If you never get this event, there is no keyboard or mouse attached.
+    // Device { exists: bool, device: () }, // TODO: implement this (wl_seat)
+    // Device { exists: bool, device: () }, // TODO: implement this (wl_seat)
     /// An event that belongs to a specific window. (Eg. focus, mouse movement)
     Window { id: WindowId, event: WindowEvent },
 }
@@ -1096,7 +1137,81 @@ macro_rules! ignore {
     };
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for EventLoop<T> { ignore!(WlRegistry, GlobalListContents); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for EventLoop<T> {
+    fn event(
+        evl: &mut Self,
+        registry: &WlRegistry,
+        event: WlRegistryEvent,
+        _data: &GlobalListContents,
+        _con: &wayland_client::Connection,
+        qh: &wayland_client::QueueHandle<Self>
+    ) {
+    
+        // TODO: test if this actually works with my second monitor
+        
+        if let WlRegistryEvent::Global { name, interface, .. } = event {
+            if &interface == "wl_output" { process_new_output(&mut evl.monitor_data, registry, name, qh); }
+            // note: the event for new outputs is emitted in the `WlOutput` event handler
+        }
+
+        else if let WlRegistryEvent::GlobalRemove { name } = event {
+            if evl.monitor_data.contains(&name) {
+                evl.monitor_data.remove(&name);
+                evl.events.push(Event::MonitorRemove { id: name })
+            }
+        }
+
+    }
+}
+
+// TODO: handle releasing / destroying objects properly to not leak memory (not necesserily right here but in general)
+
+fn process_new_output<T: 'static + Send>(monitor_data: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<EventLoop<T>>) {
+    let monitor = Monitor::default();
+    let output = registry.bind(name, 2, qh, Mutex::new(monitor)); // first time in my life using Mutex without an Arc
+    let id = get_monitor_id(&output);
+    monitor_data.insert(id);
+}
+
+impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<Monitor>> for EventLoop<T> {
+    fn event(
+        evl: &mut Self,
+        output: &WlOutput,
+        event: WlOutputEvent,
+        data: &Mutex<Monitor>,
+        _con: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>
+    ) {
+
+        let mut guard = data.lock().unwrap();
+    
+        match event {
+            WlOutputEvent::Name { name } => {
+                guard.name = name;
+            },
+            WlOutputEvent::Description { description } => {
+                guard.description = description;
+            },
+            WlOutputEvent::Mode { flags, width, height, refresh } => {
+                if flags == WEnum::Value(WlOutputMode::Current) {
+                    guard.size = Size { width: width as u32, height: height as u32 };
+                    guard.refresh = refresh as u32;
+                }
+            },
+            WlOutputEvent::Geometry { make, .. } => {
+                if guard.name.is_empty() {
+                    guard.name = make;
+                }
+            },
+            WlOutputEvent::Done => {
+                let id = get_monitor_id(output);
+                evl.events.push(Event::MonitorUpdate { id, state: guard.clone() });
+            },
+            _ => (),
+        }
+
+    }
+}
 
 impl<T: 'static + Send> wayland_client::Dispatch<WpViewporter, ()> for EventLoop<T> { ignore!(WpViewporter, ()); }
 impl<T: 'static + Send> wayland_client::Dispatch<WpViewport, ()> for EventLoop<T> { ignore!(WpViewport, ()); }
@@ -1112,14 +1227,14 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, Windo
         _qh: &wayland_client::QueueHandle<Self>
     ) {
     
-    if let ZxdgDecorationEvent::Configure { mode } = event {
-        let event = match mode {
-            WEnum::Value(ZxdgDecorationMode::ServerSide) => WindowEvent::Decorations { active: true },
-            WEnum::Value(ZxdgDecorationMode::ClientSide) => WindowEvent::Decorations { active: false },
-            _ => return,
-        };
-        evl.events.push(Event::Window { id: *data, event });
-    }
+        if let ZxdgDecorationEvent::Configure { mode } = event {
+            let event = match mode {
+                WEnum::Value(ZxdgDecorationMode::ServerSide) => WindowEvent::Decorations { active: true },
+                WEnum::Value(ZxdgDecorationMode::ClientSide) => WindowEvent::Decorations { active: false },
+                _ => return,
+            };
+            evl.events.push(Event::Window { id: *data, event });
+        }
 
     }
 }
