@@ -8,30 +8,31 @@
 [x] Special text input mode & Dead keys
 [ ] IME
 [x] Window transparency
-[ ] Window levels (always-on-top, always-on-bottom)
+[x] Window levels (always-on-top, always-on-bottom)
 [ ] Pop-Up windows
 [ ] Drag 'n drop
-[ ] Monitor handling
+[x] Monitor handling
 [x] Fullscreen (no custom video modes for now)
-[x] Dpi handling / Logical Scaling (this is fucking hard) (TODO: test)
-[ ] enabling or disabling server side decorations (hyprland forces server-side decorations)
+[ ] Dpi handling / Logical Scaling (this is fucking hard) (TODO: test + refine)
+[x] enabling or disabling server side decorations (hyprland forces server-side decorations)
 [x] OpenGL context creation (EGL)
 [x] Damage areas (OH YEAH BABY)
 [ ] Full Async
 [x] Continious Redraw + Vsync
 [ ] Handling things like sigterm as the Quit event
 [ ] Request user attention
+[ ] Changing/hiding the cursor (CursorIcon::None to hide)
 [ ] Clean up & TODO's
 
 # Other platform features
 [ ] Clipboard
-[ ] Notifications
-[ ] System tray
-[ ] File manager
+[ ] Notifications (using libnotify DBUS interface OR portal)
+[ ] System tray (using kde StatusNotifier OR portal)
+[ ] File manager (using ??? or portal)
 [ ] Screen saver (idle inhibition)
 
 # Platforms that will be supported
-- Linux (Wayland is the main focus)
+- Linux (Wayland only)
 - Windows
 - Android
 

@@ -26,12 +26,12 @@ fn main() {
 async fn run(evl: lsg_winit::AsyncEventLoop) {
 
     // create a simple window
-    let window = lsg_winit::WindowBuilder::new()
+    let mut window = Some(lsg_winit::WindowBuilder::new()
         .with_title("lsg-test")
         .with_inner_size(PhysicalSize { width: 500, height: 500 })
-        .build(&evl).await.unwrap();
+        .build(&evl).await.unwrap());
 
-    let mut state = GlutinState::new(&window);
+    let mut state = GlutinState::new(window.as_ref().unwrap());
 
     loop {
 
@@ -39,15 +39,18 @@ async fn run(evl: lsg_winit::AsyncEventLoop) {
 
         match event {
 
-            Event::WindowEvent { window_id: _, event } => match event {
-                WindowEvent::CloseRequested  => break,
+            Event::WindowEvent { window_id: _, event } if window.is_some() => match event {
+                WindowEvent::CloseRequested => {
+                    drop(window.take());
+                },
                 WindowEvent::Resized(size)   => {
                     // state.resize(PhysicalSize { width: 300, height: 300 });
                     state.resize(size);
                 },
                 WindowEvent::RedrawRequested => {
-                    state.render(&window);
-                    window.request_redraw();
+                    let val = window.as_ref().unwrap();
+                    state.render(val);
+                    val.request_redraw();
                 },
                 _ => (),
             },
