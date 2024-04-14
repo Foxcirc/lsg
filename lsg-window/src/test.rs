@@ -74,11 +74,13 @@ fn wayland() -> anyhow::Result<()> {
                 },
                 WindowEvent::Resize { size, .. } => {
                     ctx.bind(&egl).unwrap();
+                    // println!("resizing main surface!");
+                    // TOOD: when popup is opened it messes up the whole resizing/configuring again :(
                     ctx.resize(size);
                     lsg_gl::resize_viewport(size.width, size.height);
                 },
                 WindowEvent::Rescale { scale } => {
-                    println!("NEW SCALE: {scale}");
+                    println!("scale factor: {scale}");
                 },
                 WindowEvent::Decorations { active } => {
                     println!("server side decorations are: {}", if active { "enabled" } else { "disabled" });
@@ -96,10 +98,14 @@ fn wayland() -> anyhow::Result<()> {
                     }
                     else if let Key::ArrowUp = key {
                         let size = Size { width: 250, height: 100 };
-                        let popup_window2 = PopupWindow::new(evl, size, &window);
+                        let popup_window2 = LayerWindow::new(evl, size, WindowLayer::Top, None).unwrap();
+                        // let popup_window2 = PopupWindow::new(evl, size, &window);
                         let popup_ctx2 = EglContext::new(&egl, &popup_window2, size).unwrap();
                         popup_window = Some(popup_window2);
                         popup_ctx = Some(popup_ctx2);
+                    } else if let Key::Escape = key {
+                        drop(popup_window.take());
+                        drop(popup_ctx.take());
                     }
                     if !key.modifier() {
                         if let Key::Char(chr) = key {
@@ -140,6 +146,9 @@ fn wayland() -> anyhow::Result<()> {
                         popup_ctx2.resize(size);
                         lsg_gl::resize_viewport(size.width, size.height);
                     },
+                    WindowEvent::Rescale { scale } => {
+                        println!("@popup rescale to {scale}");
+                    }
                     WindowEvent::Close => {
                         drop(popup_ctx.take());
                         drop(popup_window.take());
