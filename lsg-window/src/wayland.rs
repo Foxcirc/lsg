@@ -53,6 +53,7 @@ pub struct EventLoop<T: 'static + Send /*  = () */> { // TODO: reenable the defa
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
     monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
+    last_serial: u32,
 }
 
 struct KeyboardData {
@@ -172,13 +173,14 @@ impl<T: 'static + Send> EventLoop<T> {
                 has_focus: 0,
                 xkb_context,
                 keymap_specific: None,
-                repeat_timer: timerfd::TimerFd::new()?,
+                repeat_timer: timerfd::TimerFd::new_custom(timerfd::ClockId::Monotonic, true, false)?,
                 repeat_key: 0,
                 repeat_rate: Duration::ZERO,
                 repeat_delay: Duration::ZERO,
                 input_mode: InputMode::SingleKey,
             },
             monitor_list,
+            last_serial: 0, // we don't use an option here since an invalid serial may be a common case and is not treated as an error
         };
 
         Ok(this)
@@ -357,6 +359,7 @@ impl<T> EvlProxy<T> {
 struct WaylandState {
     compositor: WlCompositor,
     wm: XdgWmBase,
+    seat: WlSeat,
     viewport_mgr: WpViewporter,
     frac_scaling_mgr: WpFractionalScaleManagerV1,
     decoration_mgr: ZxdgDecorationManagerV1,
@@ -371,12 +374,10 @@ impl WaylandState {
             if &val.interface == "wl_output" { process_new_output(monitor_data, globals.registry(), val.name, qh); }
         });
 
-        // bind wl_seat, we don't need to access it though
-        let _wl_seat: WlSeat = globals.bind(qh, 1..=1, ())?;
-
         Ok(Self {
             compositor: globals.bind(qh, 4..=6, ())?,
             wm: globals.bind(qh, 1..=1, ())?,
+            seat: globals.bind(qh, 1..=1, ())?,
             viewport_mgr: globals.bind(qh, 1..=1, ())?,
             frac_scaling_mgr: globals.bind(qh, 1..=1, ())?, // TODO: only bind if exists (check like above)
             decoration_mgr: globals.bind(qh, 1..=1, ())?,
@@ -639,11 +640,13 @@ impl<T: 'static + Send> PopupWindow<T> {
         // xdg-popup role
         let xdg_surface = evl.wayland.wm.get_xdg_surface(&base.surface, &evl.qh, Arc::clone(&base.shared));
         let xdg_positioner = evl.wayland.wm.create_positioner(&evl.qh, ());
-        // xdg_positioner.set_reactive();
+        let parent_guard = parent.shared.lock().unwrap();
         xdg_positioner.set_size(size.width as i32, size.height as i32);
-        xdg_positioner.set_anchor_rect(100, 100, 100, 100);
-        // xdg_positioner.set_anchor(Ancho)
+        xdg_positioner.set_anchor_rect(0, 0, parent_guard.new_width as i32, parent_guard.new_height as i32);
+        drop(parent_guard);
+        // xdg_positioner.set_reactive();
         let xdg_popup = xdg_surface.get_popup(Some(&parent.xdg_surface), &xdg_positioner, &evl.qh, Arc::clone(&base.shared));
+        xdg_popup.grab(&evl.wayland.seat, evl.last_serial);
 
         base.surface.commit();
 
@@ -1726,7 +1729,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T
 
             },
 
-            WlKeyboardEvent::Key { key: raw_key, state, .. } => {
+            WlKeyboardEvent::Key { key: raw_key, state, serial, .. } => {
 
                 let dir = match state {
                     WEnum::Value(KeyState::Pressed) => Direction::Down,
@@ -1734,6 +1737,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T
                     WEnum::Value(..) => return,
                     WEnum::Unknown(..) => return
                 };
+
+                evl.last_serial = serial;
 
                 process_key_event(evl, raw_key, dir, Source::Event);
 
@@ -1902,7 +1907,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T>
 
              },
 
-            WlPointerEvent::Button { button, state, .. } => {
+            WlPointerEvent::Button { button, state, serial, .. } => {
 
                 const BTN_LEFT: u32 = 0x110;
                 const BTN_RIGHT: u32 = 0x111;
@@ -1933,6 +1938,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T>
                 } else {
                     WindowEvent::MouseUp { button: converted, x: evl.mouse_data.x, y: evl.mouse_data.y }
                 };
+
+                evl.last_serial = serial;
 
                 evl.events.push(Event::Window {
                     id: evl.mouse_data.has_focus,
