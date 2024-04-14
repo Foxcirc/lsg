@@ -400,11 +400,13 @@ pub struct BaseWindow<T: 'static + Send> {
     qh: QueueHandle<EventLoop<T>>,
     compositor: WlCompositor, // used to create opaque regions
     surface: WlSurface,
+    frac_scale: WpFractionalScaleV1,
 }
 
 impl<T: 'static + Send> Drop for BaseWindow<T> {
     fn drop(&mut self) {
         println!("@basewindow dropped");
+        self.frac_scale.destroy();
         self.surface.destroy();
     }
 }
@@ -428,15 +430,15 @@ impl<T: 'static + Send> BaseWindow<T> {
         let surface = evl.wayland.compositor.create_surface(&evl.qh, Arc::clone(&shared));
 
         // fractional scaling
-        // let viewport = evl.wayland.viewport_mgr.get_viewport(&surface, &evl.qh, ());
-        // let _frac_scale = evl.wayland.frac_scaling_mgr.get_fractional_scale(&surface, &evl.qh, Arc::clone(&shared));
+        let viewport = evl.wayland.viewport_mgr.get_viewport(&surface, &evl.qh, ());
+        let frac_scale = evl.wayland.frac_scaling_mgr.get_fractional_scale(&surface, &evl.qh, Arc::clone(&shared));
 
         let id = get_window_id(&surface);
 
         // update state with the new information
         let mut guard = shared.lock().unwrap();
         guard.id = id;
-        // guard.viewport = Some(viewport);
+        guard.viewport = Some(viewport);
         drop(guard);
 
         Self {
@@ -445,6 +447,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             qh: evl.qh.clone(),
             compositor: evl.wayland.compositor.clone(),
             surface,
+            frac_scale,
         }
         
     }
@@ -499,9 +502,8 @@ struct WindowShared<T> {
 impl<T> Drop for WindowShared<T> {
     fn drop(&mut self) {
         println!("@windowshared dropped");
-        if let Some(ref mut val) = self.viewport { // TOOD: unwrap
-            val.destroy();
-        }
+        let viewport = self.viewport.as_ref().unwrap();
+        viewport.destroy();
     }
 }
 
@@ -522,7 +524,9 @@ impl<T: 'static + Send> ops::Deref for Window<T> {
 /// The window is closed on drop.
 impl<T: 'static + Send> Drop for Window<T> {
     fn drop(&mut self) {
-        self.destroy();
+        self.xdg_decoration.destroy();
+        self.xdg_toplevel.destroy();
+        self.xdg_surface.destroy();
     }
 }
 
@@ -552,16 +556,7 @@ impl<T: 'static + Send> Window<T> {
     }
 
     pub fn close(self) {
-        self.destroy();  // also called in drop
-    }
-
-    pub(crate) fn destroy(&self) { // TODO make private
-        // let guard = self.base.shared.lock().unwrap();
-        // guard.viewport.as_ref().unwrap().destroy();
-        self.xdg_decoration.destroy();
-        self.xdg_toplevel.destroy();
-        self.xdg_surface.destroy();
-        self.base.surface.destroy();
+        drop(self);
     }
 
     pub fn decorations(&mut self, value: bool) {
@@ -614,7 +609,7 @@ impl<T: 'static + Send> Window<T> {
 
 pub struct PopupWindow<T: 'static + Send> {
     base: BaseWindow<T>,
-    xdg_surface: XdgSurface, // TODO: add xdg_decoration to PopupWindow aswell
+    xdg_surface: XdgSurface,
     xdg_popup: XdgPopup,
 }
 
@@ -628,7 +623,9 @@ impl<T: 'static + Send> ops::Deref for PopupWindow<T> {
 /// The window is closed on drop.
 impl<T: 'static + Send> Drop for PopupWindow<T> {
     fn drop(&mut self) {
-        self.destroy();
+        self.xdg_popup.destroy();
+        self.xdg_surface.destroy();
+        self.base.surface.destroy();
     }
 }
 
@@ -645,7 +642,6 @@ impl<T: 'static + Send> PopupWindow<T> {
         // xdg_positioner.set_reactive();
         xdg_positioner.set_size(size.width as i32, size.height as i32);
         xdg_positioner.set_anchor_rect(100, 100, 100, 100);
-        xdg_positioner.destroy();
         // xdg_positioner.set_anchor(Ancho)
         let xdg_popup = xdg_surface.get_popup(Some(&parent.xdg_surface), &xdg_positioner, &evl.qh, Arc::clone(&base.shared));
 
@@ -660,15 +656,7 @@ impl<T: 'static + Send> PopupWindow<T> {
     }
 
     pub fn close(self) {
-        self.destroy();
-    }
-
-    fn destroy(&self) {
-        // let guard = self.base.shared.lock().unwrap();
-        // guard.viewport.as_ref().unwrap().destroy(); // TODO: impl Drop for BaseWindow/WindowShared and destroy viewport & base there
-        self.xdg_popup.destroy();
-        // self.xdg_surface.destroy();
-        // self.base.surface.destroy();
+        drop(self);
     }
 
 }
@@ -719,7 +707,8 @@ impl<T: 'static + Send> ops::Deref for LayerWindow<T> {
 /// The window is closed on drop.
 impl<T: 'static + Send> Drop for LayerWindow<T> {
     fn drop(&mut self) {
-        self.destroy();
+        self.zwlr_surface.destroy();
+        self.base.surface.destroy();
     }
 }
 
@@ -756,12 +745,7 @@ impl<T: 'static + Send> LayerWindow<T> {
     }
 
     pub fn close(self) {
-        self.destroy();
-    }
-
-    fn destroy(&self) {
-        self.zwlr_surface.destroy();
-        self.base.surface.destroy();
+        drop(self);
     }
 
     pub fn anchor(&self, anchor: WindowAnchor) {
@@ -1454,9 +1438,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowSha
             let height = guard.new_height;
 
             // update the window's viewport destination
-            if let Some(ref viewport) = guard.viewport {
-                viewport.set_destination(width as i32, height as i32);
-            }
+            let viewport = guard.viewport.as_ref().unwrap();
+            viewport.set_destination(width as i32, height as i32);
 
             // foreward the final configuration state to the user
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
@@ -1559,7 +1542,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<W
             let height = guard.new_height;
 
             // update the window's viewport destination
-            let Some(ref viewport) = guard.viewport else { unreachable!() };
+            let viewport = guard.viewport.as_ref().unwrap();
             viewport.set_destination(width as i32, height as i32);
 
             // foreward the final configuration state to the user

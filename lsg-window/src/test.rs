@@ -59,11 +59,10 @@ fn wayland() -> anyhow::Result<()> {
             Event::MonitorRemove { .. } => todo!(),
             Event::Window { id, event } if id == window.id() => match event {
                 WindowEvent::Close => {
-                    window.destroy();
                     // drop(window);
                     // std::thread::sleep_ms(1000);
                     // std::process::exit(0);
-                    // evl.request_quit();
+                    evl.request_quit();
                 },
                 WindowEvent::Redraw => {
                     ctx.bind(&egl).unwrap();
@@ -97,8 +96,7 @@ fn wayland() -> anyhow::Result<()> {
                     }
                     else if let Key::ArrowUp = key {
                         let size = Size { width: 250, height: 100 };
-                        ctx.unbind(&egl).unwrap(); // TODO: remove
-                        let popup_window2 = Window::new(evl, size);
+                        let popup_window2 = PopupWindow::new(evl, size, &window);
                         let popup_ctx2 = EglContext::new(&egl, &popup_window2, size).unwrap();
                         popup_window = Some(popup_window2);
                         popup_ctx = Some(popup_ctx2);
@@ -145,6 +143,12 @@ fn wayland() -> anyhow::Result<()> {
                     WindowEvent::Close => {
                         drop(popup_ctx.take());
                         drop(popup_window.take());
+                    },
+                    WindowEvent::MouseDown { button, .. } => {
+                        println!("@popup MOUSE DOWN button = {:?}", button);
+                    },
+                    WindowEvent::KeyDown { key, .. } => {
+                        println!("@popuo KEY DOWN key = {:?}", key);
                     }
                     _ => (),
                 }
