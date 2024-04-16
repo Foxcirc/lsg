@@ -464,7 +464,9 @@ impl<T: 'static + Send> BaseWindow<T> {
         self.id
     }
 
-    pub fn request_redraw(&self, _token: PresentToken) {
+    #[track_caller]
+    pub fn request_redraw(&self, token: PresentToken) {
+        assert!(self.id == token.id, "present token for another window");
         let mut guard = self.shared.lock().unwrap();
         guard.redraw_requested = true;
     }
@@ -478,7 +480,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             self.surface.frame(&self.qh, Arc::clone(&self.shared));
             self.surface.commit();
         }
-        PresentToken { _inner: () }
+        PresentToken { id: self.id }
     }
 
     pub fn transparency(&self, value: bool) {
@@ -726,7 +728,7 @@ impl<T: 'static + Send> Drop for LayerWindow<T> {
 
 impl<T: 'static + Send> LayerWindow<T> {
 
-    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, EvlError> {
+    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, Unsupported> {
 
         let base = BaseWindow::new(evl, size);
 
@@ -740,7 +742,9 @@ impl<T: 'static + Send> LayerWindow<T> {
         let wl_output = monitor.map(|val| &val.wl_output);
 
         // creating this kind of window requires some wayland extensions 
-        let layer_shell_mgr = evl.wayland.layer_shell_mgr.as_ref().ok_or(EvlError::Unsupported)?;
+        let layer_shell_mgr = evl.wayland.layer_shell_mgr.as_ref().ok_or(
+            Unsupported(ZwlrLayerShellV1::interface().name)
+        )?;
 
         // layer-shell role
         let zwlr_surface = layer_shell_mgr.get_layer_surface(
@@ -843,7 +847,7 @@ impl Rect {
 }
 
 #[derive(Clone, Copy)]
-pub struct PresentToken { _inner: () }
+pub struct PresentToken { id: WindowId }
 
 type FnSwapBuffersWithDamage = fn(
     khronos_egl::EGLDisplay,
@@ -915,6 +919,7 @@ impl EglInstance {
 
 /// One-per-window egl context.
 pub struct EglContext {
+    id: WindowId,
     wl_egl_surface: wayland_egl::WlEglSurface, // note: needs to be kept alive
     width: u32, // updated in resize
     height: u32,
@@ -951,6 +956,7 @@ impl EglContext {
         };
 
         Ok(Self {
+            id: window.id,
             wl_egl_surface,
             width: size.width,
             height: size.height,
@@ -984,7 +990,10 @@ impl EglContext {
     }
 
     /// Returns an error if this context is not the current one.
-    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect], _token: PresentToken) -> Result<(), EvlError> {
+    #[track_caller]
+    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect], token: PresentToken) -> Result<(), EvlError> {
+
+        assert!(self.id == token.id, "present token for another window");
 
         // recalculate the origin of the rects to be in the top left
 
@@ -1791,27 +1800,16 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
     let repeat = source == Source::KeyRepeat;
 
     if dir == Direction::Down {
-
-        // arm key-repeat timer with the correct delay and repeat rate
-        if source == Source::Event { // only re-arm if this was NOT called from a repeated key event
-            evl.keyboard_data.repeat_key = raw_key;
-            evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Periodic {
-                current: evl.keyboard_data.repeat_delay,
-                interval: evl.keyboard_data.repeat_rate
-            }, timerfd::SetTimeFlags::Default);
-
-            // update the key state
-            keymap_specific.pressed_keys.key_down(xkb_key);
-        }
+        
+        let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
+        let modifier = xkb_sym.is_modifier_key(); // if this key is a modifier key
 
         match evl.keyboard_data.input_mode {
             InputMode::SingleKey => {
-                let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
                 let key = translate_xkb_sym(xkb_sym);
                 events.push(WindowEvent::KeyDown { key, repeat });
             },
             InputMode::Text => {
-                let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
                 keymap_specific.compose_state.feed(xkb_sym);
                 match keymap_specific.compose_state.status() {
                     xkb::Status::Nothing => {
@@ -1838,6 +1836,20 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
                     },
                     xkb::Status::Cancelled => {},
                 }
+            }
+        }
+
+        if !modifier {
+            // arm key-repeat timer with the correct delay and repeat rate
+            if source == Source::Event { // only re-arm if this was NOT called from a repeated key event
+                evl.keyboard_data.repeat_key = raw_key;
+                evl.keyboard_data.repeat_timer.set_state(timerfd::TimerState::Periodic {
+                    current: evl.keyboard_data.repeat_delay,
+                    interval: evl.keyboard_data.repeat_rate
+                }, timerfd::SetTimeFlags::Default);
+
+                // update the key state
+                keymap_specific.pressed_keys.key_down(xkb_key);
             }
         }
 
@@ -2010,6 +2022,17 @@ impl fmt::Display for EvlError {
 }
 
 impl StdError for EvlError {}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Unsupported(&'static str);
+
+impl fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "required wayland features not present: {}", self.0)
+    }
+}
+
+impl StdError for Unsupported {}
 
 impl From<wayland_client::ConnectError> for EvlError {
     fn from(value: wayland_client::ConnectError) -> Self {

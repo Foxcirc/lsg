@@ -7,9 +7,11 @@
 [x] Key repeat
 [x] Special text input mode & Dead keys
 [ ] IME
+[ ] Accessibility features (like wl_text_input_v2 protocol or smth.)
 [x] Window transparency
 [x] Window levels (always-on-top, always-on-bottom)
-[ ] Pop-Up windows
+[x] Multiple windows
+[x] Pop-Up windows (over screen)
 [ ] Drag 'n drop
 [x] Monitor handling
 [x] Fullscreen (no custom video modes for now)

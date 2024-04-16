@@ -98,7 +98,7 @@ fn wayland() -> anyhow::Result<()> {
                     }
                     else if let Key::ArrowUp = key {
                         let size = Size { width: 250, height: 100 };
-                        let popup_window2 = LayerWindow::new(evl, size, WindowLayer::Top, None).unwrap();
+                        let popup_window2 = Window::new(evl, size);
                         // let popup_window2 = PopupWindow::new(evl, size, &window);
                         let popup_ctx2 = EglContext::new(&egl, &popup_window2, size).unwrap();
                         popup_window = Some(popup_window2);
@@ -132,13 +132,11 @@ fn wayland() -> anyhow::Result<()> {
                 match event {
                     WindowEvent::Redraw => {
                         popup_ctx2.bind(&egl).unwrap();
-                        println!("@popup redraw");
                         lsg_gl::clear(0.2, 0.7, 0.1, 1.0);
-                        let token = window.pre_present_notify();
-                        // let damage = [Rect::INFINITE];
-                        let damage = [Rect::new(0, 0, 100, 100)];
+                        let token = popup_window2.pre_present_notify();
+                        let damage = [Rect::INFINITE];
                         popup_ctx2.swap_buffers(&egl, &damage, token).unwrap();
-                        window.request_redraw(token); // fuck. you.
+                        popup_window2.request_redraw(token); // fuck. you.
                     },
                     WindowEvent::Resize { size, .. } => {
                         println!("@popup resize");
@@ -146,9 +144,9 @@ fn wayland() -> anyhow::Result<()> {
                         popup_ctx2.resize(size);
                         lsg_gl::resize_viewport(size.width, size.height);
                     },
-                    WindowEvent::Rescale { scale } => {
-                        println!("@popup rescale to {scale}");
-                    }
+                    // WindowEvent::Rescale { scale } => {
+                    //     println!("@popup rescale to {scale}");
+                    // }
                     WindowEvent::Close => {
                         drop(popup_ctx.take());
                         drop(popup_window.take());
