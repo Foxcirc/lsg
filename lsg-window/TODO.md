@@ -21,8 +21,8 @@
 [x] Damage areas (OH YEAH BABY)
 [ ] Full Async
 [x] Continious Redraw + Vsync
-[ ] Handling things like sigterm as the Quit event
-[ ] Request user attention
+[x] Handling things like sigterm as the Quit event
+[x] Request user attention
 [ ] Changing/hiding the cursor (CursorIcon::None to hide)
 [ ] Clean up & TODO's
 

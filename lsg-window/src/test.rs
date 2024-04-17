@@ -1,10 +1,9 @@
 
 use std::io::Write;
 
-#[test]
-fn wayland() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
 
-    use crate::wayland::*;
+    use lsg_window::wayland::*;
 
     // create a new event loop, this will initialize a connection to the wayland compositor
     let mut evl = EventLoop::new("lsg-test")?;
@@ -51,7 +50,10 @@ fn wayland() -> anyhow::Result<()> {
                 // window.title("no-test");
             }, // TODO: implement the suspend event
             Event::Suspend => unimplemented!(),
-            Event::Quit => evl.exit(),
+            Event::Quit { reason } => {
+                println!("quit reason: {reason:?}");
+                evl.exit();
+            },
             Event::MonitorUpdate { id, state } => {
                 println!("new monitor with id {id}: {state:?}");
                 println!("refresh as fps: {}", state.info.fps());
@@ -156,6 +158,8 @@ fn wayland() -> anyhow::Result<()> {
                     },
                     WindowEvent::KeyDown { key, .. } => {
                         println!("@popuo KEY DOWN key = {:?}", key);
+                        println!("Requesting attention for the other window...");
+                        window.request_user_attention(evl, Urgency::Info);
                     }
                     _ => (),
                 }
