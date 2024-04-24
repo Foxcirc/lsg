@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<()> {
                         let ds = DataSource::new(evl, &[DataKind::Text], IoMode::Blocking);
 
                         // drag 'n drop
-                        window.start_drag_and_drop(evl, icon, &ds); // TODO: enforce that it is only appropriate to start a dnd on left click held down + mouse move
+                        window.start_drag_and_drop(evl, icon, &ds); // TODO: document that it is only appropriate to start a dnd on left click held down + mouse move
 
                         data_source = Some(ds);
 
@@ -125,6 +125,9 @@ fn main() -> anyhow::Result<()> {
                     if let Key::Tab = key {
                         max = !max;
                         window.fullscreen(max, None);
+                    }
+                    if let Key::Space = key {
+                        window.set_cursor(evl, CursorStyle::Predefined { shape: CursorShape::Help });
                     }
                     else if let Key::Return = key {
                         // let popup_window2 = PopupWindow::new(evl, size, &window);
@@ -159,8 +162,8 @@ fn main() -> anyhow::Result<()> {
                     std::io::stdout().flush().unwrap();
                 },
                 WindowEvent::Dnd { event } => match event {
-                    DndEvent::Motion { session, .. } => {
-                        session.advertise(&[DataKind::Text]);
+                    DndEvent::Motion { handle, .. } => {
+                        handle.advertise(&[DataKind::Text]);
                     },
                     DndEvent::Drop { x, y, offer } => {
                         println!("object dropped at {x}, {y}");

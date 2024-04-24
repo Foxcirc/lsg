@@ -35,6 +35,7 @@ use wayland_protocols::xdg::{
 use wayland_protocols::wp::{
     fractional_scale::v1::client::{wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, wp_fractional_scale_v1::{WpFractionalScaleV1, Event as WpFractionalScaleV1Event}},
     viewporter::client::{wp_viewporter::WpViewporter, wp_viewport::WpViewport},
+    cursor_shape::v1::client::{wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, wp_cursor_shape_device_v1::{WpCursorShapeDeviceV1, Shape as WlCursorShape}},
 };
 
 use wayland_protocols_wlr::layer_shell::v1::client::{
@@ -64,8 +65,14 @@ pub struct EventLoop<T: 'static + Send = ()> {
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
     offer_data: OfferData, // drag-and-drop / selection data
+    cursor_data: CursorData,
     monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
     last_serial: u32,
+}
+
+struct CursorData {
+    styles: HashMap<WindowId, CursorStyle>, // per-window cursor style
+    last_enter_serial: u32, // last mouse enter serial
 }
 
 struct OfferData {
@@ -209,6 +216,10 @@ impl<T: 'static + Send> EventLoop<T> {
                 current_selection: None,
                 x: 0.0, y: 0.0,
                 dnd_icon: None,
+            },
+            cursor_data: CursorData {
+                styles: HashMap::new(),
+                last_enter_serial: 0,
             },
             monitor_list,
             last_serial: 0, // we don't use an option here since an invalid serial may be a common case and is not treated as an error
@@ -434,12 +445,15 @@ struct WaylandState {
     wm: XdgWmBase,
     shm: WlShm,
     seat: WlSeat,
+    pointer: Option<WlPointer>,
+    shape_device: Option<WpCursorShapeDeviceV1>,
     data_device_mgr: WlDataDeviceManager,
     data_device: WlDataDevice,
     frac_scale_mgrs: Option<FracScaleMgrs>,
     decoration_mgr: Option<ZxdgDecorationManagerV1>,
     layer_shell_mgr: Option<ZwlrLayerShellV1>,
     activation_mgr: Option<XdgActivationV1>,
+    cursor_shape_mgr: Option<WpCursorShapeManagerV1>,
 }
 
 impl WaylandState {
@@ -462,6 +476,8 @@ impl WaylandState {
             wm: globals.bind(qh, 1..=1, ())?,
             shm: globals.bind(qh, 1..=1, ())?,
             seat,
+            pointer: None,
+            shape_device: None,
             data_device_mgr,
             data_device,
             frac_scale_mgrs: globals.bind(qh, 1..=1, ()).ok() .and_then( // only Some if both are present
@@ -470,6 +486,7 @@ impl WaylandState {
             decoration_mgr: globals.bind(qh, 1..=1, ()).ok(),
             layer_shell_mgr: globals.bind(qh, 1..=1, ()).ok(),
             activation_mgr: globals.bind(qh, 1..=1, ()).ok(),
+            cursor_shape_mgr: globals.bind(qh, 1..=1, ()).ok(),
         })
 
     }
@@ -740,6 +757,110 @@ impl<T: 'static + Send> Window<T> {
 
     }
 
+    // TODO: make custom Pos type for hx and hy
+    pub fn set_cursor(&self, evl: &mut EventLoop<T>, style: CursorStyle) {
+
+        // note: the CustomIcon will also be kept alive by the styles as long as needed
+        evl.cursor_data.styles.insert(self.id, style);
+
+        // immediatly apply the style
+        process_new_cursor_style(evl, self.id);
+
+    }
+
+}
+
+#[derive(Debug)]
+pub enum CursorStyle {
+    Hidden,
+    Custom { icon: CustomIcon, hx: usize, hy: usize },
+    Predefined { shape: CursorShape }
+}
+
+impl Default for CursorStyle {
+    fn default() -> Self {
+        Self::Predefined { shape: CursorShape::default() }
+    }
+}
+
+#[derive(Debug, Default)]
+pub enum CursorShape {
+    #[default]
+    Default,
+    ContextMenu,
+    Help,
+    Pointer,
+    Progress,
+    Wait,
+    Cell,
+    Crosshair,
+    Text,
+    VerticalText,
+    Alias,
+    Copy,
+    Move,
+    NoDrop,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    EResize,
+    NResize,
+    NeResize,
+    NwResize,
+    SResize,
+    SeResize,
+    SwResize,
+    WResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ColResize,
+    RowResize,
+    AllScroll,
+    ZoomIn,
+    ZoomOut,
+}
+
+impl CursorShape {
+    pub(crate) fn to_wl(&self) -> WlCursorShape {
+        match self {
+            Self::Default => WlCursorShape::Default,
+            Self::ContextMenu => WlCursorShape::ContextMenu,
+            Self::Help => WlCursorShape::Help,
+            Self::Pointer => WlCursorShape::Pointer,
+            Self::Progress => WlCursorShape::Progress,
+            Self::Wait => WlCursorShape::Wait,
+            Self::Cell => WlCursorShape::Cell,
+            Self::Crosshair => WlCursorShape::Crosshair,
+            Self::Text => WlCursorShape::Text,
+            Self::VerticalText => WlCursorShape::VerticalText,
+            Self::Alias => WlCursorShape::Alias,
+            Self::Copy => WlCursorShape::Copy,
+            Self::Move => WlCursorShape::Move,
+            Self::NoDrop => WlCursorShape::NoDrop,
+            Self::NotAllowed => WlCursorShape::NotAllowed,
+            Self::Grab => WlCursorShape::Grab,
+            Self::Grabbing => WlCursorShape::Grabbing,
+            Self::EResize => WlCursorShape::EResize,
+            Self::NResize => WlCursorShape::NResize,
+            Self::NeResize => WlCursorShape::NeResize,
+            Self::NwResize => WlCursorShape::NwResize,
+            Self::SResize => WlCursorShape::SResize,
+            Self::SeResize => WlCursorShape::SeResize,
+            Self::SwResize => WlCursorShape::SwResize,
+            Self::WResize => WlCursorShape::WResize,
+            Self::EwResize => WlCursorShape::EwResize,
+            Self::NsResize => WlCursorShape::NsResize,
+            Self::NeswResize => WlCursorShape::NeswResize,
+            Self::NwseResize => WlCursorShape::NwseResize,
+            Self::ColResize => WlCursorShape::ColResize,
+            Self::RowResize => WlCursorShape::RowResize,
+            Self::AllScroll => WlCursorShape::AllScroll,
+            Self::ZoomIn => WlCursorShape::ZoomIn,
+            Self::ZoomOut => WlCursorShape::ZoomOut,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -953,6 +1074,12 @@ pub struct CustomIcon {
     wl_shm_pool: WlShmPool,
     wl_buffer: WlBuffer,
     wl_surface: WlSurface,
+}
+
+impl fmt::Debug for CustomIcon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CustomIcon {{ ... }}")
+    }
 }
 
 /// The icon surface is destroyed on drop.
@@ -1497,18 +1624,18 @@ pub enum DataSourceEvent {
 
 #[derive(Debug)]
 pub enum DndEvent {
-    Motion { x: f64, y: f64, session: DndSession },
+    Motion { x: f64, y: f64, handle: DndHandle },
     Drop { x: f64, y: f64, offer: DataOffer },
     Cancel,
 }
 
 #[derive(Debug)]
-pub struct DndSession {
+pub struct DndHandle {
     last_serial: u32,
     wl_data_offer: Option<WlDataOffer>,
 }
 
-impl DndSession {
+impl DndHandle {
     pub fn advertise(&self, kinds: &[DataKind]) {
         if let Some(ref wl_data_offer) = self.wl_data_offer {
             for kind in kinds {
@@ -1838,6 +1965,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgPositioner, ()> for EventLoo
 impl<T: 'static + Send> wayland_client::Dispatch<WpViewporter, ()> for EventLoop<T> { ignore!(WpViewporter, ()); }
 impl<T: 'static + Send> wayland_client::Dispatch<WpViewport, ()> for EventLoop<T> { ignore!(WpViewport, ()); }
 
+impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeManagerV1, ()> for EventLoop<T> { ignore!(WpCursorShapeManagerV1, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeDeviceV1, ()> for EventLoop<T> { ignore!(WpCursorShapeDeviceV1, ()); }
+
 impl<T: 'static + Send> wayland_client::Dispatch<WlDataDeviceManager, ()> for EventLoop<T> { ignore!(WlDataDeviceManager, ()); }
 impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop<T> {
     fn event(
@@ -1864,14 +1994,14 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
             evl.offer_data.x = x;
             evl.offer_data.y = y;
 
-            let advertisor = DndSession {
+            let advertisor = DndHandle {
                 last_serial: evl.last_serial,
                 wl_data_offer,
             };
 
             evl.events.push(Event::Window {
                 id,
-                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, session: advertisor } }
+                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor } }
             });
 
         }
@@ -1881,7 +2011,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
             evl.offer_data.x = x;
             evl.offer_data.y = y;
 
-            let advertisor = DndSession {
+            let advertisor = DndHandle {
                 last_serial: evl.last_serial,
                 wl_data_offer: evl.offer_data.current_offer.clone(),
             };
@@ -1890,7 +2020,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
 
             evl.events.push(Event::Window {
                 id: get_window_id(surface),
-                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, session: advertisor } }
+                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor } }
             });
 
         }
@@ -2071,7 +2201,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleManagerV1, ()>
 
 impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for EventLoop<T> {
     fn event(
-        _evl: &mut Self,
+        evl: &mut Self,
         seat: &WlSeat,
         event: WlSeatEvent,
         _data: &(),
@@ -2083,7 +2213,12 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for EventLoop<T> {
                 seat.get_keyboard(qh, ());
             }
             if capabilities.contains(WlSeatCapability::Pointer) {
-                seat.get_pointer(qh, ());
+                let wl_pointer = seat.get_pointer(qh, ());
+                if let Some(ref wp_cursor_shape_mgr) = evl.wl.cursor_shape_mgr {
+                    let wl_shape_device = wp_cursor_shape_mgr.get_pointer(&wl_pointer, qh, ());
+                    evl.wl.shape_device = Some(wl_shape_device);
+                }
+                evl.wl.pointer = Some(wl_pointer);
             }
         }
     }
@@ -2563,7 +2698,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T>
 
         match event {
 
-             WlPointerEvent::Enter { surface, surface_x, surface_y, .. } => {
+             WlPointerEvent::Enter { surface, surface_x, surface_y, serial } => {
 
                 let id = get_window_id(&surface);
 
@@ -2574,6 +2709,13 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T>
                 evl.events.push(Event::Window { id, event:
                     WindowEvent::MouseMotion { x: surface_x, y: surface_y }
                 });
+
+                // set the apropriate per-window pointer style
+                // wayland by default only supports client-wide pointer styling
+
+                evl.cursor_data.last_enter_serial = serial;
+
+                process_new_cursor_style(evl, id);
 
              },
 
@@ -2664,6 +2806,37 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for EventLoop<T>
         }
         
     }
+}
+
+fn process_new_cursor_style<T: 'static + Send>(evl: &mut EventLoop<T>, id: WindowId) {
+
+    let style = evl.cursor_data.styles.get(&id)
+        .unwrap_or(&CursorStyle::Predefined { shape: CursorShape::Default });
+
+    if let Some(ref wl_pointer) = evl.wl.pointer {
+
+        let serial = evl.cursor_data.last_enter_serial;
+
+        match style {
+            CursorStyle::Hidden => {
+                wl_pointer.set_cursor(serial, None, 0, 0);
+            },
+            CursorStyle::Custom { icon, hx, hy } => {
+                wl_pointer.set_cursor(
+                    serial, Some(&icon.wl_surface),
+                    *hx as i32, *hy as i32
+                )
+            },
+            CursorStyle::Predefined { shape } => {
+                let wl_shape = shape.to_wl();
+                if let Some(ref wp_shape_device) = evl.wl.shape_device {
+                    wp_shape_device.set_shape(serial, wl_shape);
+                }
+            }
+        }
+        // mat
+    }
+
 }
 
 #[derive(Debug)]
