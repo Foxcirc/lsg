@@ -48,7 +48,7 @@ use nix::{
     sys::{timerfd::{TimerFd, ClockId, TimerFlags, TimerSetTimeFlags, Expiration}, eventfd::{EventFd, EfdFlags}, signalfd::{SignalFd, SfdFlags, SigSet}, signal::Signal},
     poll::{PollFd, PollFlags, poll, PollTimeout}, fcntl::{self, OFlag}, unistd::pipe2
 };
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex, MutexGuard}, io::{self, Write}, os::fd::{AsFd, FromRawFd, AsRawFd}, time::Duration, env, ops, collections::HashSet, fs};
+use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex, MutexGuard}, io::{self, Write}, os::fd::{AsFd, FromRawFd, AsRawFd}, time::Duration, env, ops, collections::{HashSet, HashMap}, fs};
 
 pub struct EventLoop<T: 'static + Send = ()> {
     appid: String,
@@ -72,8 +72,8 @@ struct OfferData {
     has_offer: Option<WlSurface>,
     current_offer: Option<WlDataOffer>,
     current_selection: Option<WlDataOffer>,
-    x: f64,
-    y: f64,
+    x: f64, y: f64,
+    dnd_icon: Option<CustomIcon>, // set when Window::start_drag_and_drop is called
 }
 
 struct KeyboardData {
@@ -84,7 +84,7 @@ struct KeyboardData {
     repeat_key: u32, // raw key
     repeat_rate: Duration,
     repeat_delay: Duration,
-    input_mode: InputMode,
+    input_modes: HashMap<WindowId, InputMode>, // per-window input mode
 }
 
 struct KeymapSpecificData {
@@ -201,13 +201,14 @@ impl<T: 'static + Send> EventLoop<T> {
                 repeat_key: 0,
                 repeat_rate: Duration::from_millis(60),
                 repeat_delay: Duration::from_millis(450), // sensible defaults if no RepeatInfo event is provided
-                input_mode: InputMode::SingleKey,
+                input_modes: HashMap::new(),
             },
             offer_data: OfferData {
                 has_offer: None,
                 current_offer: None,
                 current_selection: None,
-                x: 0.0, y: 0.0
+                x: 0.0, y: 0.0,
+                dnd_icon: None,
             },
             monitor_list,
             last_serial: 0, // we don't use an option here since an invalid serial may be a common case and is not treated as an error
@@ -291,14 +292,10 @@ impl<T: 'static + Send> EventLoop<T> {
             // signal that a quit event should be emitted for
             if quit_signal_events.contains(PollFlags::POLLIN) {
                 for signal in &mut self.quit_signalfd {
-                    let reason = if signal.ssi_signo == Signal::SIGTERM as u32 {
-                        QuitReason::System
-                    } else if signal.ssi_signo == Signal::SIGINT as u32 {
-                        QuitReason::Ctrlc
-                    } else {
-                        unreachable!();
-                    };
-                    self.events.push(Event::Quit { reason });
+                    let reason = if signal.ssi_signo == Signal::SIGTERM as u32 { QuitReason::System }
+                            else if signal.ssi_signo == Signal::SIGINT  as u32 { QuitReason::Ctrlc }
+                            else { unreachable!() };
+                    self.events.push(Event::QuitRequested { reason });
                 }
             }
 
@@ -326,7 +323,7 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub fn request_quit(&mut self) {
-        self.events.push(Event::Quit { reason: QuitReason::User });
+        self.events.push(Event::QuitRequested { reason: QuitReason::User });
     }
 
     pub fn exit(&mut self) {
@@ -357,10 +354,6 @@ impl<T: 'static + Send> EventLoop<T> {
             self.last_serial
         );
 
-    }
-
-    pub fn input(&mut self, mode: InputMode) {
-        self.keyboard_data.input_mode = mode; // TODO: implement per-window input mode as this is more convenient
     }
 
 }
@@ -659,6 +652,10 @@ impl<T: 'static + Send> Window<T> {
         drop(self);
     }
 
+    pub fn input_mode(&self, evl: &mut EventLoop<T>, mode: InputMode) {
+        evl.keyboard_data.input_modes.insert(self.id, mode);
+    }
+
     pub fn decorations(&mut self, value: bool) {
         let mode = if value { ZxdgDecorationMode::ServerSide } else { ZxdgDecorationMode::ClientSide };
         self.xdg_decoration.as_ref().map(|val| val.set_mode(mode));
@@ -730,7 +727,7 @@ impl<T: 'static + Send> Window<T> {
 
     }
 
-    pub fn start_drag_and_drop(&self, evl: &EventLoop<T>, icon: &CustomIcon, ds: &DataSource) {
+    pub fn start_drag_and_drop(&self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
 
         evl.wl.data_device.start_drag(
             Some(&ds.wl_data_source),
@@ -738,6 +735,8 @@ impl<T: 'static + Send> Window<T> {
             Some(&icon.wl_surface),
             evl.last_serial
         );
+
+        evl.offer_data.dnd_icon = Some(icon);
 
     }
 
@@ -1446,7 +1445,7 @@ pub enum Event<T> {
     /// Your app's view should be destroyed but it can keep running in the background.
     Suspend,
     /// Your app should quit.
-    Quit { reason: QuitReason },
+    QuitRequested { reason: QuitReason },
     /// A monitor was discovered or updated.
     MonitorUpdate { id: MonitorId, state: Monitor },
     /// A monitor was removed.
@@ -1463,9 +1462,9 @@ pub enum Event<T> {
 
 #[derive(Debug)]
 pub enum WindowEvent {
-    Close,
+    CloseRequested,
+    RedrawRequested,
     Resize { size: Size, flags: ConfigureFlags },
-    Redraw,
     Rescale { scale: f64 },
     Decorations { active: bool },
     Enter,
@@ -2004,16 +2003,22 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for Event
 
         }
 
-        else if let WlDataSourceEvent::DndFinished = event {
+        else if let WlDataSourceEvent::DndFinished = event { // emitted on succesfull write
+
             evl.events.push(Event::DataSource {
                 id, event: DataSourceEvent::Success
             });
+
         }
 
-        else if let WlDataSourceEvent::Cancelled = event {
+        else if let WlDataSourceEvent::Cancelled = event { // emitted on termination of the operation
+
+            evl.offer_data.dnd_icon = None;
+
             evl.events.push(Event::DataSource {
                 id, event: DataSourceEvent::Close
             });
+
         }
 
     }
@@ -2145,7 +2150,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowSh
         }
 
         else if let XdgToplevelEvent::Close = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::CloseRequested });
         }
 
     }
@@ -2171,7 +2176,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShare
         }
 
         else if let XdgPopupEvent::PopupDone = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::CloseRequested });
         }
 
     }
@@ -2208,7 +2213,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<W
         }
 
         else if let ZwlrLayerSurfaceEvent::Closed = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::CloseRequested });
         }
     
     }
@@ -2228,7 +2233,7 @@ fn process_configure<T: 'static + Send>(evl: &mut EventLoop<T>, guard: MutexGuar
     } });
 
     if !guard.redraw_requested {
-        evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
+        evl.events.push(Event::Window { id: guard.id, event: WindowEvent::RedrawRequested });
     }
 
 }
@@ -2264,7 +2269,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
         if guard.redraw_requested {
             guard.redraw_requested = false;
             guard.frame_callback_registered = false;
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::RedrawRequested });
         }
     }
 }
@@ -2458,6 +2463,12 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
 
     let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
 
+    let surface = evl.keyboard_data.has_focus.as_ref().unwrap();
+    let id = get_window_id(&surface);
+
+    let input_mode = evl.keyboard_data.input_modes.get(&id)
+        .unwrap_or(&InputMode::SingleKey);
+
     let xkb_key = xkb::Keycode::new(raw_key + 8); // says the wayland docs
     let mut events = Vec::with_capacity(1); // TODO: use a smallvec OR use smallstring and only one event
 
@@ -2468,7 +2479,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
         let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
         let modifier = xkb_sym.is_modifier_key(); // if this key is a modifier key
 
-        match evl.keyboard_data.input_mode {
+        match input_mode {
             InputMode::SingleKey => {
                 let key = translate_xkb_sym(xkb_sym);
                 events.push(WindowEvent::KeyDown { key, repeat });
@@ -2526,16 +2537,13 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
         // update the key state
         keymap_specific.pressed_keys.key_up(xkb_key);
 
-        if let InputMode::SingleKey = evl.keyboard_data.input_mode {
+        if let InputMode::SingleKey = input_mode {
             let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
             let key = translate_xkb_sym(xkb_sym);
             events.push(WindowEvent::KeyUp { key });
         }
 
     };
-
-    let surface = evl.keyboard_data.has_focus.as_ref().unwrap();
-    let id = get_window_id(&surface);
 
     for event in events {
         evl.events.push(Event::Window { id, event })

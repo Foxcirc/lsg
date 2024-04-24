@@ -17,7 +17,6 @@
 [ ] IO Device events (eg. when you plug in a mouse to a tablet)
 [x] Fullscreen (no custom video modes for now)
 [x] Fractional scaling
-[ ] Buffer transforms (eg. screen flip)
 [ ] Dpi handling / Logical Scaling (this is fucking hard) (TODO: test + refine)
 [x] enabling or disabling server side decorations (hyprland forces server-side decorations)
 [x] OpenGL context creation (EGL)

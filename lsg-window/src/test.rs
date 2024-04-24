@@ -32,11 +32,10 @@ fn main() -> anyhow::Result<()> {
 
     window.transparency(true);
 
-    evl.input(InputMode::SingleKey);
+    window.input_mode(&mut evl, InputMode::SingleKey);
 
     let mut popup_window: Option<Window<&str>> = None;
     let mut popup_ctx: Option<EglContext> = None;
-    let mut drag_icon = None;
     let mut data_source = None;
 
     let mut max = false;
@@ -52,7 +51,7 @@ fn main() -> anyhow::Result<()> {
                 // window.title("no-test");
             }, // TODO: implement the suspend event
             Event::Suspend => unimplemented!(),
-            Event::Quit { reason } => {
+            Event::QuitRequested { reason } => {
                 println!("quit reason: {reason:?}");
                 evl.exit();
             },
@@ -62,7 +61,7 @@ fn main() -> anyhow::Result<()> {
             },
             Event::MonitorRemove { .. } => todo!(),
             Event::Window { id, event } if id == window.id() => match event {
-                WindowEvent::Close => {
+                WindowEvent::CloseRequested => {
                     // drop(window);
                     // std::thread::sleep_ms(1000);
                     // std::process::exit(0);
@@ -79,7 +78,7 @@ fn main() -> anyhow::Result<()> {
                     //     println!("current clip board: {:?} (empty means an error)", buf);
                     // }
                 },
-                WindowEvent::Redraw => {
+                WindowEvent::RedrawRequested => {
                     ctx.bind(&egl).unwrap();
                     lsg_gl::clear(0.3, 0.1, 0.6, 0.0);
                     let token = window.pre_present_notify();
@@ -110,9 +109,8 @@ fn main() -> anyhow::Result<()> {
                         let ds = DataSource::new(evl, &[DataKind::Text], IoMode::Blocking);
 
                         // drag 'n drop
-                        window.start_drag_and_drop(evl, &icon, &ds); // TODO: enforce that it is only appropriate to start a dnd on left click held down + mouse move
+                        window.start_drag_and_drop(evl, icon, &ds); // TODO: enforce that it is only appropriate to start a dnd on left click held down + mouse move
 
-                        drag_icon = Some(icon);
                         data_source = Some(ds);
 
                     } else {
@@ -180,7 +178,7 @@ fn main() -> anyhow::Result<()> {
                 let popup_window2 = popup_window.as_mut().unwrap();
                 let popup_ctx2 = popup_ctx.as_mut().unwrap();
                 match event {
-                    WindowEvent::Redraw => {
+                    WindowEvent::RedrawRequested => {
                         popup_ctx2.bind(&egl).unwrap();
                         lsg_gl::clear(0.2, 0.7, 0.1, 1.0);
                         let token = popup_window2.pre_present_notify();
@@ -197,7 +195,7 @@ fn main() -> anyhow::Result<()> {
                     // WindowEvent::Rescale { scale } => {
                     //     println!("@popup rescale to {scale}");
                     // }
-                    WindowEvent::Close => {
+                    WindowEvent::CloseRequested => {
                         drop(popup_ctx.take());
                         drop(popup_window.take());
                     },
@@ -222,7 +220,6 @@ fn main() -> anyhow::Result<()> {
                 DataSourceEvent::Success => println!("transferred."),
                 DataSourceEvent::Close => {
                     drop(data_source.take());
-                    drop(drag_icon.take());
                     println!("offer closed");
                 },
             },
