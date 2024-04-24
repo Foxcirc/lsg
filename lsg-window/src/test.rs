@@ -1,5 +1,5 @@
 
-use std::io::Write;
+use std::io::{Write, Read};
 
 fn main() -> anyhow::Result<()> {
 
@@ -34,8 +34,10 @@ fn main() -> anyhow::Result<()> {
 
     evl.input(InputMode::SingleKey);
 
-    let mut popup_window = None;
-    let mut popup_ctx = None;
+    let mut popup_window: Option<Window<&str>> = None;
+    let mut popup_ctx: Option<EglContext> = None;
+    let mut drag_icon = None;
+    let mut data_source = None;
 
     let mut max = false;
 
@@ -66,6 +68,17 @@ fn main() -> anyhow::Result<()> {
                     // std::process::exit(0);
                     evl.request_quit();
                 },
+                WindowEvent::Enter => {
+                    // println!("focused");
+                    // if let Some(offer) = evl.get_clip_board() {
+                    //     println!("accepting... (available kinds: {:?})", offer.kinds());
+                    //     let mut stream = offer.receive(DataKind::Text, false).unwrap();
+                    //     let mut buf = String::new();
+                    //     println!("reading... (blocking)");
+                    //     let _res = stream.read_to_string(&mut buf);
+                    //     println!("current clip board: {:?} (empty means an error)", buf);
+                    // }
+                },
                 WindowEvent::Redraw => {
                     ctx.bind(&egl).unwrap();
                     lsg_gl::clear(0.3, 0.1, 0.6, 0.0);
@@ -89,27 +102,48 @@ fn main() -> anyhow::Result<()> {
                 }
                 WindowEvent::MouseDown { x, y, button } => {
                     println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
+                    if let MouseButton::Left = button {
+
+                        let size = Size { width: 100, height: 100 };
+                        let data = [255; 100 * 100 * 4];
+                        let icon = CustomIcon::new(evl, size, IconFormat::Argb8, &data).unwrap();
+                        let ds = DataSource::new(evl, &[DataKind::Text], IoMode::Blocking);
+
+                        // drag 'n drop
+                        window.start_drag_and_drop(evl, &icon, &ds); // TODO: enforce that it is only appropriate to start a dnd on left click held down + mouse move
+
+                        drag_icon = Some(icon);
+                        data_source = Some(ds);
+
+                    } else {
+                        drop(popup_window.take());
+                        drop(popup_ctx.take());
+                    }
                 },
                 WindowEvent::MouseScroll { axis, value } => {
-                    println!("scrolling with axis = {:?}, value = {}", axis, value);
+                    println!("scrolling on axis = {:?}, value = {}", axis, value);
                 },
                 WindowEvent::KeyDown { key, .. } => {
                     if let Key::Tab = key {
                         max = !max;
                         window.fullscreen(max, None);
                     }
-                    else if let Key::ArrowUp = key {
-                        let size = Size { width: 250, height: 100 };
-                        let popup_window2 = Window::new(evl, size);
+                    else if let Key::Return = key {
                         // let popup_window2 = PopupWindow::new(evl, size, &window);
+                        let popup_window2 = Window::new(evl, size);
                         let popup_ctx2 = EglContext::new(&egl, &popup_window2, size).unwrap();
                         popup_window = Some(popup_window2);
                         popup_ctx = Some(popup_ctx2);
-                    } else if let Key::Escape = key {
-                        drop(popup_window.take());
-                        drop(popup_ctx.take());
                     }
-                    if !key.modifier() {
+                    else if let Key::ArrowDown = key {
+                        if let Some(offer) = evl.get_clip_board() {
+                            let mut stream = offer.receive(DataKind::Text, false).unwrap();
+                            let mut buf = String::new();
+                            let _res = stream.read_to_string(&mut buf);
+                            println!("{}", buf);
+                        }
+                    }
+                    else if !key.modifier() {
                         if let Key::Char(chr) = key {
                             print!("{}", chr);
                             std::io::stdout().flush().unwrap();
@@ -125,6 +159,20 @@ fn main() -> anyhow::Result<()> {
                 WindowEvent::TextInput { chr } => {
                     print!("{}", chr);
                     std::io::stdout().flush().unwrap();
+                },
+                WindowEvent::Dnd { event } => match event {
+                    DndEvent::Motion { session, .. } => {
+                        session.advertise(&[DataKind::Text]);
+                    },
+                    DndEvent::Drop { x, y, offer } => {
+                        println!("object dropped at {x}, {y}");
+                        println!("available kinds: {:?}", offer.kinds());
+                        let mut stream = offer.receive(DataKind::Text, false).unwrap();
+                        let mut buf = String::new();
+                        let _res = stream.read_to_string(&mut buf);
+                        println!("{}", buf);
+                    },
+                    _ => (),
                 },
                 _ => (),
             },
@@ -158,11 +206,25 @@ fn main() -> anyhow::Result<()> {
                     },
                     WindowEvent::KeyDown { key, .. } => {
                         println!("@popuo KEY DOWN key = {:?}", key);
-                        println!("Requesting attention for the other window...");
-                        window.request_user_attention(evl, Urgency::Info);
+                        if let Key::Return = key {
+                            println!("Requesting attention for the other window...");
+                            window.request_user_attention(evl, Urgency::Switch);
+                        }
                     }
                     _ => (),
                 }
+            },
+            Event::DataSource { id: _id, event } => match event {
+                DataSourceEvent::Send { kind, mut writer } => {
+                    println!("send to fd ({:?})", kind);
+                    writer.write(b"Hello world! (from lsg-test)").unwrap();
+                },
+                DataSourceEvent::Success => println!("transferred."),
+                DataSourceEvent::Close => {
+                    drop(data_source.take());
+                    drop(drag_icon.take());
+                    println!("offer closed");
+                },
             },
             _ => ()
         }
