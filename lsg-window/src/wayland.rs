@@ -80,6 +80,7 @@ struct OfferData {
     current_offer: Option<WlDataOffer>,
     current_selection: Option<WlDataOffer>,
     x: f64, y: f64,
+    dnd_active: bool,
     dnd_icon: Option<CustomIcon>, // set when Window::start_drag_and_drop is called
 }
 
@@ -215,6 +216,7 @@ impl<T: 'static + Send> EventLoop<T> {
                 current_offer: None,
                 current_selection: None,
                 x: 0.0, y: 0.0,
+                dnd_active: false,
                 dnd_icon: None,
             },
             cursor_data: CursorData {
@@ -351,7 +353,6 @@ impl<T: 'static + Send> EventLoop<T> {
         Some(DataOffer {
             wl_data_offer,
             con: self.con.clone(), // should be pretty cheap
-            last_serial: self.last_serial,
             kinds,
             dnd: false,
         })
@@ -500,6 +501,14 @@ struct FracScaleMgrs {
 struct FracScaleData {
     viewport: WpViewport,
     frac_scale: WpFractionalScaleV1,
+}
+
+pub trait Drawable {
+    // pub 
+}
+
+pub struct PixMap {
+    
 }
 
 pub type WindowId = u32;
@@ -747,12 +756,14 @@ impl<T: 'static + Send> Window<T> {
     pub fn start_drag_and_drop(&self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
 
         evl.wl.data_device.start_drag(
+            // ds.map(|inner| &inner.wl_data_source), // TODO: implement in-app drag-an-drop which is not bugged on hyprland right now (there is no Enter event if ds = None...)
             Some(&ds.wl_data_source),
             &self.base.wl_surface,
             Some(&icon.wl_surface),
             evl.last_serial
         );
 
+        evl.offer_data.dnd_active = true;
         evl.offer_data.dnd_icon = Some(icon);
 
     }
@@ -923,7 +934,6 @@ pub type DataOfferId = u32;
 pub struct DataOffer { // TODO: gracefully handle errors that might happen if users hold onto this struct and then try to receive data for an alrdy invalid wl_data_offer
     wl_data_offer: WlDataOffer,
     con: wayland_client::Connection, // needed to flush all events after accepting the offer
-    last_serial: u32,
     kinds: Vec<DataKind>,
     dnd: bool, // checked on drop to determine how wl_data_offer should be destroyed
 }
@@ -955,12 +965,10 @@ impl DataOffer {
     /// A `DataOffer` can be read multiple times. Also using different `DataKinds`.
     pub fn receive(&self, kind: DataKind, nonblocking: bool) -> Result<DataReader, EvlError> {
 
-        let mime_type = kind.to_mime_type();
-
         let (reader, writer) = pipe2(OFlag::empty())?;
 
         // receive the data
-        self.wl_data_offer.accept(self.last_serial, Some(mime_type.to_string()));
+        let mime_type = kind.to_mime_type();
         self.wl_data_offer.receive(mime_type.to_string(), writer.as_fd());
 
         self.con.flush()?; // <--- this is important, so we can immediatly read without deadlocking
@@ -1030,6 +1038,9 @@ impl Drop for DataSource {
         self.wl_data_source.destroy();
     }
 }
+
+// TODO: BUG: dropping a dnd onto yourself will deadlock
+// TODO:     ^^^ add support for emitting readable/writable events, but maybe after we go full async
 
 impl DataSource {
 
@@ -1443,21 +1454,22 @@ impl EglInstance {
     
 }
 
-/// One-per-window egl context.
-pub struct EglContext {
-    id: WindowId,
-    wl_egl_surface: wayland_egl::WlEglSurface, // note: needs to be kept alive
-    width: u32, // updated in resize
-    height: u32,
+/// Egl context and surface.
+/// Can render to Windows. You should create one of these per window and bind
+/// the one you want to render to.
+/// To render to a pixel buffer see [`EglPixelBuffer`].
+pub struct EglBase {
     damage_rects: Vec<Rect>, // only here to save some allocations
     egl_surface: egl::Surface,
     egl_context: egl::Context,
+    width: u32, // updated in resize
+    height: u32,
 }
 
-impl EglContext {
+impl EglBase {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &EglInstance, window: &W, size: Size) -> Result<Self, EvlError> {
+    pub(crate) fn new(instance: &EglInstance, surface: egl::Surface, size: Size) -> Result<Self, EvlError> {
 
         let context = {
             let attribs = [
@@ -1470,31 +1482,18 @@ impl EglContext {
             instance.lib.create_context(instance.display, instance.config, None, &attribs).unwrap()
         };
 
-        let wl_egl_surface = wayland_egl::WlEglSurface::new(window.wl_surface.id(), size.width as i32, size.height as i32)?;
-
-        let surface = {
-            unsafe { instance.lib.create_window_surface(
-                instance.display,
-                instance.config,
-                wl_egl_surface.ptr() as *mut void,
-                None
-            )? }
-        };
-
         Ok(Self {
-            id: window.id,
-            wl_egl_surface,
-            width: size.width,
-            height: size.height,
             damage_rects: Vec::with_capacity(2),
             egl_surface: surface,
             egl_context: context,
+            width: size.width as u32,
+            height: size.height as u32,
         })
         
     }
 
     /// Make this context current.
-    pub fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+    pub(crate) fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
 
         instance.lib.make_current(
             instance.display,
@@ -1506,7 +1505,7 @@ impl EglContext {
     }
 
     /// Unbind this context.
-    pub fn unbind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+    pub(crate) fn unbind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
 
         instance.lib.make_current(
             instance.display,
@@ -1516,10 +1515,7 @@ impl EglContext {
     }
 
     /// Returns an error if this context is not the current one.
-    #[track_caller]
-    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect], token: PresentToken) -> Result<(), EvlError> {
-
-        assert!(self.id == token.id, "present token for another window");
+    pub(crate) fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect]) -> Result<(), EvlError> {
 
         // recalculate the origin of the rects to be in the top left
 
@@ -1541,17 +1537,112 @@ impl EglContext {
         Ok(())
 
     }
+   
+}
+
+pub struct EglContext {
+    inner: EglBase,
+    id: WindowId,
+    wl_egl_surface: wayland_egl::WlEglSurface, // note: needs to be kept alive
+}
+
+impl EglContext {
+
+    /// Create a new egl context that will draw onto the given window.
+    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &EglInstance, window: &W, size: Size) -> Result<Self, EvlError> {
+
+        let wl_egl_surface = wayland_egl::WlEglSurface::new(window.wl_surface.id(), size.width as i32, size.height as i32)?;
+
+        let surface = unsafe {
+            instance.lib.create_window_surface(
+                instance.display,
+                instance.config,
+                wl_egl_surface.ptr() as *mut void,
+                None
+            )?
+        };
+
+        let inner = EglBase::new(instance, surface, size)?;
+
+        Ok(Self {
+            inner,
+            id: window.id,
+            wl_egl_surface,
+        })
+        
+    }
+
+    /// Make this context current.
+    pub fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+        self.inner.bind(instance)
+    }
+
+    /// Unbind this context.
+    pub fn unbind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+        self.inner.unbind(instance)
+    }
+
+    /// Returns an error if this context is not the current one.
+    #[track_caller]
+    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect], token: PresentToken) -> Result<(), EvlError> {
+
+        assert!(self.id == token.id, "present token for another window");
+
+        self.inner.swap_buffers(instance, damage)
+
+    }
 
     /// Don't forget to also resize your opengl viewport!
     pub fn resize(&mut self, size: Size) {
 
-        self.width = size.width;
-        self.height = size.height;
+        self.inner.width = size.width;
+        self.inner.height = size.height;
 
         self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
         
     }
-    
+
+}
+
+pub struct EglPixelBuffer {
+    inner: EglBase,
+}
+
+impl EglPixelBuffer {
+
+    /// Create a new egl context that will draw onto the given window.
+    pub fn new(instance: &EglInstance, size: Size) -> Result<Self, EvlError> {
+
+        let surface = instance.lib.create_pbuffer_surface(
+            instance.display,
+            instance.config,
+            &[]
+        )?;
+
+        let inner = EglBase::new(instance, surface, size)?;
+
+        Ok(Self {
+            inner,
+        })
+        
+    }
+
+    /// Make this context current.
+    pub fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+        self.inner.bind(instance)
+    }
+
+    /// Unbind this context.
+    pub fn unbind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+        self.inner.unbind(instance)
+    }
+
+    /// Returns an error if this context is not the current one.
+    #[track_caller]
+    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect]) -> Result<(), EvlError> {
+        self.inner.swap_buffers(instance, damage)
+    }
+
 }
 
 #[derive(Debug)]
@@ -1605,7 +1696,7 @@ pub enum WindowEvent {
     TextCompose { chr: char },
     TextInput { chr: char },
     /// A Drag-and-drop event.
-    Dnd { event: DndEvent },
+    Dnd { event: DndEvent, internal: bool },
 }
 
 #[derive(Debug)]
@@ -1987,6 +2078,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
             }
 
             let id = get_window_id(&surface);
+            let internal = evl.offer_data.dnd_active;
 
             evl.offer_data.has_offer = Some(surface);
             evl.offer_data.current_offer = wl_data_offer.clone();
@@ -2001,7 +2093,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
 
             evl.events.push(Event::Window {
                 id,
-                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor } }
+                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor }, internal }
             });
 
         }
@@ -2017,10 +2109,11 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
             };
 
             let surface = evl.offer_data.has_offer.as_ref().unwrap();
+            let internal = evl.offer_data.dnd_active;
 
             evl.events.push(Event::Window {
                 id: get_window_id(surface),
-                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor } }
+                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor }, internal }
             });
 
         }
@@ -2038,28 +2131,29 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
                 let data = DataOffer {
                     wl_data_offer,
                     con: evl.con.clone(),
-                    last_serial: evl.last_serial,
                     kinds,
                     dnd: true,
                 };
 
                 let surface = evl.offer_data.has_offer.as_ref().unwrap();
+                let internal = evl.offer_data.dnd_active;
 
                 evl.events.push(Event::Window {
                     id: get_window_id(surface),
-                    event: WindowEvent::Dnd { event: DndEvent::Drop { x, y, offer: data } },
+                    event: WindowEvent::Dnd { event: DndEvent::Drop { x, y, offer: data }, internal },
                 });
 
-            } // TODO: None when dropping to the same app. TODO Implement in-app drag-and-drop (data passing handeled internally)
+            }
         }
 
         else if let WlDataDeviceEvent::Leave = event {
 
             let surface = evl.offer_data.has_offer.as_ref().unwrap();
+            let internal = evl.offer_data.dnd_active;
 
             evl.events.push(Event::Window {
                 id: get_window_id(surface),
-                event: WindowEvent::Dnd { event: DndEvent::Cancel },
+                event: WindowEvent::Dnd { event: DndEvent::Cancel, internal },
             });
 
             evl.offer_data.has_offer = None;
@@ -2143,6 +2237,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for Event
 
         else if let WlDataSourceEvent::Cancelled = event { // emitted on termination of the operation
 
+            evl.offer_data.dnd_active = false;
             evl.offer_data.dnd_icon = None;
 
             evl.events.push(Event::DataSource {

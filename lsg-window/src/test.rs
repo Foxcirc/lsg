@@ -32,13 +32,14 @@ fn main() -> anyhow::Result<()> {
 
     window.transparency(true);
 
-    window.input_mode(&mut evl, InputMode::SingleKey);
+    // window.input_mode(&mut evl, InputMode::SingleKey);
 
     let mut popup_window: Option<Window<&str>> = None;
     let mut popup_ctx: Option<EglContext> = None;
     let mut data_source = None;
 
     let mut max = false;
+    let mut dnd_ready = false;
 
     // run the event loop
     evl.run(move |evl, event| {
@@ -102,22 +103,29 @@ fn main() -> anyhow::Result<()> {
                 WindowEvent::MouseDown { x, y, button } => {
                     println!("mouse down at ({}, {}) ({:?} button)", x, y, button);
                     if let MouseButton::Left = button {
-
+                        dnd_ready = true;
+                    }
+                },
+                WindowEvent::MouseUp { button, .. } => {
+                    if let MouseButton::Left = button {
+                        dnd_ready = false;
+                    }
+                },
+                WindowEvent::MouseMotion { .. } => {
+                    if dnd_ready {
                         let size = Size { width: 100, height: 100 };
                         let data = [255; 100 * 100 * 4];
                         let icon = CustomIcon::new(evl, size, IconFormat::Argb8, &data).unwrap();
                         let ds = DataSource::new(evl, &[DataKind::Text], IoMode::Blocking);
-
                         // drag 'n drop
                         window.start_drag_and_drop(evl, icon, &ds); // TODO: document that it is only appropriate to start a dnd on left click held down + mouse move
-
                         data_source = Some(ds);
-
+                        dnd_ready = false;
                     } else {
                         drop(popup_window.take());
                         drop(popup_ctx.take());
                     }
-                },
+                }
                 WindowEvent::MouseScroll { axis, value } => {
                     println!("scrolling on axis = {:?}, value = {}", axis, value);
                 },
@@ -161,17 +169,21 @@ fn main() -> anyhow::Result<()> {
                     print!("{}", chr);
                     std::io::stdout().flush().unwrap();
                 },
-                WindowEvent::Dnd { event } => match event {
-                    DndEvent::Motion { handle, .. } => {
-                        handle.advertise(&[DataKind::Text]);
+                WindowEvent::Dnd { event, internal } => match event {
+                    DndEvent::Motion { handle: dnd, .. } => {
+                        dnd.advertise(&[DataKind::Text]);
                     },
                     DndEvent::Drop { x, y, offer } => {
-                        println!("object dropped at {x}, {y}");
+                        println!("object dropped at {x}, {y}, internal: {internal}");
                         println!("available kinds: {:?}", offer.kinds());
-                        let mut stream = offer.receive(DataKind::Text, false).unwrap();
-                        let mut buf = String::new();
-                        let _res = stream.read_to_string(&mut buf);
-                        println!("{}", buf);
+                        if !internal {
+                            let mut stream = offer.receive(DataKind::Text, false).unwrap();
+                            let mut buf = String::new();
+                            let _res = stream.read_to_string(&mut buf);
+                            println!("{}", buf);
+                        } else {
+                            println!("{{ignored because internal}}");
+                        }
                     },
                     _ => (),
                 },

@@ -6,13 +6,15 @@
 [x] Correct keyboard mapping
 [x] Key repeat
 [x] Special text input mode & Dead keys
-[ ] IME (eg. wayland text_intput_v3)
-[ ] Accessibility features
+[ ] IME client (eg. wayland text_intput_v3)
+[ ] IME server
+[ ] Accessibility features (same as IME on wayland)
 [x] Window transparency
 [x] Window levels (always-on-top, always-on-bottom)
 [x] Multiple windows
 [x] Pop-Up windows (over screen)
-[x] Drag 'n drop (TODO: still needs some testing and refinement)
+[x] Drag 'n drop
+[ ] In-app Drag 'n drop
 [x] Monitor handling
 [ ] IO Device events (eg. when you plug in a mouse to a tablet)
 [x] Fullscreen (no custom video modes for now)
@@ -22,11 +24,11 @@
 [x] OpenGL context creation (EGL)
 [x] Damage areas (OH YEAH BABY)
 [ ] Rendering to a texture/pixmap
-[ ] Full Async
+[ ] Full Async (run() returns a future which should be run on the main thread)
 [x] Continious Redraw + Vsync
 [x] Handling things like sigterm as the Quit event
 [x] Request user attention
-[ ] Changing/hiding the cursor (CursorIcon::None to hide)
+[x] Changing/hiding the cursor (CursorIcon::None to hide)
 [ ] Clean up & TODO's
 
 # Other platform features
