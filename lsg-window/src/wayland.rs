@@ -1459,9 +1459,9 @@ impl EglInstance {
 /// the one you want to render to.
 /// To render to a pixel buffer see [`EglPixelBuffer`].
 pub struct EglBase {
-    damage_rects: Vec<Rect>, // only here to save some allocations
     egl_surface: egl::Surface,
     egl_context: egl::Context,
+    damage_rects: Vec<Rect>, // only here to save some allocations
     size: Size, // updated in resize
 }
 
@@ -1482,9 +1482,9 @@ impl EglBase {
         };
 
         Ok(Self {
-            damage_rects: Vec::with_capacity(2),
             egl_surface: surface,
             egl_context: context,
+            damage_rects: Vec::with_capacity(2),
             size,
         })
         
