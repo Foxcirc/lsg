@@ -1462,8 +1462,7 @@ pub struct EglBase {
     damage_rects: Vec<Rect>, // only here to save some allocations
     egl_surface: egl::Surface,
     egl_context: egl::Context,
-    width: u32, // updated in resize
-    height: u32,
+    size: Size, // updated in resize
 }
 
 impl EglBase {
@@ -1486,8 +1485,7 @@ impl EglBase {
             damage_rects: Vec::with_capacity(2),
             egl_surface: surface,
             egl_context: context,
-            width: size.width as u32,
-            height: size.height as u32,
+            size,
         })
         
     }
@@ -1523,7 +1521,7 @@ impl EglBase {
         self.damage_rects.extend_from_slice(damage);
 
         for rect in self.damage_rects.iter_mut() {
-            rect.y = self.width as i32 - rect.y - rect.h;
+            rect.y = self.size.height as i32 - rect.y - rect.h; // TODO: height or width, test again if it is right this time
         }
 
         if let Some(func) = instance.swap_buffers_with_damage {
@@ -1595,9 +1593,7 @@ impl EglContext {
     /// Don't forget to also resize your opengl viewport!
     pub fn resize(&mut self, size: Size) {
 
-        self.inner.width = size.width;
-        self.inner.height = size.height;
-
+        self.inner.size = size;
         self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
         
     }
