@@ -1468,18 +1468,7 @@ pub struct EglBase {
 impl EglBase {
 
     /// Create a new egl context that will draw onto the given window.
-    pub(crate) fn new(instance: &EglInstance, surface: egl::Surface, size: Size) -> Result<Self, EvlError> {
-
-        let context = {
-            let attribs = [
-                egl::CONTEXT_MAJOR_VERSION, 4,
-                egl::CONTEXT_MINOR_VERSION, 0, // TODO: add context options so the version etc. can be configured
-                egl::CONTEXT_CLIENT_VERSION, 3,
-                egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
-                egl::NONE,
-            ];
-            instance.lib.create_context(instance.display, instance.config, None, &attribs).unwrap()
-        };
+    pub(crate) fn new(context: egl::Context, surface: egl::Surface, size: Size) -> Result<Self, EvlError> {
 
         Ok(Self {
             egl_surface: surface,
@@ -1488,6 +1477,19 @@ impl EglBase {
             size,
         })
         
+    }
+
+    pub(crate) fn new_context(instance: &EglInstance) -> Result<egl::Context, egl::Error> {
+        
+        let attribs = [
+            egl::CONTEXT_MAJOR_VERSION, 4,
+            egl::CONTEXT_MINOR_VERSION, 0, // TODO: add context options so the version etc. can be configured
+            egl::CONTEXT_CLIENT_VERSION, 3,
+            egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
+            egl::NONE,
+        ];
+        instance.lib.create_context(instance.display, instance.config, None, &attribs)
+
     }
 
     /// Make this context current.
@@ -1549,6 +1551,8 @@ impl EglContext {
     /// Create a new egl context that will draw onto the given window.
     pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &EglInstance, window: &W, size: Size) -> Result<Self, EvlError> {
 
+        let context = EglBase::new_context(instance)?;
+
         let wl_egl_surface = wayland_egl::WlEglSurface::new(window.wl_surface.id(), size.width as i32, size.height as i32)?;
 
         let surface = unsafe {
@@ -1560,7 +1564,7 @@ impl EglContext {
             )?
         };
 
-        let inner = EglBase::new(instance, surface, size)?;
+        let inner = EglBase::new(context, surface, size)?;
 
         Ok(Self {
             inner,
@@ -1609,13 +1613,15 @@ impl EglPixelBuffer {
     /// Create a new egl context that will draw onto the given window.
     pub fn new(instance: &EglInstance, size: Size) -> Result<Self, EvlError> {
 
+        let context = EglBase::new_context(instance)?;
+
         let surface = instance.lib.create_pbuffer_surface(
             instance.display,
             instance.config,
             &[]
         )?;
 
-        let inner = EglBase::new(instance, surface, size)?;
+        let inner = EglBase::new(context, surface, size)?;
 
         Ok(Self {
             inner,
