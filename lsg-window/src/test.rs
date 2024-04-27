@@ -1,7 +1,7 @@
 
 use std::io::{Write, Read};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use lsg_window::wayland::*;
 
@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
             },
             Event::Resume => {
                 // window.title("no-test");
-            }, // TODO: implement the suspend event
+            },
             Event::Suspend => unimplemented!(),
             Event::QuitRequested { reason } => {
                 println!("quit reason: {reason:?}");
@@ -115,9 +115,9 @@ fn main() -> anyhow::Result<()> {
                         let size = Size { width: 100, height: 100 };
                         let data = [255; 100 * 100 * 4];
                         let icon = CustomIcon::new(evl, size, IconFormat::Argb8, &data).unwrap();
-                        let ds = DataSource::new(evl, &[DataKind::Text], IoMode::Blocking);
+                        let ds = DataSource::new(evl, DataKinds::TEXT, IoMode::Blocking);
                         // drag 'n drop
-                        window.start_drag_and_drop(evl, icon, &ds); // TODO: document that it is only appropriate to start a dnd on left click held down + mouse move
+                        window.start_drag_and_drop(evl, icon, &ds);
                         data_source = Some(ds);
                         dnd_ready = false;
                     }
@@ -146,7 +146,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     else if let Key::ArrowDown = key {
                         if let Some(offer) = evl.get_clip_board() {
-                            let mut stream = offer.receive(DataKind::Text, false).unwrap();
+                            let mut stream = offer.receive(DataKinds::TEXT, false).unwrap();
                             let mut buf = String::new();
                             let _res = stream.read_to_string(&mut buf);
                             println!("{}", buf);
@@ -171,13 +171,13 @@ fn main() -> anyhow::Result<()> {
                 },
                 WindowEvent::Dnd { event, internal } => match event {
                     DndEvent::Motion { handle: dnd, .. } => {
-                        dnd.advertise(&[DataKind::Text]);
+                        dnd.advertise(&[DataKinds::TEXT]);
                     },
                     DndEvent::Drop { x, y, offer } => {
                         println!("object dropped at {x}, {y}, internal: {internal}");
                         println!("available kinds: {:?}", offer.kinds());
                         if !internal {
-                            let mut stream = offer.receive(DataKind::Text, false).unwrap();
+                            let mut stream = offer.receive(DataKinds::TEXT, false).unwrap();
                             let mut buf = String::new();
                             let _res = stream.read_to_string(&mut buf);
                             println!("{}", buf);

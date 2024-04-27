@@ -44,11 +44,16 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 };
 
 use khronos_egl as egl;
+
 use xkbcommon::xkb;
+
 use nix::{
     sys::{timerfd::{TimerFd, ClockId, TimerFlags, TimerSetTimeFlags, Expiration}, eventfd::{EventFd, EfdFlags}, signalfd::{SignalFd, SfdFlags, SigSet}, signal::Signal},
     poll::{PollFd, PollFlags, poll, PollTimeout}, fcntl::{self, OFlag}, unistd::pipe2
 };
+
+use bitflags::bitflags;
+
 use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex, MutexGuard}, io::{self, Write}, os::fd::{AsFd, FromRawFd, AsRawFd}, time::Duration, env, ops, collections::{HashSet, HashMap}, fs};
 
 pub struct EventLoop<T: 'static + Send = ()> {
@@ -59,7 +64,6 @@ pub struct EventLoop<T: 'static + Send = ()> {
     queue: Option<EventQueue<Self>>,
     wl: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
-    reported_error: Option<EvlError>, // TODO: remove or embrace and use it more often
     quit_signalfd: SignalFd, // listens to sigterm and emits a quit event
     proxy_data: EvlProxyData<T>,
     mouse_data: MouseData,
@@ -88,6 +92,7 @@ struct KeyboardData {
     has_focus: Option<WlSurface>,
     xkb_context: xkb::Context,
     keymap_specific: Option<KeymapSpecificData>, // (re)initialized when a keymap is loaded
+    keymap_error: Option<EvlError>, // stored and handeled later
     repeat_timer: TimerFd,
     repeat_key: u32, // raw key
     repeat_rate: Duration,
@@ -101,7 +106,7 @@ struct KeymapSpecificData {
     pressed_keys: PressedKeys,
 }
 
-struct MouseData { // TODO make full option?
+struct MouseData {
     has_focus: Option<WlSurface>,
     x: f64,
     y: f64
@@ -194,7 +199,6 @@ impl<T: 'static + Send> EventLoop<T> {
             qh,
             wl: wayland,
             events: Vec::with_capacity(4),
-            reported_error: None,
             quit_signalfd,
             proxy_data,
             mouse_data: MouseData {
@@ -205,6 +209,7 @@ impl<T: 'static + Send> EventLoop<T> {
                 has_focus: None,
                 xkb_context,
                 keymap_specific: None,
+                keymap_error: None,
                 repeat_timer,
                 repeat_key: 0,
                 repeat_rate: Duration::from_millis(60),
@@ -281,7 +286,7 @@ impl<T: 'static + Send> EventLoop<T> {
             // new events from the wayland connection
             if wl_events.contains(PollFlags::POLLIN) {
                 ignore_wouldblock(guard.read())?;
-                if let Some(error) = self.reported_error { return Err(error) };
+                if let Some(error) = self.keyboard_data.keymap_error { return Err(error) };
             } else if wl_events.contains(PollFlags::POLLERR) {
                 return Err(EvlError::Io(io::Error::last_os_error()));
             }
@@ -347,8 +352,8 @@ impl<T: 'static + Send> EventLoop<T> {
     pub fn get_clip_board(&mut self) -> Option<DataOffer> {
 
         let wl_data_offer = self.offer_data.current_selection.clone()?;
-        let data = wl_data_offer.data::<Mutex<Vec<DataKind>>>().unwrap();
-        let kinds = data.lock().unwrap().clone(); // TODO: use smallvec or bitflags for kinds?
+        let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
+        let kinds = *data.lock().unwrap(); // copy the bitflags
 
         Some(DataOffer {
             wl_data_offer,
@@ -555,7 +560,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             frame_callback_registered: false,
             redraw_requested: false,
             // need to access some wayland objects
-            frac_scale_data, // TODO(CLEANUP): check all the logic again, is WindowShared really needed everywhere etc.
+            frac_scale_data,
         }));
 
         Self {
@@ -753,10 +758,12 @@ impl<T: 'static + Send> Window<T> {
 
     }
 
+    /// You should only start a drag-and-drop when the left mouse button is held down
+    /// *and* the user then moves the mouse.
+    /// Otherwise the request may be denied or visually broken.
     pub fn start_drag_and_drop(&self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
 
         evl.wl.data_device.start_drag(
-            // ds.map(|inner| &inner.wl_data_source), // TODO: implement in-app drag-an-drop which is not bugged on hyprland right now (there is no Enter event if ds = None...)
             Some(&ds.wl_data_source),
             &self.base.wl_surface,
             Some(&icon.wl_surface),
@@ -768,7 +775,6 @@ impl<T: 'static + Send> Window<T> {
 
     }
 
-    // TODO: make custom Pos type for hx and hy
     pub fn set_cursor(&self, evl: &mut EventLoop<T>, style: CursorStyle) {
 
         // note: the CustomIcon will also be kept alive by the styles as long as needed
@@ -784,7 +790,7 @@ impl<T: 'static + Send> Window<T> {
 #[derive(Debug)]
 pub enum CursorStyle {
     Hidden,
-    Custom { icon: CustomIcon, hx: usize, hy: usize },
+    Custom { icon: CustomIcon, hotspot: Pos },
     Predefined { shape: CursorShape }
 }
 
@@ -883,47 +889,51 @@ pub enum Urgency {
     Switch,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum DataKind {
-    Text,
-    Xml,
-    Html,
-    Zip,
-    Json,
-    Jpeg,
-    Png,
-    #[default]
-    Binary,
-    // /// Only on linux.
-    // #[cfg(target_os = "linux")]
-    // Other(String), // todo: use small string
+bitflags! {
+    #[derive(Debug, Clone, Copy,PartialEq, Eq)]
+    pub struct DataKinds: u64 {
+        const TEXT   = 1;
+        const XML    = 1 << 1;
+        const HTML   = 1 << 2;
+        const ZIP    = 1 << 3;
+        const JSON   = 1 << 4;
+        const JPEG   = 1 << 5;
+        const PNG    = 1 << 6;
+        const OTHER  = 1 << 7;
+    }
 }
 
-impl DataKind {
+impl Default for DataKinds {
+    fn default() -> Self {
+        Self::OTHER
+    }
+}
+
+impl DataKinds {
     pub fn to_mime_type(&self) -> &'static str {
-        match self {
-            DataKind::Text   => "text/plain",
-            DataKind::Xml    => "application/xml",
-            DataKind::Html   => "application/html",
-            DataKind::Zip    => "application/zip",
-            DataKind::Json   => "text/json",
-            DataKind::Binary => "application/octet-stream",
-            DataKind::Jpeg   => "image/jpeg",
-            DataKind::Png    => "image/png",
-            // DataKind::Mime(name) => name.to_string(),
+        match *self {
+            DataKinds::TEXT   => "text/plain",
+            DataKinds::XML    => "application/xml",
+            DataKinds::HTML   => "application/html",
+            DataKinds::ZIP    => "application/zip",
+            DataKinds::JSON   => "text/json",
+            DataKinds::JPEG   => "image/jpeg",
+            DataKinds::PNG    => "image/png",
+            DataKinds::OTHER  => "application/octet-stream",
+            _ => unreachable!(),
         }
     }
-    pub fn from_mime_type(mime_type: &str) -> Option<Self> { // TODO: use dedicated mime-type crate
+    pub fn from_mime_type(mime_type: &str) -> Option<Self> {
         match mime_type {
-            "text/plain"       => Some(DataKind::Text), // TODO: it seems this mime type, will have CLRF but we only want \n's, keep this in mind also in the future
-            "application/xml"  => Some(DataKind::Xml),
-            "application/html" => Some(DataKind::Html),
-            "application/zip"  => Some(DataKind::Zip),
-            "text/json"        => Some(DataKind::Json),
-            "image/jpeg"       => Some(DataKind::Jpeg),
-            "image/png"        => Some(DataKind::Png),
-            "application/octet-stream" => Some(DataKind::Binary),
-            "UTF8_STRING" | "STRING" | "TEXT" => Some(DataKind::Text), // apparently used in some X11 apps
+            "text/plain"       => Some(DataKinds::TEXT),
+            "application/xml"  => Some(DataKinds::XML),
+            "application/html" => Some(DataKinds::HTML),
+            "application/zip"  => Some(DataKinds::ZIP),
+            "text/json"        => Some(DataKinds::JSON),
+            "image/jpeg"       => Some(DataKinds::JPEG),
+            "image/png"        => Some(DataKinds::PNG),
+            "application/octet-stream" => Some(DataKinds::OTHER),
+            "UTF8_STRING" | "STRING" | "TEXT" => Some(DataKinds::TEXT), // apparently used in some X11 apps
             _ => None,
         }
     }
@@ -931,10 +941,11 @@ impl DataKind {
 
 pub type DataOfferId = u32;
 
-pub struct DataOffer { // TODO: gracefully handle errors that might happen if users hold onto this struct and then try to receive data for an alrdy invalid wl_data_offer
+/// Don't hold onto it. You should immediatly decide if you want to receive something or not.
+pub struct DataOffer {
     wl_data_offer: WlDataOffer,
     con: wayland_client::Connection, // needed to flush all events after accepting the offer
-    kinds: Vec<DataKind>,
+    kinds: DataKinds,
     dnd: bool, // checked on drop to determine how wl_data_offer should be destroyed
 }
 
@@ -956,14 +967,13 @@ impl Drop for DataOffer {
 
 impl DataOffer {
 
-    pub fn kinds(&self) -> &[DataKind] {
-        &self.kinds
+    pub fn kinds(&self) -> DataKinds {
+        self.kinds
     }
 
     // TODO: write some better result types in general, eg also EvlResult
-    // TODO: add "close" and "cancel" etc. methods to everything that is canceled or closed on drop (to be more explicit)
     /// A `DataOffer` can be read multiple times. Also using different `DataKinds`.
-    pub fn receive(&self, kind: DataKind, nonblocking: bool) -> Result<DataReader, EvlError> {
+    pub fn receive(&self, kind: DataKinds, nonblocking: bool) -> Result<DataReader, EvlError> {
 
         let (reader, writer) = pipe2(OFlag::empty())?;
 
@@ -1023,7 +1033,7 @@ pub enum IoMode {
 
 pub type DataSourceId = u32;
 
-fn get_data_source_id(ds: &WlDataSource) -> DataSourceId { // TODO: make generic for any object lol
+fn get_data_source_id(ds: &WlDataSource) -> DataSourceId {
     ds.id().protocol_id()
 }
 
@@ -1039,15 +1049,12 @@ impl Drop for DataSource {
     }
 }
 
-// TODO: BUG: dropping a dnd onto yourself will deadlock
-// TODO:     ^^^ add support for emitting readable/writable events, but maybe after we go full async
-
 impl DataSource {
 
     #[track_caller]
-    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: &[DataKind], mode: IoMode) -> Self {
+    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
 
-        assert!(offers.len() > 0, "must offer at least one DataKind");
+        assert!(!offers.is_empty(), "must offer at least one DataKind");
 
         let wl_data_source = evl.wl.data_device_mgr.create_data_source(&evl.qh, mode);
 
@@ -1109,8 +1116,6 @@ impl CustomIcon {
     #[track_caller]
     pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
 
-        // TODO: handle data.len() == 0 ?
-
         let len = data.len();
 
         let tmpdir = env::temp_dir();
@@ -1130,9 +1135,15 @@ impl CustomIcon {
         };
 
         // some basic checks that the dimensions of the data match the specified size
+
         assert!(
             data.len() as u32 == size.width * size.height * bytes_per_pixel as u32,
             "length of data doesn't match specified dimensions and format"
+        );
+
+        assert!(
+            data.len() != 0,
+            "length of data must be greater then 0"
         );
 
         let wl_shm_pool = evl.wl.shm.create_pool(file.as_fd(), len as i32, &evl.qh, ());
@@ -1187,14 +1198,13 @@ impl<T: 'static + Send> PopupWindow<T> {
         // xdg-popup role
         let xdg_surface = evl.wl.wm.get_xdg_surface(&base.wl_surface, &evl.qh, Arc::clone(&base.shared));
         let xdg_positioner = evl.wl.wm.create_positioner(&evl.qh, ());
+
         let parent_guard = parent.shared.lock().unwrap();
         xdg_positioner.set_size(size.width as i32, size.height as i32);
-        // xdg_positioner.set_anchor_rect(0, 0, parent_guard.new_width as i32, parent_guard.new_height as i32);
-        xdg_positioner.set_anchor_rect(0, 0, 10, 10); // TODO: cleanup, frick
+        xdg_positioner.set_anchor_rect(0, 0, parent_guard.new_width as i32, parent_guard.new_height as i32);
         drop(parent_guard);
-        // xdg_positioner.set_reactive();
+
         let xdg_popup = xdg_surface.get_popup(Some(&parent.xdg_surface), &xdg_positioner, &evl.qh, Arc::clone(&base.shared));
-        // xdg_popup.grab(&evl.wayland.seat, evl.last_serial);
 
         base.wl_surface.commit();
 
@@ -1394,7 +1404,7 @@ type FnSwapBuffersWithDamage = fn(
 ) -> khronos_egl::Int;
 
 pub struct EglInstance {
-    lib: Arc<egl::DynamicInstance>,
+    lib: Arc<egl::DynamicInstance<egl::EGL1_0>>,
     swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
     display: egl::Display,
 }
@@ -1405,8 +1415,8 @@ impl EglInstance {
     pub fn new<T: 'static + Send>(evh: &mut EventLoop<T>) -> Result<Arc<Self>, EvlError> {
         
         let loaded = unsafe {
-            egl::DynamicInstance::<egl::EGL1_5>::load_required() // TODO: make minimum version be 1.3 or smth even lower
-                .map_err(|_| EvlError::EglUnsupported)? // TODO: better error, use err info from libloading
+            egl::DynamicInstance::<egl::EGL1_0>::load_required()
+                .map_err(|_| EvlError::EglUnsupported)?
         };
 
         let lib = Arc::new(loaded);
@@ -1452,8 +1462,8 @@ pub struct EglBase {
 
 impl Drop for EglBase {
     fn drop(&mut self) {
-        self.instance.lib.destroy_surface(self.instance.display, self.egl_surface).expect("TODO: handle error");
-        self.instance.lib.destroy_context(self.instance.display, self.egl_context).expect("TODO: handle error");
+        self.instance.lib.destroy_surface(self.instance.display, self.egl_surface).unwrap();
+        self.instance.lib.destroy_context(self.instance.display, self.egl_context).unwrap();
     }
 }
 
@@ -1506,7 +1516,7 @@ impl EglBase {
     }
 
     /// Returns an error if this context is not the current one.
-    pub(crate) fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EvlError> { // TODO: is an empty &[] damage slice full damage or nothing or what (test it)
+    pub(crate) fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EvlError> {
 
         // recalculate the origin of the rects to be in the top left
 
@@ -1696,10 +1706,10 @@ pub enum Event<T> {
     MonitorUpdate { id: MonitorId, state: Monitor },
     /// A monitor was removed.
     MonitorRemove { id: MonitorId },
-    /// A  mouse, keyboard or touch device was discovered or removed.
-    /// If you never get this event, there is no keyboard or mouse attached.
-// Device { exists: bool, device: () }, // TODO: implement this (wl_seat)
-// Device { exists: bool, device: () }, // TODO: implement this (wl_seat)
+    // /// A  mouse, keyboard or touch device was discovered or removed.
+    // /// If you never get this event, there is no keyboard or mouse attached.
+    // Device { exists: bool, device: () }, // TODO: implement this (wl_seat) also implement controller support through this
+    // Device { exists: bool, device: () }, // TODO: implement this (wl_seat)
     /// An event that belongs to a specific window. (eg. focus change, mouse movement)
     Window { id: WindowId, event: WindowEvent },
     /// Requests you sending data to another client.
@@ -1732,7 +1742,7 @@ pub enum WindowEvent {
 pub enum DataSourceEvent {
     /// Data of the specific [`DataKind`] you advertised was requested to be transferred.
     /// Could be send multiple times.
-    Send { kind: DataKind, writer: DataWriter },
+    Send { kind: DataKinds, writer: DataWriter },
     /// Data was successfully transfarred.
     /// Could be send multiple times, one per `Send`.
     Success,
@@ -1755,7 +1765,7 @@ pub struct DndHandle {
 }
 
 impl DndHandle {
-    pub fn advertise(&self, kinds: &[DataKind]) {
+    pub fn advertise(&self, kinds: &[DataKinds]) {
         if let Some(ref wl_data_offer) = self.wl_data_offer {
             for kind in kinds {
                 let mime_type = kind.to_mime_type();
@@ -2013,7 +2023,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents>
         // TODO: test if this actually works with my second monitor
         
         if let WlRegistryEvent::Global { name, interface, .. } = event {
-            if &interface == "wl_output" { process_new_output(&mut evl.monitor_list, registry, name, qh); }
+            if &interface == "wl_output" {
+                process_new_output(&mut evl.monitor_list, registry, name, qh);
+            }
             // note: the event for new outputs is emitted in the `WlOutput` event handler
         }
 
@@ -2153,7 +2165,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
                 let x = evl.offer_data.x;
                 let y = evl.offer_data.y;
 
-                let data = wl_data_offer.data::<Mutex<Vec<DataKind>>>().unwrap();
+                let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
                 let kinds = data.lock().unwrap().clone();
 
                 let data = DataOffer {
@@ -2198,32 +2210,30 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for EventLoop
     }
 
     wayland_client::event_created_child!(Self, WlDataDevice, [
-        EVT_DATA_OFFER_OPCODE => (WlDataOffer, Mutex::new(Vec::new()))
+        EVT_DATA_OFFER_OPCODE => (WlDataOffer, Mutex::new(DataKinds::empty()))
     ]);
 
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataOffer, Mutex<Vec<DataKind>>> for EventLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlDataOffer, Mutex<DataKinds>> for EventLoop<T> {
     fn event(
         _evl: &mut Self,
         _data_offer: &WlDataOffer,
         event: WlDataOfferEvent,
-        info: &Mutex<Vec<DataKind>>,
+        info: &Mutex<DataKinds>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
 
         if let WlDataOfferEvent::Offer { mime_type } = event {
-            if let Some(kind) = DataKind::from_mime_type(&mime_type) {
+            if let Some(kind) = DataKinds::from_mime_type(&mime_type) {
                 let mut guard = info.lock().unwrap();
-                if !guard.contains(&kind) { guard.push(kind) };
+                if !guard.contains(kind) { guard.insert(kind) };
             };
         }
 
     }
 }
-
-// TODO: can I maybe ommit storing windowId so often and get it from the WlSurface in the events?
 
 impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for EventLoop<T> {
     fn event(
@@ -2246,7 +2256,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for Event
             else { new_flags.remove(OFlag::O_NONBLOCK) };
             fcntl::fcntl(fd.as_raw_fd(), fcntl::FcntlArg::F_SETFL(new_flags)).expect("handle error");
 
-            let kind = DataKind::from_mime_type(&mime_type).unwrap();
+            let kind = DataKinds::from_mime_type(&mime_type).unwrap();
             let writer = DataWriter { writer: fs::File::from(fd) };
 
             evl.events.push(Event::DataSource {
@@ -2588,8 +2598,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T
                         xkb::KEYMAP_COMPILE_NO_FLAGS
                     ) } {
                         Ok(Some(val)) => val,
-                        Ok(None) => { evl.reported_error = Some(EvlError::InvalidKeymap); return },
-                        Err(err) => { evl.reported_error = Some(EvlError::Io(err));       return }
+                        Ok(None) => { evl.keyboard_data.keymap_error = Some(EvlError::InvalidKeymap); return },
+                        Err(err) => { evl.keyboard_data.keymap_error = Some(EvlError::Io(err));       return }
                     }
                 };
 
@@ -2607,7 +2617,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T
                     xkb::COMPILE_NO_FLAGS
                 ) {
                     Ok(val) => val,
-                    Err(..) => { evl.reported_error = Some(EvlError::InvalidLocale); return }
+                    Err(..) => { evl.keyboard_data.keymap_error = Some(EvlError::InvalidLocale); return }
                 };
 
                 let compose_state = xkb::compose::State::new(&compose_table, xkb::STATE_NO_FLAGS);
@@ -2640,7 +2650,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for EventLoop<T
 
             WlKeyboardEvent::Leave { .. } => {
 
-                if let Some(ref keymap_specific) = evl.keyboard_data.keymap_specific { // TODO: unwrap not if let
+                if let Some(ref keymap_specific) = evl.keyboard_data.keymap_specific {
 
                     let surface = evl.keyboard_data.has_focus.as_ref().unwrap();
                     let id = get_window_id(&surface);
@@ -2728,7 +2738,6 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
         .unwrap_or(&InputMode::SingleKey);
 
     let xkb_key = xkb::Keycode::new(raw_key + 8); // says the wayland docs
-    let mut events = Vec::with_capacity(1); // TODO: use a smallvec OR use smallstring and only one event
 
     let repeat = source == Source::KeyRepeat;
 
@@ -2740,29 +2749,29 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
         match input_mode {
             InputMode::SingleKey => {
                 let key = translate_xkb_sym(xkb_sym);
-                events.push(WindowEvent::KeyDown { key, repeat });
+                evl.events.push(Event::Window { id, event: WindowEvent::KeyDown { key, repeat } });
             },
             InputMode::Text => {
                 keymap_specific.compose_state.feed(xkb_sym);
                 match keymap_specific.compose_state.status() {
                     xkb::Status::Nothing => {
                         if let Some(chr) = xkb_sym.key_char() {
-                            events.push(WindowEvent::TextInput { chr })
+                            evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
                         } else {
                             let key = translate_xkb_sym(xkb_sym);
-                            events.push(WindowEvent::KeyDown { key, repeat });
+                            evl.events.push(Event::Window { id, event: WindowEvent::KeyDown { key, repeat } });
                         }
                     },
                     xkb::Status::Composing => {
                         // sadly we can't just get the string repr of a dead-char
                         if let Some(chr) = translate_dead_to_normal_sym(xkb_sym).and_then(xkb::Keysym::key_char) {
-                            events.push(WindowEvent::TextCompose { chr })
+                            evl.events.push(Event::Window { id, event: WindowEvent::TextCompose { chr } })
                         }
                     },
                     xkb::Status::Composed => {
                         if let Some(text) = keymap_specific.compose_state.utf8() {
                             for chr in text.chars() {
-                                events.push(WindowEvent::TextInput { chr })
+                                evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
                             }
                         }
                         keymap_specific.compose_state.reset();
@@ -2780,7 +2789,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
 
                 evl.keyboard_data.repeat_timer.set(Expiration::IntervalDelayed(
                     evl.keyboard_data.repeat_delay.into(), evl.keyboard_data.repeat_rate.into()
-                ), TimerSetTimeFlags::empty()).expect("todo: handle error");
+                ), TimerSetTimeFlags::empty()).unwrap();
                 
                 // update the key state
                 keymap_specific.pressed_keys.key_down(xkb_key);
@@ -2790,7 +2799,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
     } else {
 
         // unarm key-repeat timer
-        evl.keyboard_data.repeat_timer.unset().expect("handle error");
+        evl.keyboard_data.repeat_timer.unset().unwrap();
 
         // update the key state
         keymap_specific.pressed_keys.key_up(xkb_key);
@@ -2798,14 +2807,10 @@ fn process_key_event<T: 'static + Send>(evl: &mut EventLoop<T>, raw_key: u32, di
         if let InputMode::SingleKey = input_mode {
             let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
             let key = translate_xkb_sym(xkb_sym);
-            events.push(WindowEvent::KeyUp { key });
+            evl.events.push(Event::Window { id, event: WindowEvent::KeyUp { key } });
         }
 
     };
-
-    for event in events {
-        evl.events.push(Event::Window { id, event })
-    }
 
 }
 
@@ -2944,10 +2949,10 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut EventLoop<T>, id: Windo
             CursorStyle::Hidden => {
                 wl_pointer.set_cursor(serial, None, 0, 0);
             },
-            CursorStyle::Custom { icon, hx, hy } => {
+            CursorStyle::Custom { icon, hotspot } => {
                 wl_pointer.set_cursor(
                     serial, Some(&icon.wl_surface),
-                    *hx as i32, *hy as i32
+                    hotspot.x as i32, hotspot.y as i32
                 )
             },
             CursorStyle::Predefined { shape } => {

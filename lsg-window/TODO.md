@@ -38,6 +38,11 @@
 [ ] File manager (using ??? or portal)
 [ ] Screen saver (idle inhibition)
 
+# Egl todo's
+[ ] platform window support on egl >= 1.5
+[ ] better errors
+[ ] pbuffer from clientbuffer?
+
 # Platforms that will be supported
 - Linux (Wayland only)
 - Windows

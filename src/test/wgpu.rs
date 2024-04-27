@@ -167,14 +167,6 @@ impl<'w> WgpuState<'w> {
         
     }
 
-    // fn input(&mut self, event: &WindowEvent) -> bool {
-    //     false
-    // }
-
-    // fn update(&mut self) {
-    //     todo!()
-    // }
-
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
 
         let output = self.surface.get_current_texture()?;
