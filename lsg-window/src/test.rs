@@ -83,9 +83,8 @@ fn main() -> anyhow::Result<()> {
                     ctx.bind().unwrap();
                     lsg_gl::clear(0.3, 0.1, 0.6, 0.0);
                     let token = window.pre_present_notify();
-                    let damage = [Rect::new(0, 0, 100, 100)];
-                    ctx.swap_buffers(&damage, token).unwrap();
-                    // window.request_redraw(token); // fuck. you.
+                    ctx.swap_buffers(None, token).unwrap();
+                    window.request_redraw(token); // fuck. you.
                 },
                 WindowEvent::Resize { size, .. } => {
                     ctx.bind().unwrap();
@@ -198,8 +197,7 @@ fn main() -> anyhow::Result<()> {
                         popup_ctx2.bind().unwrap();
                         lsg_gl::clear(0.2, 0.7, 0.1, 1.0);
                         let token = popup_window2.pre_present_notify();
-                        let damage = [Rect::INFINITE];
-                        popup_ctx2.swap_buffers(&damage, token).unwrap();
+                        popup_ctx2.swap_buffers(None, token).unwrap();
                         popup_window2.request_redraw(token); // fuck. you.
                     },
                     WindowEvent::Resize { size, .. } => {

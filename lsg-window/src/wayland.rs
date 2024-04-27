@@ -1506,15 +1506,17 @@ impl EglBase {
     }
 
     /// Returns an error if this context is not the current one.
-    pub(crate) fn swap_buffers(&mut self, damage: &[Rect]) -> Result<(), EvlError> { // TODO: is an empty &[] damage slice full damage or nothing or what (test it)
+    pub(crate) fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EvlError> { // TODO: is an empty &[] damage slice full damage or nothing or what (test it)
 
         // recalculate the origin of the rects to be in the top left
+
+        let damage = damage.unwrap_or(&[]);
 
         self.damage_rects.clear();
         self.damage_rects.extend_from_slice(damage);
 
         for rect in self.damage_rects.iter_mut() {
-            rect.y = self.size.height as i32 - rect.y - rect.h; // TODO: height or width, test again if it is right this time
+            rect.y = self.size.height as i32 - rect.y - rect.h;
         }
 
         if let Some(func) = self.instance.swap_buffers_with_damage {
@@ -1598,7 +1600,7 @@ impl EglContext {
 
     /// Returns an error if this context is not the current one.
     #[track_caller]
-    pub fn swap_buffers(&mut self, damage: &[Rect], token: PresentToken) -> Result<(), EvlError> {
+    pub fn swap_buffers(&mut self, damage: Option<&[Rect]>, token: PresentToken) -> Result<(), EvlError> {
 
         assert!(self.id == token.id, "present token for another window");
 
@@ -1665,7 +1667,7 @@ impl EglPixelBuffer {
 
     /// Returns an error if this context is not the current one.
     #[track_caller]
-    pub fn swap_buffers(&mut self, damage: &[Rect]) -> Result<(), EvlError> {
+    pub fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EvlError> {
         self.inner.swap_buffers(damage)
     }
 
