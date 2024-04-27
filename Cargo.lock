@@ -765,6 +765,7 @@ name = "lsg-window"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.5.0",
+ "flume",
  "khronos-egl",
  "lsg-gl",
  "nix",

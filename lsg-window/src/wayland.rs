@@ -54,7 +54,16 @@ use nix::{
 
 use bitflags::bitflags;
 
-use std::{mem, fmt, ffi::c_void as void, error::Error as StdError, sync::{mpsc::{Sender, Receiver, channel, SendError}, Arc, Mutex, MutexGuard}, io::{self, Write}, os::fd::{AsFd, FromRawFd, AsRawFd}, time::Duration, env, ops, collections::{HashSet, HashMap}, fs};
+use std::{
+    mem, fmt, env, ops, fs, thread,
+    ffi::c_void as void,
+    error::Error as StdError,
+    sync::{Arc, Mutex, MutexGuard},
+    io::{self, Write},
+    os::fd::{AsFd, FromRawFd, AsRawFd},
+    time::Duration,
+    collections::{HashSet, HashMap},
+};
 
 pub struct EventLoop<T: 'static + Send = ()> {
     appid: String,
@@ -65,7 +74,6 @@ pub struct EventLoop<T: 'static + Send = ()> {
     wl: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
     quit_signalfd: SignalFd, // listens to sigterm and emits a quit event
-    proxy_data: EvlProxyData<T>,
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
     offer_data: OfferData, // drag-and-drop / selection data
@@ -73,6 +81,8 @@ pub struct EventLoop<T: 'static + Send = ()> {
     monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
     last_serial: u32,
 }
+
+unsafe impl<T: 'static + Send> Send for EventLoop<T> {}
 
 struct CursorData {
     styles: HashMap<WindowId, CursorStyle>, // per-window cursor style
@@ -155,10 +165,63 @@ impl PressedKeys {
     }
 }
 
-struct EvlProxyData<T> {
-    pub eventfd: Arc<EventFd>, // Arc is just easier then duping it
-    pub sender: Sender<Event<T>>,
-    pub receiver: Receiver<Event<T>>
+pub struct EvlProxy<T> {
+    sender: flume::Sender<Result<Event<T>, EvlError>>,
+}
+
+impl<T> EvlProxy<T> {
+
+    pub fn send(&self, event: Event<T>) -> Result<(), Event<T>> {
+        self.sender.send(Ok(event))
+            .map_err(|err| err.into_inner().unwrap())
+    }
+
+}
+
+pub struct EventTarget<T> {
+    receiver: flume::Receiver<Result<Event<T>, EvlError>>,
+    sender: flume::Sender<Result<Event<T>, EvlError>>, // cloned into an EventLoopProxy
+}
+
+impl<T: 'static + Send> EventTarget<T> {
+
+    pub async fn next(&self) -> Result<Event<T>, EvlError> {
+        self.receiver.recv_async()
+            .await
+            .unwrap()
+    }
+    
+}
+
+pub fn run<E: 'static + Send, T, H: FnOnce(EventTarget<E>) -> T>(handler: H, application: &str) -> T {
+
+    let target = {
+        let (sender, receiver) = flume::bounded(16);
+        EventTarget {
+            receiver,
+            sender
+        }
+    };
+
+    match EventLoop::new(application) {
+        Ok(evl) => {
+            thread::spawn(move || reaper(evl, target.sender.clone()));
+        },
+        Err(err) => {
+            target.sender.send(Err(err));
+        },
+    }
+
+    handler(target)
+
+}
+
+pub fn reaper<T: 'static + Send>(evl: EventLoop<T>, sender: flume::Sender<Result<Event<T>, EvlError>>) {
+    
+    evl.run(|evl, event| {
+        sender.send(Ok(event));
+    }).expect("handle error");
+    
 }
 
 impl<T: 'static + Send> EventLoop<T> {
@@ -167,10 +230,10 @@ impl<T: 'static + Send> EventLoop<T> {
 
         let con = wayland_client::Connection::connect_to_env()?;
 
-        let mut monitor_list = HashSet::with_capacity(1);
-
         let (globals, queue) = registry_queue_init::<Self>(&con)?;
         let qh = queue.handle();
+
+        let mut monitor_list = HashSet::with_capacity(1);
         let wayland = WaylandState::from_globals(&mut monitor_list, globals, &qh)?;
 
         let quit_signalfd = {
@@ -181,14 +244,7 @@ impl<T: 'static + Send> EventLoop<T> {
             SignalFd::with_flags(&mask, SfdFlags::SFD_NONBLOCK)?
         };
 
-        let proxy_data = {
-            let (sender, receiver) = channel();
-            let eventfd = Arc::new(EventFd::from_flags(EfdFlags::EFD_NONBLOCK)?);
-            EvlProxyData { eventfd, sender, receiver }
-        };
-
         let repeat_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::TFD_NONBLOCK)?;
-
         let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
 
         Ok(EventLoop {
@@ -200,7 +256,6 @@ impl<T: 'static + Send> EventLoop<T> {
             wl: wayland,
             events: Vec::with_capacity(4),
             quit_signalfd,
-            proxy_data,
             mouse_data: MouseData {
                 has_focus: None,
                 x: 0.0, y: 0.0
@@ -236,7 +291,7 @@ impl<T: 'static + Send> EventLoop<T> {
 
     pub fn run<F: for<'a> FnMut(&'a mut Self, Event<T>)>(mut self, mut cb: F) -> Result<(), EvlError> {
 
-        let Some(mut queue) = self.queue.take() else { unreachable!() };
+        let mut queue = self.queue.take().unwrap();
 
         self.events.push(Event::Resume);
 
@@ -425,25 +480,6 @@ impl fmt::Debug for Monitor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Monitor {{ info: {:?}, ... }}", self.info)
     }
-}
-
-pub struct EvlProxy<T> {
-    sender: Sender<Event<T>>,
-    eventfd: Arc<EventFd>,
-}
-
-impl<T> EvlProxy<T> {
-
-    pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
-
-        self.sender.send(event)?;
-
-        // the fd will be alive since the `send` would have failed if the EventLoop was destroyed
-        self.eventfd.write(1).unwrap();
-
-        Ok(())
-    }
-
 }
 
 struct WaylandState {

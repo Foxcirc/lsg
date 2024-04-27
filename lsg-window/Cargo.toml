@@ -20,6 +20,7 @@ khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
 nix = { version = "0.28.0", features = ["event", "signal", "time", "poll", "fs"] }
 bitflags = { version = "2.5.0", features = ["std"] }
+flume = "0.11.0"
 
 [dev-dependencies]
 lsg-gl = { path = "../lsg-gl" }
