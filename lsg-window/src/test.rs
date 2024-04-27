@@ -80,15 +80,15 @@ fn main() -> anyhow::Result<()> {
                     // }
                 },
                 WindowEvent::RedrawRequested => {
-                    ctx.bind(&egl).unwrap();
+                    ctx.bind().unwrap();
                     lsg_gl::clear(0.3, 0.1, 0.6, 0.0);
                     let token = window.pre_present_notify();
                     let damage = [Rect::new(0, 0, 100, 100)];
-                    ctx.swap_buffers(&egl, &damage, token).unwrap();
+                    ctx.swap_buffers(&damage, token).unwrap();
                     // window.request_redraw(token); // fuck. you.
                 },
                 WindowEvent::Resize { size, .. } => {
-                    ctx.bind(&egl).unwrap();
+                    ctx.bind().unwrap();
                     // println!("resizing main surface!");
                     // TOOD: when popup is opened it messes up the whole resizing/configuring again :(
                     ctx.resize(size);
@@ -121,9 +121,6 @@ fn main() -> anyhow::Result<()> {
                         window.start_drag_and_drop(evl, icon, &ds); // TODO: document that it is only appropriate to start a dnd on left click held down + mouse move
                         data_source = Some(ds);
                         dnd_ready = false;
-                    } else {
-                        drop(popup_window.take());
-                        drop(popup_ctx.take());
                     }
                 }
                 WindowEvent::MouseScroll { axis, value } => {
@@ -143,6 +140,10 @@ fn main() -> anyhow::Result<()> {
                         let popup_ctx2 = EglContext::new(&egl, &popup_window2, size).unwrap();
                         popup_window = Some(popup_window2);
                         popup_ctx = Some(popup_ctx2);
+                    }
+                    else if let Key::Escape = key {
+                        popup_window.take();
+                        popup_ctx.take();
                     }
                     else if let Key::ArrowDown = key {
                         if let Some(offer) = evl.get_clip_board() {
@@ -194,16 +195,16 @@ fn main() -> anyhow::Result<()> {
                 let popup_ctx2 = popup_ctx.as_mut().unwrap();
                 match event {
                     WindowEvent::RedrawRequested => {
-                        popup_ctx2.bind(&egl).unwrap();
+                        popup_ctx2.bind().unwrap();
                         lsg_gl::clear(0.2, 0.7, 0.1, 1.0);
                         let token = popup_window2.pre_present_notify();
                         let damage = [Rect::INFINITE];
-                        popup_ctx2.swap_buffers(&egl, &damage, token).unwrap();
+                        popup_ctx2.swap_buffers(&damage, token).unwrap();
                         popup_window2.request_redraw(token); // fuck. you.
                     },
                     WindowEvent::Resize { size, .. } => {
                         println!("@popup resize");
-                        popup_ctx2.bind(&egl).unwrap();
+                        popup_ctx2.bind().unwrap();
                         popup_ctx2.resize(size);
                         lsg_gl::resize_viewport(size.width, size.height);
                     },

@@ -1403,11 +1403,11 @@ pub struct EglInstance {
 impl EglInstance {
 
     /// Should be only be called once. Although initializing multiple instances is not a hard error.
-    pub fn new<T: 'static + Send>(evh: &mut EventLoop<T>) -> Result<EglInstance, EvlError> {
+    pub fn new<T: 'static + Send>(evh: &mut EventLoop<T>) -> Result<Arc<Self>, EvlError> {
         
         let loaded = unsafe {
-            egl::DynamicInstance::<egl::EGL1_5>::load_required()
-                .map_err(|_| EvlError::EglUnsupported)?
+            egl::DynamicInstance::<egl::EGL1_5>::load_required() // TODO: make minimum version be 1.3 or smth even lower
+                .map_err(|_| EvlError::EglUnsupported)? // TODO: better error, use err info from libloading
         };
 
         let lib = Arc::new(loaded);
@@ -1427,7 +1427,7 @@ impl EglInstance {
 
         let config = {
             let attribs = [
-                egl::SURFACE_TYPE, egl::WINDOW_BIT,
+                egl::SURFACE_TYPE, egl::WINDOW_BIT, // TODO USE egl::PBUFFER_BIT for pbuffer surfaces, (eg split into window_config and pbuffer_config)
                 egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
                 egl::RED_SIZE, 8,
                 egl::GREEN_SIZE, 8,
@@ -1439,12 +1439,12 @@ impl EglInstance {
                 .ok_or(EvlError::EglUnsupported)?
         };
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             lib,
             swap_buffers_with_damage,
             display: egl_display,
             config,
-        })
+        }))
         
     }
 
@@ -1459,18 +1459,38 @@ impl EglInstance {
 /// the one you want to render to.
 /// To render to a pixel buffer see [`EglPixelBuffer`].
 pub struct EglBase {
+    instance: Arc<EglInstance>,
     egl_surface: egl::Surface,
     egl_context: egl::Context,
     damage_rects: Vec<Rect>, // only here to save some allocations
     size: Size, // updated in resize
 }
 
+impl Drop for EglBase {
+    fn drop(&mut self) {
+        self.instance.lib.destroy_surface(self.instance.display, self.egl_surface).expect("TODO: handle error");
+        self.instance.lib.destroy_context(self.instance.display, self.egl_context).expect("TODO: handle error");
+    }
+}
+
 impl EglBase {
 
     /// Create a new egl context that will draw onto the given window.
-    pub(crate) fn new(context: egl::Context, surface: egl::Surface, size: Size) -> Result<Self, EvlError> {
+    pub(crate) fn new(instance: &Arc<EglInstance>, surface: egl::Surface, size: Size) -> Result<Self, EvlError> {
+
+        let context = {
+            let attribs = [
+                egl::CONTEXT_MAJOR_VERSION, 4,
+                egl::CONTEXT_MINOR_VERSION, 0, // TODO: add context options so the version etc. can be configured
+                egl::CONTEXT_CLIENT_VERSION, 3,
+                egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
+                egl::NONE,
+            ];
+            instance.lib.create_context(instance.display, instance.config, None, &attribs).unwrap()
+        };
 
         Ok(Self {
+            instance: Arc::clone(&instance),
             egl_surface: surface,
             egl_context: context,
             damage_rects: Vec::with_capacity(2),
@@ -1479,24 +1499,11 @@ impl EglBase {
         
     }
 
-    pub(crate) fn new_context(instance: &EglInstance) -> Result<egl::Context, egl::Error> {
-        
-        let attribs = [
-            egl::CONTEXT_MAJOR_VERSION, 4,
-            egl::CONTEXT_MINOR_VERSION, 0, // TODO: add context options so the version etc. can be configured
-            egl::CONTEXT_CLIENT_VERSION, 3,
-            egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
-            egl::NONE,
-        ];
-        instance.lib.create_context(instance.display, instance.config, None, &attribs)
-
-    }
-
     /// Make this context current.
-    pub(crate) fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+    pub(crate) fn bind(&self) -> Result<(), egl::Error> {
 
-        instance.lib.make_current(
-            instance.display,
+        self.instance.lib.make_current(
+            self.instance.display,
             Some(self.egl_surface), // note: it is an error to only specify one of the two (read/draw) surfaces
             Some(self.egl_surface),
             Some(self.egl_context)
@@ -1505,17 +1512,17 @@ impl EglBase {
     }
 
     /// Unbind this context.
-    pub(crate) fn unbind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
+    pub(crate) fn unbind(&self) -> Result<(), egl::Error> {
 
-        instance.lib.make_current(
-            instance.display,
+        self.instance.lib.make_current(
+            self.instance.display,
             None, None, None
         )
         
     }
 
     /// Returns an error if this context is not the current one.
-    pub(crate) fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect]) -> Result<(), EvlError> {
+    pub(crate) fn swap_buffers(&mut self, damage: &[Rect]) -> Result<(), EvlError> { // TODO: is an empty &[] damage slice full damage or nothing or what (test it)
 
         // recalculate the origin of the rects to be in the top left
 
@@ -1526,12 +1533,12 @@ impl EglBase {
             rect.y = self.size.height as i32 - rect.y - rect.h; // TODO: height or width, test again if it is right this time
         }
 
-        if let Some(func) = instance.swap_buffers_with_damage {
+        if let Some(func) = self.instance.swap_buffers_with_damage {
             // swap with damage, if the fn could be found
-            (func)(instance.display.as_ptr(), self.egl_surface.as_ptr(), self.damage_rects.as_ptr().cast(), damage.len() as khronos_egl::Int);
+            (func)(self.instance.display.as_ptr(), self.egl_surface.as_ptr(), self.damage_rects.as_ptr().cast(), damage.len() as khronos_egl::Int);
         } else {
             // normal swap (if the extension is unsupported)
-            instance.lib.swap_buffers(instance.display, self.egl_surface)?;
+            self.instance.lib.swap_buffers(self.instance.display, self.egl_surface)?;
         }
 
         Ok(())
@@ -1549,22 +1556,25 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &EglInstance, window: &W, size: Size) -> Result<Self, EvlError> {
-
-        let context = EglBase::new_context(instance)?;
+    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &Arc<EglInstance>, window: &W, size: Size) -> Result<Self, EvlError> {
 
         let wl_egl_surface = wayland_egl::WlEglSurface::new(window.wl_surface.id(), size.width as i32, size.height as i32)?;
+
+        let attrs = [
+            egl::RENDER_BUFFER, egl::BACK_BUFFER,
+            egl::NONE,
+        ];
 
         let surface = unsafe {
             instance.lib.create_window_surface(
                 instance.display,
                 instance.config,
                 wl_egl_surface.ptr() as *mut void,
-                None
+                Some(&attrs),
             )?
         };
 
-        let inner = EglBase::new(context, surface, size)?;
+        let inner = EglBase::new(instance, surface, size)?;
 
         Ok(Self {
             inner,
@@ -1575,22 +1585,22 @@ impl EglContext {
     }
 
     /// Make this context current.
-    pub fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
-        self.inner.bind(instance)
+    pub fn bind(&self) -> Result<(), egl::Error> {
+        self.inner.bind()
     }
 
     /// Unbind this context.
-    pub fn unbind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
-        self.inner.unbind(instance)
+    pub fn unbind(&self) -> Result<(), egl::Error> {
+        self.inner.unbind()
     }
 
     /// Returns an error if this context is not the current one.
     #[track_caller]
-    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect], token: PresentToken) -> Result<(), EvlError> {
+    pub fn swap_buffers(&mut self, damage: &[Rect], token: PresentToken) -> Result<(), EvlError> {
 
         assert!(self.id == token.id, "present token for another window");
 
-        self.inner.swap_buffers(instance, damage)
+        self.inner.swap_buffers(damage)
 
     }
 
@@ -1608,12 +1618,10 @@ pub struct EglPixelBuffer {
     inner: EglBase,
 }
 
-impl EglPixelBuffer {
+impl EglPixelBuffer { // TODO: This needs a different instance or context config, egl::WINDOW_BIT => egl::PBUFFER_BIT
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new(instance: &EglInstance, size: Size) -> Result<Self, EvlError> {
-
-        let context = EglBase::new_context(instance)?;
+    pub fn new(instance: &Arc<EglInstance>, size: Size) -> Result<Self, EvlError> {
 
         let surface = instance.lib.create_pbuffer_surface(
             instance.display,
@@ -1621,7 +1629,7 @@ impl EglPixelBuffer {
             &[]
         )?;
 
-        let inner = EglBase::new(context, surface, size)?;
+        let inner = EglBase::new(instance, surface, size)?;
 
         Ok(Self {
             inner,
@@ -1630,19 +1638,19 @@ impl EglPixelBuffer {
     }
 
     /// Make this context current.
-    pub fn bind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
-        self.inner.bind(instance)
+    pub fn bind(&self) -> Result<(), egl::Error> {
+        self.inner.bind()
     }
 
     /// Unbind this context.
-    pub fn unbind(&self, instance: &EglInstance) -> Result<(), egl::Error> {
-        self.inner.unbind(instance)
+    pub fn unbind(&self) -> Result<(), egl::Error> {
+        self.inner.unbind()
     }
 
     /// Returns an error if this context is not the current one.
     #[track_caller]
-    pub fn swap_buffers(&mut self, instance: &EglInstance, damage: &[Rect]) -> Result<(), EvlError> {
-        self.inner.swap_buffers(instance, damage)
+    pub fn swap_buffers(&mut self, damage: &[Rect]) -> Result<(), EvlError> {
+        self.inner.swap_buffers(damage)
     }
 
 }
