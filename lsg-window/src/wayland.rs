@@ -1397,7 +1397,6 @@ pub struct EglInstance {
     lib: Arc<egl::DynamicInstance>,
     swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
     display: egl::Display,
-    config: egl::Config,
 }
 
 impl EglInstance {
@@ -1425,25 +1424,10 @@ impl EglInstance {
         let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
             unsafe { mem::transmute(func) };
 
-        let config = {
-            let attribs = [
-                egl::SURFACE_TYPE, egl::WINDOW_BIT, // TODO USE egl::PBUFFER_BIT for pbuffer surfaces, (eg split into window_config and pbuffer_config)
-                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
-                egl::RED_SIZE, 8,
-                egl::GREEN_SIZE, 8,
-                egl::BLUE_SIZE, 8,
-                egl::ALPHA_SIZE, 8,
-                egl::NONE
-            ];
-            lib.choose_first_config(egl_display, &attribs)?
-                .ok_or(EvlError::EglUnsupported)?
-        };
-
         Ok(Arc::new(Self {
             lib,
             swap_buffers_with_damage,
             display: egl_display,
-            config,
         }))
         
     }
@@ -1476,17 +1460,17 @@ impl Drop for EglBase {
 impl EglBase {
 
     /// Create a new egl context that will draw onto the given window.
-    pub(crate) fn new(instance: &Arc<EglInstance>, surface: egl::Surface, size: Size) -> Result<Self, EvlError> {
+    pub(crate) fn new(instance: &Arc<EglInstance>, surface: egl::Surface, config: egl::Config, size: Size) -> Result<Self, EvlError> {
 
         let context = {
             let attribs = [
                 egl::CONTEXT_MAJOR_VERSION, 4,
-                egl::CONTEXT_MINOR_VERSION, 0, // TODO: add context options so the version etc. can be configured
+                egl::CONTEXT_MINOR_VERSION, 0,
                 egl::CONTEXT_CLIENT_VERSION, 3,
                 egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
                 egl::NONE,
             ];
-            instance.lib.create_context(instance.display, instance.config, None, &attribs).unwrap()
+            instance.lib.create_context(instance.display, config, None, &attribs).unwrap()
         };
 
         Ok(Self {
@@ -1558,7 +1542,25 @@ impl EglContext {
     /// Create a new egl context that will draw onto the given window.
     pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &Arc<EglInstance>, window: &W, size: Size) -> Result<Self, EvlError> {
 
-        let wl_egl_surface = wayland_egl::WlEglSurface::new(window.wl_surface.id(), size.width as i32, size.height as i32)?;
+        let config = {
+            let attribs = [
+                egl::SURFACE_TYPE, egl::WINDOW_BIT,
+                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
+                egl::RED_SIZE, 8,
+                egl::GREEN_SIZE, 8,
+                egl::BLUE_SIZE, 8,
+                egl::ALPHA_SIZE, 8,
+                egl::NONE
+            ];
+            instance.lib.choose_first_config(instance.display, &attribs)?
+                .ok_or(EvlError::EglUnsupported)?
+        };
+
+        let wl_egl_surface = wayland_egl::WlEglSurface::new(
+            window.wl_surface.id(),
+            size.width as i32,
+            size.height as i32
+        )?;
 
         let attrs = [
             egl::RENDER_BUFFER, egl::BACK_BUFFER,
@@ -1568,13 +1570,13 @@ impl EglContext {
         let surface = unsafe {
             instance.lib.create_window_surface(
                 instance.display,
-                instance.config,
+                config,
                 wl_egl_surface.ptr() as *mut void,
                 Some(&attrs),
             )?
         };
 
-        let inner = EglBase::new(instance, surface, size)?;
+        let inner = EglBase::new(instance, surface, config, size)?;
 
         Ok(Self {
             inner,
@@ -1618,18 +1620,32 @@ pub struct EglPixelBuffer {
     inner: EglBase,
 }
 
-impl EglPixelBuffer { // TODO: This needs a different instance or context config, egl::WINDOW_BIT => egl::PBUFFER_BIT
+impl EglPixelBuffer {
 
     /// Create a new egl context that will draw onto the given window.
     pub fn new(instance: &Arc<EglInstance>, size: Size) -> Result<Self, EvlError> {
 
+        let config = {
+            let attribs = [
+                egl::SURFACE_TYPE, egl::PBUFFER_BIT,
+                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
+                egl::RED_SIZE, 8,
+                egl::GREEN_SIZE, 8,
+                egl::BLUE_SIZE, 8,
+                egl::ALPHA_SIZE, 8,
+                egl::NONE
+            ];
+            instance.lib.choose_first_config(instance.display, &attribs)?
+                .ok_or(EvlError::EglUnsupported)?
+        };
+
         let surface = instance.lib.create_pbuffer_surface(
             instance.display,
-            instance.config,
+            config,
             &[]
         )?;
 
-        let inner = EglBase::new(instance, surface, size)?;
+        let inner = EglBase::new(instance, surface, config, size)?;
 
         Ok(Self {
             inner,
