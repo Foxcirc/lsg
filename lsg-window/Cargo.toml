@@ -18,9 +18,11 @@ wayland-protocols-wlr = { version = "0.2.0", features = ["client", "wayland-clie
 wayland-egl = "0.32.0"
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
-nix = { version = "0.28.0", features = ["event", "signal", "time", "poll", "fs"] }
+nix = { version = "0.28.0", features = ["event", "signal", "time", "poll", "fs"] } # TODO: remove unused features / remove completely
 bitflags = { version = "2.5.0", features = ["std"] }
 flume = "0.11.0"
+async-io = "2.3.2"
+futures-lite = "2.3.0"
 
 [dev-dependencies]
 lsg-gl = { path = "../lsg-gl" }
