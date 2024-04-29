@@ -50,12 +50,13 @@ use khronos_egl as egl;
 use xkbcommon::xkb;
 
 use nix::{
-    sys::signal::Signal,
     fcntl::{self, OFlag}, unistd::pipe2
 };
+#[cfg(feature = "signals")]
+use nix::sys::signal::Signal;
 
 use async_io::{Async, Timer};
-use futures_lite::{FutureExt, StreamExt};
+use futures_lite::FutureExt;
 
 use bitflags::bitflags;
 
@@ -75,6 +76,7 @@ use std::{
 struct BaseLoop<T: 'static + Send = ()> {
     appid: String,
     con: Async<wayland_client::Connection>,
+    #[cfg(feature = "signals")]
     signals: async_signals::Signals, // listens to sigterm and emits a quit event
     qh: QueueHandle<Self>,
     wl: WaylandState,
@@ -254,6 +256,7 @@ impl<T: 'static + Send> EventLoop<T> {
         let mut monitor_list = HashSet::with_capacity(1);
         let wl = WaylandState::from_globals(&mut monitor_list, globals, &qh)?;
 
+        #[cfg(feature = "signals")]
         let signals = async_signals::Signals::new([
             Signal::SIGTERM as i32,
             Signal::SIGINT as i32
@@ -265,6 +268,7 @@ impl<T: 'static + Send> EventLoop<T> {
         let base = BaseLoop {
             appid: application.to_string(),
             con, qh, wl,
+            #[cfg(feature = "signals")]
             signals,
             events,
             proxy_data: ProxyData::new(),
@@ -315,7 +319,7 @@ impl<T: 'static + Send> EventLoop<T> {
                 Readable,
                 Timer,
                 Channel(Event<T>),
-                Signal(i32),
+                #[cfg(feature = "signals")] Signal(i32),
             }
 
             let readable = async {
@@ -333,13 +337,20 @@ impl<T: 'static + Send> EventLoop<T> {
                 Ok(Either::Channel(event))
             };
 
+            #[cfg(feature = "signals")]
             let signals = async {
+                use futures_lite::StreamExt;
                 let signal = self.base.signals.next().await
                     .unwrap_or(0);
                 Ok(Either::Signal(signal))
             };
 
-            match readable.or(timer).or(channel).or(signals).await {
+            #[cfg(feature = "signals")]
+            let future = readable.or(timer).or(channel).or(signals);
+            #[cfg(not(feature = "signals"))]
+            let future = readable.or(timer).or(channel);
+
+            match future.await {
                 Ok(Either::Readable) => {
                     // read from the wayland connection
                     ignore_wouldblock(guard.read())?
@@ -353,6 +364,7 @@ impl<T: 'static + Send> EventLoop<T> {
                     // just return the event
                     return Ok(event)
                 },
+                #[cfg(feature = "signals")]
                 Ok(Either::Signal(signal)) => {
                     if signal == Signal::SIGTERM as i32 {
                         self.base.events.push(Event::QuitRequested { reason: QuitReason::System })
