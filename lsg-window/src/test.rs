@@ -10,8 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn handler(mut evl: EventTarget<&str>) -> Result<(), Box<dyn std::error::Error>> {
 
-    // let proxy = evl.new_proxy();
-    // proxy.send(Event::User("lsg-test"))?;
+    let proxy = evl.new_proxy();
+    proxy.send(Event::User("lsg-test"))?;
 
     // we will be using the built-in gl functionality
     let egl = EglInstance::new(&mut evl)?;

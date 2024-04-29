@@ -48,8 +48,7 @@ use khronos_egl as egl;
 use xkbcommon::xkb;
 
 use nix::{
-    // sys::{signalfd::{SignalFd, SfdFlags, SigSet}, signal::Signal},
-    // poll::{PollFd, PollFlags, poll, PollTimeout},
+    sys::{signalfd::{SignalFd, SfdFlags, SigSet, siginfo}, signal::Signal},
     fcntl::{self, OFlag}, unistd::pipe2
 };
 
@@ -63,7 +62,7 @@ use std::{
     task, pin, future::{self, Future, poll_fn},
     ffi::c_void as void,
     error::Error as StdError,
-    sync::{Arc, Mutex, MutexGuard, mpsc::{Sender, Receiver, channel, SendError}},
+    sync::{Arc, Mutex, MutexGuard, mpsc::{Sender, Receiver, channel}},
     io::{self, Write},
     os::fd::{AsFd, FromRawFd, AsRawFd, BorrowedFd},
     time::{Duration, Instant},
@@ -73,11 +72,11 @@ use std::{
 pub struct BaseLoop<T: 'static + Send = ()> {
     appid: String,
     con: Async<wayland_client::Connection>,
+    signals: Async<SignalFd>, // listens to sigterm and emits a quit event
     qh: QueueHandle<Self>,
     wl: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
-    // quit_signalfd: SignalFd, // listens to sigterm and emits a quit event
-    // proxy_data: BaseProxyData<T>,
+    proxy_data: ProxyData<T>,
     // -- state --
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
@@ -88,6 +87,18 @@ pub struct BaseLoop<T: 'static + Send = ()> {
 }
 
 unsafe impl<T: 'static + Send> Send for BaseLoop<T> {}
+
+struct ProxyData<T: 'static + Send> {
+    sender: flume::Sender<Event<T>>,
+    receiver: flume::Receiver<Event<T>>
+}
+
+impl<T: 'static + Send> ProxyData<T> {
+    fn new() -> Self {
+        let (sender, receiver) = flume::unbounded();
+        Self { sender, receiver }
+    }
+}
 
 #[derive(Default)]
 struct CursorData {
@@ -189,18 +200,36 @@ impl PressedKeys {
     }
 }
 
-pub struct EvlProxy<T> {
-    sender: flume::Sender<Result<Event<T>, EvlError>>,
+pub struct EventProxy<T> {
+    sender: flume::Sender<Event<T>>,
 }
 
-impl<T> EvlProxy<T> {
+impl<T> EventProxy<T> {
 
-    pub fn send(&self, event: Event<T>) -> Result<(), Event<T>> {
-        self.sender.send(Ok(event))
-            .map_err(|err| err.into_inner().unwrap())
+    pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
+        self.sender.send(event)
+            .map_err(|err| SendError { inner: err.into_inner() })
     }
 
 }
+
+pub struct SendError<T> {
+    pub inner: T
+}
+
+impl<T> fmt::Debug for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SendError: Event loop dead")
+    }
+}
+
+impl<T> fmt::Display for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl<T: fmt::Debug> StdError for SendError<T> {}
 
 pub struct EventTarget<T: 'static + Send> {
     base: BaseLoop<T>,
@@ -221,13 +250,14 @@ impl<T: 'static + Send> EventTarget<T> {
         let mut monitor_list = HashSet::with_capacity(1);
         let wl = WaylandState::from_globals(&mut monitor_list, globals, &qh)?;
 
-        // let quit_signalfd = {
-        //     let mut mask = SigSet::empty();
-        //     mask.add(Signal::SIGTERM); // graceful termination, system shutdown
-        //     mask.add(Signal::SIGINT); // ctrl-c
-        //     mask.thread_block()?;
-        //     SignalFd::with_flags(&mask, SfdFlags::SFD_NONBLOCK)?
-        // };
+        let signals = {
+            let mut mask = SigSet::empty();
+            mask.add(Signal::SIGTERM); // graceful termination, system shutdown
+            mask.add(Signal::SIGINT); // ctrl-c
+            mask.thread_block()?;
+            let fd = SignalFd::new(&mask)?;
+            Async::new(fd)?
+        };
 
         let mut events = Vec::with_capacity(4);
         events.push(Event::Resume);
@@ -235,7 +265,9 @@ impl<T: 'static + Send> EventTarget<T> {
         let base = BaseLoop {
             appid: application.to_string(),
             con, qh, wl,
+            signals,
             events,
+            proxy_data: ProxyData::new(),
             mouse_data: MouseData::default(),
             keyboard_data: KeyboardData::new()?,
             offer_data: OfferData::default(),
@@ -279,22 +311,38 @@ impl<T: 'static + Send> EventTarget<T> {
 
             // let timeout = if self.events.is_empty() { PollTimeout::NONE } else { PollTimeout::ZERO }; // maybe cb generated events TOOD: <-----
 
-            enum Either {
+            enum Either<T: 'static + Send> {
                 Readable,
-                Timer
+                Timer,
+                Channel(Event<T>),
+                Signal(u32),
             }
 
-            let readable = poll_fn(|ctx|{
-                ready!(self.base.con.poll_readable(ctx))?;
-                task::Poll::Ready(Ok(Either::Readable))
-            });
+            let readable = async {
+                self.base.con.readable().await?;
+                Ok(Either::Readable)
+            };
 
             let timer = async {
                 (&mut self.base.keyboard_data.repeat_timer).await;
                 Ok(Either::Timer)
             };
 
-            match readable.or(timer).await {
+            let channel = async {
+                let event = self.base.proxy_data.receiver.recv_async().await.unwrap();
+                Ok(Either::Channel(event))
+            };
+
+            let signals = async {
+                println!("awaiting signals...");
+                self.base.signals.readable().await?;
+                let signal = unsafe { self.base.signals.get_mut() }.read_signal()?
+                    .map(|result| result.ssi_signo)
+                    .unwrap_or_default();
+                Ok(Either::Signal(signal))
+            };
+
+            match readable.or(timer).or(channel).or(signals).await {
                 Ok(Either::Readable) => {
                     // read from the wayland connection
                     ignore_wouldblock(guard.read())?
@@ -304,11 +352,33 @@ impl<T: 'static + Send> EventTarget<T> {
                     let key = self.base.keyboard_data.repeat_key;
                     process_key_event(&mut self.base, key, Direction::Down, Source::KeyRepeat);
                 },
+                Ok(Either::Channel(event)) => {
+                    // just return the event
+                    return Ok(event)
+                },
+                Ok(Either::Signal(signal)) => {
+                    if signal == Signal::SIGTERM as i32 as u32 {
+                        self.base.events.push(Event::QuitRequested { reason: QuitReason::System })
+                    } else if signal == Signal::SIGINT as i32 as u32 {
+                        self.base.events.push(Event::QuitRequested { reason: QuitReason::CtrlC })
+                    }
+                }
                 Err(err) => return Err(err),
             }
 
         }
         
+    }
+
+    pub fn on_dispatch_thread<R>(&mut self, func: impl FnOnce(&mut Self) -> R) -> R {
+        // on linux, this code should run on the main thread anyways
+        func(self)
+    }
+
+    pub fn new_proxy(&mut self) -> EventProxy<T> {
+        EventProxy {
+            sender: self.base.proxy_data.sender.clone()
+        }
     }
 
     pub fn suspend(&mut self) {
@@ -1660,12 +1730,13 @@ impl EglPixelBuffer {
 pub enum QuitReason {
     /// Quit requested via `request_quit`.
     User,
-    /// SIGTERM received.
+    /// SIGTERM received. For example on shutdown.
     System,
     /// SIGINT received.
-    Ctrlc,
+    CtrlC,
 }
 
+#[derive(Debug)]
 pub enum Event<T> {
     /// Your own events. See [`EvlProxy`].
     User(T),
@@ -2755,14 +2826,15 @@ fn process_key_event<T: 'static + Send>(evl: &mut BaseLoop<T>, raw_key: u32, dir
         }
 
         if !modifier {
-            // arm key-repeat timer with the correct delay and repeat rate
-            if source == Source::Event { // only re-arm if this was NOT called from a repeated key event
+
+            // only re-arm if this was NOT called from a repeated key event
+            if source == Source::Event {
 
                 evl.keyboard_data.repeat_key = raw_key;
 
-                let now = Instant::now();
-                evl.keyboard_data.repeat_timer = Timer::interval_at(
-                    now + evl.keyboard_data.repeat_delay,
+                // arm key-repeat timer with the correct delay and repeat rate
+                evl.keyboard_data.repeat_timer.set_interval_at(
+                    Instant::now() + evl.keyboard_data.repeat_delay,
                     evl.keyboard_data.repeat_rate
                 );
                 
@@ -2774,7 +2846,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut BaseLoop<T>, raw_key: u32, dir
     } else {
 
         // unarm key-repeat timer
-        evl.keyboard_data.repeat_timer = Timer::never();
+        evl.keyboard_data.repeat_timer.set_after(Duration::MAX);
 
         // update the key state
         keymap_specific.pressed_keys.key_up(xkb_key);
