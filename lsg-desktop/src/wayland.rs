@@ -1746,9 +1746,9 @@ impl EglPixelBuffer {
 pub enum QuitReason {
     /// Quit requested via `request_quit`.
     User,
-    /// SIGTERM received. For example on shutdown.
+    /// SIGTERM received. For example on shutdown. Only generated when `signals` feature is enabled.
     System,
-    /// SIGINT received.
+    /// SIGINT received. Only generated when `signals` feature is enabled.
     CtrlC,
 }
 
