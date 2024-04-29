@@ -48,23 +48,22 @@ use khronos_egl as egl;
 use xkbcommon::xkb;
 
 use nix::{
-    sys::{signalfd::{SignalFd, SfdFlags, SigSet, siginfo}, signal::Signal},
+    sys::signal::Signal,
     fcntl::{self, OFlag}, unistd::pipe2
 };
 
 use async_io::{Async, Timer};
-use futures_lite::{AsyncReadExt, FutureExt, ready};
+use futures_lite::{FutureExt, StreamExt};
 
 use bitflags::bitflags;
 
 use std::{
     mem, fmt, env, ops, fs,
-    task, pin, future::{self, Future, poll_fn},
     ffi::c_void as void,
     error::Error as StdError,
-    sync::{Arc, Mutex, MutexGuard, mpsc::{Sender, Receiver, channel}},
+    sync::{Arc, Mutex, MutexGuard},
     io::{self, Write},
-    os::fd::{AsFd, FromRawFd, AsRawFd, BorrowedFd},
+    os::fd::{AsFd, FromRawFd, AsRawFd},
     time::{Duration, Instant},
     collections::{HashSet, HashMap},
 };
@@ -72,7 +71,7 @@ use std::{
 pub struct BaseLoop<T: 'static + Send = ()> {
     appid: String,
     con: Async<wayland_client::Connection>,
-    signals: Async<SignalFd>, // listens to sigterm and emits a quit event
+    signals: async_signals::Signals, // listens to sigterm and emits a quit event
     qh: QueueHandle<Self>,
     wl: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
@@ -250,14 +249,10 @@ impl<T: 'static + Send> EventTarget<T> {
         let mut monitor_list = HashSet::with_capacity(1);
         let wl = WaylandState::from_globals(&mut monitor_list, globals, &qh)?;
 
-        let signals = {
-            let mut mask = SigSet::empty();
-            mask.add(Signal::SIGTERM); // graceful termination, system shutdown
-            mask.add(Signal::SIGINT); // ctrl-c
-            mask.thread_block()?;
-            let fd = SignalFd::new(&mask)?;
-            Async::new(fd)?
-        };
+        let signals = async_signals::Signals::new([
+            Signal::SIGTERM as i32,
+            Signal::SIGINT as i32
+        ]).map_err(|err| io::Error::from(err))?;
 
         let mut events = Vec::with_capacity(4);
         events.push(Event::Resume);
@@ -315,7 +310,7 @@ impl<T: 'static + Send> EventTarget<T> {
                 Readable,
                 Timer,
                 Channel(Event<T>),
-                Signal(u32),
+                Signal(i32),
             }
 
             let readable = async {
@@ -334,11 +329,8 @@ impl<T: 'static + Send> EventTarget<T> {
             };
 
             let signals = async {
-                println!("awaiting signals...");
-                self.base.signals.readable().await?;
-                let signal = unsafe { self.base.signals.get_mut() }.read_signal()?
-                    .map(|result| result.ssi_signo)
-                    .unwrap_or_default();
+                let signal = self.base.signals.next().await
+                    .unwrap_or(0);
                 Ok(Either::Signal(signal))
             };
 
@@ -357,9 +349,9 @@ impl<T: 'static + Send> EventTarget<T> {
                     return Ok(event)
                 },
                 Ok(Either::Signal(signal)) => {
-                    if signal == Signal::SIGTERM as i32 as u32 {
+                    if signal == Signal::SIGTERM as i32 {
                         self.base.events.push(Event::QuitRequested { reason: QuitReason::System })
-                    } else if signal == Signal::SIGINT as i32 as u32 {
+                    } else if signal == Signal::SIGINT as i32 {
                         self.base.events.push(Event::QuitRequested { reason: QuitReason::CtrlC })
                     }
                 }
