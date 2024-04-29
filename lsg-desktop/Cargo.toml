@@ -20,6 +20,7 @@ khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
 nix = { version = "0.28.0", features = ["event", "signal", "time", "poll", "fs"] } # TODO: remove unused features / remove completely
 bitflags = { version = "2.5.0", features = ["std"] }
+bv = "0.11.1" # bitvec's
 futures-lite = "2.3.0"
 flume = "0.11.0"
 async-io = "2.3.2"

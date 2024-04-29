@@ -1,4 +1,6 @@
 
+// ### imports ###
+
 use wayland_client::{
     protocol::{
         wl_registry::{WlRegistry, Event as WlRegistryEvent},
@@ -68,7 +70,9 @@ use std::{
     collections::{HashSet, HashMap},
 };
 
-pub struct BaseLoop<T: 'static + Send = ()> {
+// ### base event loop ###
+
+struct BaseLoop<T: 'static + Send = ()> {
     appid: String,
     con: Async<wayland_client::Connection>,
     signals: async_signals::Signals, // listens to sigterm and emits a quit event
@@ -84,8 +88,6 @@ pub struct BaseLoop<T: 'static + Send = ()> {
     monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
     last_serial: u32,
 }
-
-unsafe impl<T: 'static + Send> Send for BaseLoop<T> {}
 
 struct ProxyData<T: 'static + Send> {
     sender: flume::Sender<Event<T>>,
@@ -156,48 +158,49 @@ struct MouseData {
     y: f64
 }
 
+// ### pressed keys ###
+
 struct PressedKeys {
-    min: xkb::Keycode,
-    keys: Vec<u8>, // a bit map containing every possible key
+    min: u32,
+    keys: bv::BitVec,
 }
 
 impl PressedKeys {
+
     pub fn new(keymap: &xkb::Keymap) -> Self {
         let min = keymap.min_keycode();
         let max = keymap.max_keycode();
         let len = max.raw() - min.raw();
-        let mut keys = Vec::new();
-        keys.resize(len as usize, 0);
         Self {
-            min,
-            keys
+            min: min.raw(),
+            keys: bv::bit_vec![false; len as u64],
         }
     }
+
     pub fn key_down(&mut self, key: xkb::Keycode) {
-        let (byte, bit) = self.get_indicies(key);
-        self.keys[byte] |= 1 << bit
+        let idx = key.raw() - self.min;
+        self.keys.set(idx as u64, true);
     }
+
     pub fn key_up(&mut self, key: xkb::Keycode) {
-        let (byte, bit) = self.get_indicies(key);
-        self.keys[byte] &= !(1 << bit)
+        let idx = key.raw() - self.min;
+        self.keys.set(idx as u64, false);
     }
+
     pub fn keys_down(&self) -> Vec<xkb::Keycode> {
         let mut down = Vec::new(); // we can't return anything that borrows self
-        for (byte, val) in self.keys.iter().enumerate() {
-            for bit in 0..7 {
-                if (*val & (1 << bit)) > 0 { // > 0 is important here
-                    let key = byte as u32 + bit as u32 + self.min.raw();
-                    down.push(xkb::Keycode::from(key));
-                }
+        for idx in 0..self.keys.len() {
+            if self.keys.get(idx) == true {
+                let keycode = xkb::Keycode::from(self.min + idx as u32);
+                down.push(keycode)
             }
         }
         down
     }
-    fn get_indicies(&self, key: xkb::Keycode) -> (usize, usize) {
-        let index = key.raw() - self.min.raw();
-        (index as usize / 8, index as usize % 8)
-    }
+
 }
+
+// ### event proxy ###
 
 pub struct EventProxy<T> {
     sender: flume::Sender<Event<T>>,
@@ -230,12 +233,14 @@ impl<T> fmt::Display for SendError<T> {
 
 impl<T: fmt::Debug> StdError for SendError<T> {}
 
-pub struct EventTarget<T: 'static + Send> {
+// ### public async event loop ###
+
+pub struct EventLoop<T: 'static + Send> {
     base: BaseLoop<T>,
     queue: EventQueue<BaseLoop<T>>,
 }
 
-impl<T: 'static + Send> EventTarget<T> {
+impl<T: 'static + Send> EventLoop<T> {
 
     pub fn new(application: &str) -> Result<Self, EvlError> {
 
@@ -412,13 +417,6 @@ impl<T: 'static + Send> EventTarget<T> {
 
 }
 
-pub fn run<E: 'static + Send, T, H: FnOnce(Result<EventTarget<E>, EvlError>) -> T>(handler: H, application: &str) -> T {
-
-    let target = EventTarget::new(application);
-    handler(target)
-
-}
-
 fn ignore_wouldblock<T>(result: Result<T, WaylandError>) -> Result<(), WaylandError> {
     match result {
         Ok(..) => Ok(()),
@@ -427,38 +425,11 @@ fn ignore_wouldblock<T>(result: Result<T, WaylandError>) -> Result<(), WaylandEr
     }
 }
 
-pub type MonitorId = u32;
+pub fn run<E: 'static + Send, T, H: FnOnce(EventLoop<E>) -> T>(handler: H, application: &str) -> Result<T, EvlError> {
 
-fn get_monitor_id(output: &WlOutput) -> MonitorId {
-    output.id().protocol_id()
-}
+    let target = EventLoop::new(application)?;
+    Ok(handler(target))
 
-#[derive(Debug, Default, Clone)]
-pub struct MonitorInfo {
-    pub name: String,
-    pub description: String,
-    pub size: Size,
-    /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
-    pub refresh: u32,
-}
-
-impl MonitorInfo {
-    /// Trimmed conversion.
-    pub fn fps(&self) -> u32 {
-        self.refresh / 1000
-    }    
-}
-
-pub struct Monitor {
-    /// Information about the monitor.
-    pub info: MonitorInfo,
-    wl_output: WlOutput,
-}
-
-impl fmt::Debug for Monitor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Monitor {{ info: {:?}, ... }}", self.info)
-    }
 }
 
 struct WaylandState {
@@ -525,13 +496,43 @@ struct FracScaleData {
     frac_scale: WpFractionalScaleV1,
 }
 
-pub trait Drawable {
-    // pub 
+// ### monitor info ###
+
+pub type MonitorId = u32;
+
+fn get_monitor_id(output: &WlOutput) -> MonitorId {
+    output.id().protocol_id()
 }
 
-pub struct PixMap {
-    
+#[derive(Debug, Default, Clone)]
+pub struct MonitorInfo {
+    pub name: String,
+    pub description: String,
+    pub size: Size,
+    /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
+    pub refresh: u32,
 }
+
+impl MonitorInfo {
+    /// Trimmed conversion.
+    pub fn fps(&self) -> u32 {
+        self.refresh / 1000
+    }    
+}
+
+pub struct Monitor {
+    /// Information about the monitor.
+    pub info: MonitorInfo,
+    wl_output: WlOutput,
+}
+
+impl fmt::Debug for Monitor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Monitor {{ info: {:?}, ... }}", self.info)
+    }
+}
+
+// ### base window ###
 
 pub type WindowId = u32;
 
@@ -557,7 +558,7 @@ impl<T: 'static + Send> Drop for BaseWindow<T> {
 
 impl<T: 'static + Send> BaseWindow<T> {
 
-    pub(crate) fn new(evl: &mut EventTarget<T>, size: Size) -> Self {
+    pub(crate) fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
         let evb = &mut evl.base;
 
@@ -648,6 +649,9 @@ impl Drop for WindowShared {
     }
 }
 
+
+// ### window ###
+
 pub struct Window<T: 'static + Send> {
     base: BaseWindow<T>,
     xdg_surface: XdgSurface,
@@ -673,7 +677,7 @@ impl<T: 'static + Send> Drop for Window<T> {
 
 impl<T: 'static + Send> Window<T> {
     
-    pub fn new(evl: &mut EventTarget<T>, size: Size) -> Self {
+    pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
         let base = BaseWindow::new(evl, size);
 
@@ -700,12 +704,10 @@ impl<T: 'static + Send> Window<T> {
         
     }
 
-    pub fn close(self) {
-        drop(self);
-    }
+    pub fn destroy(self) {}
 
-    pub fn input_mode(&self, evl: &mut BaseLoop<T>, mode: InputMode) {
-        evl.keyboard_data.input_modes.insert(self.id, mode);
+    pub fn input_mode(&self, evl: &mut EventLoop<T>, mode: InputMode) {
+        evl.base.keyboard_data.input_modes.insert(self.id, mode);
     }
 
     pub fn decorations(&mut self, value: bool) {
@@ -754,7 +756,7 @@ impl<T: 'static + Send> Window<T> {
         self.wl_surface.commit();
     }
 
-    pub fn request_user_attention(&self, evl: &mut EventTarget<T>, urgency: Urgency) {
+    pub fn request_user_attention(&self, evl: &mut EventLoop<T>, urgency: Urgency) {
 
         let evb = &mut evl.base;
 
@@ -784,7 +786,7 @@ impl<T: 'static + Send> Window<T> {
     /// You should only start a drag-and-drop when the left mouse button is held down
     /// *and* the user then moves the mouse.
     /// Otherwise the request may be denied or visually broken.
-    pub fn start_drag_and_drop(&self, evl: &mut EventTarget<T>, icon: CustomIcon, ds: &DataSource) {
+    pub fn start_drag_and_drop(&self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
 
         let evb = &mut evl.base;
 
@@ -800,7 +802,7 @@ impl<T: 'static + Send> Window<T> {
 
     }
 
-    pub fn set_cursor(&self, evl: &mut EventTarget<T>, style: CursorStyle) {
+    pub fn set_cursor(&self, evl: &mut EventLoop<T>, style: CursorStyle) {
 
         let evb = &mut evl.base;
 
@@ -915,6 +917,8 @@ pub enum Urgency {
     /// Will likely switch window focus or display an urgent hint.
     Switch,
 }
+
+// ### drag and drop ###
 
 bitflags! {
     #[derive(Debug, Clone, Copy,PartialEq, Eq)]
@@ -1079,7 +1083,7 @@ impl Drop for DataSource {
 impl DataSource {
 
     #[track_caller]
-    pub fn new<T: 'static + Send>(evl: &mut EventTarget<T>, offers: DataKinds, mode: IoMode) -> Self {
+    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
 
         let evb = &mut evl.base;
 
@@ -1112,6 +1116,8 @@ impl DataSource {
 
 }
 
+// ### custom icon ###
+
 pub enum IconFormat {
     Argb8,
 }
@@ -1143,7 +1149,7 @@ impl CustomIcon {
     
     /// Currently uses env::temp_dir() so the image content of your icon could be leaked to other users.
     #[track_caller]
-    pub fn new<T: 'static + Send>(evl: &mut EventTarget<T>, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
+    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
 
         let evb = &mut evl.base;
 
@@ -1197,7 +1203,11 @@ impl CustomIcon {
         
     }
 
+    pub fn destroy(self) {}
+
 }
+
+// ### (wayland) popup and layer window ###
 
 pub struct PopupWindow<T: 'static + Send> {
     base: BaseWindow<T>,
@@ -1222,7 +1232,7 @@ impl<T: 'static + Send> Drop for PopupWindow<T> {
 
 impl<T: 'static + Send> PopupWindow<T> {
     
-    pub fn new(evl: &mut EventTarget<T>, size: Size, parent: &Window<T>) -> Self {
+    pub fn new(evl: &mut EventLoop<T>, size: Size, parent: &Window<T>) -> Self {
 
         let base = BaseWindow::new(evl, size);
 
@@ -1249,9 +1259,7 @@ impl<T: 'static + Send> PopupWindow<T> {
         
     }
 
-    pub fn close(self) {
-        drop(self);
-    }
+    pub fn destroy(self) {}
 
 }
 
@@ -1308,7 +1316,7 @@ impl<T: 'static + Send> Drop for LayerWindow<T> {
 
 impl<T: 'static + Send> LayerWindow<T> {
 
-    pub fn new(evl: &mut EventTarget<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, Unsupported> {
+    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, Unsupported> {
 
         let base = BaseWindow::new(evl, size);
 
@@ -1345,9 +1353,7 @@ impl<T: 'static + Send> LayerWindow<T> {
         
     }
 
-    pub fn close(self) {
-        drop(self);
-    }
+    pub fn destroy(self) {}
 
     pub fn anchor(&self, anchor: WindowAnchor) {
 
@@ -1386,6 +1392,8 @@ impl<T: 'static + Send> LayerWindow<T> {
     }
     
 }
+
+// ### general purpose types ###
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Size {
@@ -1428,6 +1436,8 @@ impl Rect {
     }
 }
 
+// ### egl api ###
+
 #[derive(Clone, Copy)]
 pub struct PresentToken { id: WindowId }
 
@@ -1447,7 +1457,7 @@ pub struct EglInstance {
 impl EglInstance {
 
     /// Should be only be called once. Although initializing multiple instances is not a hard error.
-    pub fn new<T: 'static + Send>(evh: &mut EventTarget<T>) -> Result<Arc<Self>, EvlError> {
+    pub fn new<T: 'static + Send>(evh: &mut EventLoop<T>) -> Result<Arc<Self>, EvlError> {
         
         let loaded = unsafe {
             egl::DynamicInstance::<egl::EGL1_0>::load_required()
@@ -1717,6 +1727,8 @@ impl EglPixelBuffer {
     }
 
 }
+
+// ### events ###
 
 #[derive(Debug)]
 pub enum QuitReason {
@@ -2031,6 +2043,8 @@ pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
     }
 
 }
+
+// ### wayland client implementation ###
 
 macro_rules! ignore {
     ($prxy:ident, $usr:tt) => {
@@ -3012,6 +3026,8 @@ pub enum ScrollAxis {
     Horizontal
 }
 
+// ### error handling ###
+
 #[derive(Debug)]
 pub enum EvlError {
     Connect(wayland_client::ConnectError),
@@ -3034,7 +3050,7 @@ impl fmt::Display for EvlError {
         write!(f, "windowing error: {}", match self {
             Self::Connect(value)    => value.to_string(),
             Self::Wayland(value)    => value.to_string(),
-            Self::WaylandGlobals(value)    => value.to_string(),
+            Self::WaylandGlobals(value) => value.to_string(),
             Self::BindGlobals(value) => value.to_string(),
             Self::Dispatch(value)   => value.to_string(),
             Self::Egl(value)        => value.to_string(),

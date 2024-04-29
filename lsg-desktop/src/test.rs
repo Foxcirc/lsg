@@ -2,15 +2,13 @@
 use std::io::{Write, Read};
 
 use futures_lite::future::block_on;
-use lsg_desktop::wayland::*;
+use lsg_desktop::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run(handler, "lsg-test")
+    run(app, "lsg-test")?
 }
 
-fn handler(result: Result<EventTarget<&str>, EvlError>) -> Result<(), Box<dyn std::error::Error>> {
-    
-    let mut evl = result.unwrap();
+fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
 
     let proxy = evl.new_proxy();
     proxy.send(Event::User("lsg-test"))?;
@@ -35,8 +33,7 @@ fn handler(result: Result<EventTarget<&str>, EvlError>) -> Result<(), Box<dyn st
     // ctx.bind(&egl)?; // make the context current
 
     window.transparency(true);
-
-    // window.input_mode(&mut evl, InputMode::SingleKey);
+    window.input_mode(&mut evl, InputMode::SingleKey);
 
     let mut popup_window: Option<Window<&str>> = None;
     let mut popup_ctx: Option<EglContext> = None;

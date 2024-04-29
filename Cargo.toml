@@ -7,7 +7,9 @@ description = "light and small gui apps"
 members = ["lsg-desktop"]
 # members = ["lsg-core","lsg-gl", "lsg-window", "lsg-winit"]
 package.version = "0.1.0"
+# members = ["lsg-core","lsg-gl", "lsg-window", "lsg-winit"]
 package.edition = "2021"
+# members = ["lsg-core","lsg-gl", "lsg-window", "lsg-winit"]
 package.authors = ["foxcirc"]
 
 [[test]]
@@ -32,5 +34,6 @@ lsg-winit = { path = "lsg-winit" }
 lsg-gl = { path = "lsg-gl" }
 glutin = "0.31.3"
 raw-window-handle = "0.5.0"
+lsg-desktop = { version = "0.1.0", path = "lsg-desktop" }
 # wgpu = { version = "0.19.1", default-features = false, features = ["wgsl"] }
 # raw-window-handle = "0.6.0"
