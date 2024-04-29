@@ -2,13 +2,15 @@
 use std::io::{Write, Read};
 
 use futures_lite::future::block_on;
-use lsg_window::wayland::*;
+use lsg_desktop::wayland::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(handler, "lsg-test")
 }
 
-fn handler(mut evl: EventTarget<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn handler(result: Result<EventTarget<&str>, EvlError>) -> Result<(), Box<dyn std::error::Error>> {
+    
+    let mut evl = result.unwrap();
 
     let proxy = evl.new_proxy();
     proxy.send(Event::User("lsg-test"))?;

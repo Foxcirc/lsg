@@ -783,15 +783,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lsg-gl"
-version = "0.1.0"
-dependencies = [
- "gl",
- "num_enum",
-]
-
-[[package]]
-name = "lsg-window"
+name = "lsg-desktop"
 version = "0.1.0"
 dependencies = [
  "async-io",
@@ -807,6 +799,14 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "xkbcommon",
+]
+
+[[package]]
+name = "lsg-gl"
+version = "0.1.0"
+dependencies = [
+ "gl",
+ "num_enum",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "lsg-window"
+name = "lsg-desktop"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

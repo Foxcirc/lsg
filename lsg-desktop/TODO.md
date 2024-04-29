@@ -24,7 +24,7 @@
 [x] OpenGL context creation (EGL)
 [x] Damage areas (OH YEAH BABY)
 [x] Rendering to a texture/pixmap
-[ ] Full Async (run() returns a future which should be run on the main thread)
+[x] Full Async (run() returns a future which should be run on the main thread)
 [x] Continious Redraw + Vsync
 [x] Handling things like sigterm as the Quit event
 [x] Request user attention

@@ -412,9 +412,9 @@ impl<T: 'static + Send> EventTarget<T> {
 
 }
 
-pub fn run<E: 'static + Send, T, H: FnOnce(EventTarget<E>) -> T>(handler: H, application: &str) -> T {
+pub fn run<E: 'static + Send, T, H: FnOnce(Result<EventTarget<E>, EvlError>) -> T>(handler: H, application: &str) -> T {
 
-    let target = EventTarget::new(application).expect("TODO");
+    let target = EventTarget::new(application);
     handler(target)
 
 }
