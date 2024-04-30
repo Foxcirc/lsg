@@ -58,8 +58,6 @@ use nix::sys::signal::Signal;
 use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
-use bitflags::bitflags;
-
 use std::{
     mem, fmt, env, ops, fs,
     ffi::c_void as void,
@@ -69,6 +67,14 @@ use std::{
     os::fd::{AsFd, FromRawFd, AsRawFd},
     time::{Duration, Instant},
     collections::{HashSet, HashMap},
+};
+
+use crate::window::{
+    self,
+    Event, WindowEvent, DndEvent,
+    SendError,
+    CursorStyle, CursorShape,
+    IoMode, InputMode, QuitReason, Urgency, IconFormat, WindowLayer, WindowAnchor, KbInteractivity, Rect, Size, Key, DataSourceEvent, DataKinds, ConfigureFlags, MouseButton, ScrollAxis, PresentToken
 };
 
 // ### base event loop ###
@@ -216,24 +222,6 @@ impl<T> EventProxy<T> {
     }
 
 }
-
-pub struct SendError<T> {
-    pub inner: T
-}
-
-impl<T> fmt::Debug for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SendError: Event loop dead")
-    }
-}
-
-impl<T> fmt::Display for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl<T: fmt::Debug> StdError for SendError<T> {}
 
 // ### public async event loop ###
 
@@ -628,7 +616,7 @@ impl<T: 'static + Send> BaseWindow<T> {
         PresentToken { id: self.id }
     }
 
-    pub fn transparency(&self, value: bool) {
+    pub fn set_transparency(&self, value: bool) {
         if value {
             self.wl_surface.set_opaque_region(None);
             self.wl_surface.commit();
@@ -665,14 +653,14 @@ impl Drop for WindowShared {
 // ### window ###
 
 pub struct Window<T: 'static + Send> {
-    base: BaseWindow<T>,
+    base: window::BaseWindow<T>,
     xdg_surface: XdgSurface,
     xdg_toplevel: XdgToplevel,
     xdg_decoration: Option<ZxdgToplevelDecorationV1>,
 }
 
 impl<T: 'static + Send> ops::Deref for Window<T> {
-    type Target = BaseWindow<T>;
+    type Target = window::BaseWindow<T>;
     fn deref(&self) -> &Self::Target {
         &self.base
     }
@@ -708,7 +696,7 @@ impl<T: 'static + Send> Window<T> {
         base.wl_surface.commit();
 
         Self {
-            base,
+            base: window::BaseWindow { platform: base },
             xdg_surface,
             xdg_toplevel,
             xdg_decoration,
@@ -718,29 +706,29 @@ impl<T: 'static + Send> Window<T> {
 
     pub fn destroy(self) {}
 
-    pub fn input_mode(&self, evl: &mut EventLoop<T>, mode: InputMode) {
-        evl.base.keyboard_data.input_modes.insert(self.id, mode);
+    pub fn set_input_mode(&self, evl: &mut EventLoop<T>, mode: InputMode) {
+        evl.base.keyboard_data.input_modes.insert(self.base.platform.id, mode);
     }
 
-    pub fn decorations(&mut self, value: bool) {
+    pub fn set_decorations(&mut self, value: bool) {
         let mode = if value { ZxdgDecorationMode::ServerSide } else { ZxdgDecorationMode::ClientSide };
         self.xdg_decoration.as_ref().map(|val| val.set_mode(mode));
     }
 
-    pub fn title<S: Into<String>>(&self, text: S) {
+    pub fn set_title<S: Into<String>>(&self, text: S) {
         self.xdg_toplevel.set_title(text.into());
     }
 
-    pub fn maximized(&self, value: bool) {
+    pub fn set_maximized(&self, value: bool) {
         if value {
             self.xdg_toplevel.set_maximized();
         } else {
             self.xdg_toplevel.unset_maximized();
         };
-        self.wl_surface.commit();
+        self.base.platform.wl_surface.commit();
     }
 
-    pub fn fullscreen(&self, value: bool, monitor: Option<&Monitor>) {
+    pub fn set_fullscreen(&self, value: bool, monitor: Option<&Monitor>) {
         if value {
             let wl_output = monitor.map(|val| &val.wl_output);
             self.xdg_toplevel.set_fullscreen(wl_output);
@@ -752,20 +740,20 @@ impl<T: 'static + Send> Window<T> {
     pub fn min_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
-        self.wl_surface.commit();
+        self.base.platform.wl_surface.commit();
     }
 
     pub fn max_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
-        self.wl_surface.commit();
+        self.base.platform.wl_surface.commit();
     }
 
     pub fn force_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
-        self.wl_surface.commit();
+        self.base.platform.wl_surface.commit();
     }
 
     pub fn request_user_attention(&self, evl: &mut EventLoop<T>, urgency: Urgency) {
@@ -780,7 +768,7 @@ impl<T: 'static + Send> Window<T> {
 
         if let Some(ref activation_mgr) = evb.wl.activation_mgr {
 
-            let token = activation_mgr.get_activation_token(&evb.qh, self.base.wl_surface.clone());
+            let token = activation_mgr.get_activation_token(&evb.qh, self.base.platform.wl_surface.clone());
 
             token.set_app_id(evb.appid.clone());
             token.set_serial(evb.last_serial, &evb.wl.seat);
@@ -804,7 +792,7 @@ impl<T: 'static + Send> Window<T> {
 
         evb.wl.data_device.start_drag(
             Some(&ds.wl_data_source),
-            &self.base.wl_surface,
+            &self.base.platform.wl_surface,
             Some(&icon.wl_surface),
             evb.last_serial
         );
@@ -819,68 +807,16 @@ impl<T: 'static + Send> Window<T> {
         let evb = &mut evl.base;
 
         // note: the CustomIcon will also be kept alive by the styles as long as needed
-        evb.cursor_data.styles.insert(self.id, style);
+        evb.cursor_data.styles.insert(self.base.platform.id, style);
 
         // immediatly apply the style
-        process_new_cursor_style(evb, self.id);
+        process_new_cursor_style(evb, self.base.platform.id);
 
     }
 
 }
 
-#[derive(Debug)]
-pub enum CursorStyle {
-    Hidden,
-    Custom { icon: CustomIcon, hotspot: Pos },
-    Predefined { shape: CursorShape }
-}
-
-impl Default for CursorStyle {
-    fn default() -> Self {
-        Self::Predefined { shape: CursorShape::default() }
-    }
-}
-
-#[derive(Debug, Default)]
-pub enum CursorShape {
-    #[default]
-    Default,
-    ContextMenu,
-    Help,
-    Pointer,
-    Progress,
-    Wait,
-    Cell,
-    Crosshair,
-    Text,
-    VerticalText,
-    Alias,
-    Copy,
-    Move,
-    NoDrop,
-    NotAllowed,
-    Grab,
-    Grabbing,
-    EResize,
-    NResize,
-    NeResize,
-    NwResize,
-    SResize,
-    SeResize,
-    SwResize,
-    WResize,
-    EwResize,
-    NsResize,
-    NeswResize,
-    NwseResize,
-    ColResize,
-    RowResize,
-    AllScroll,
-    ZoomIn,
-    ZoomOut,
-}
-
-impl CursorShape {
+impl window::CursorShape {
     pub(crate) fn to_wl(&self) -> WlCursorShape {
         match self {
             Self::Default => WlCursorShape::Default,
@@ -921,39 +857,10 @@ impl CursorShape {
     }
 }
 
-#[derive(Debug, Default)]
-pub enum Urgency {
-    /// Should display a hint. Might do nothing.
-    #[default]
-    Info,
-    /// Will likely switch window focus or display an urgent hint.
-    Switch,
-}
-
 // ### drag and drop ###
 
-bitflags! {
-    #[derive(Debug, Clone, Copy,PartialEq, Eq)]
-    pub struct DataKinds: u64 {
-        const TEXT   = 1;
-        const XML    = 1 << 1;
-        const HTML   = 1 << 2;
-        const ZIP    = 1 << 3;
-        const JSON   = 1 << 4;
-        const JPEG   = 1 << 5;
-        const PNG    = 1 << 6;
-        const OTHER  = 1 << 7;
-    }
-}
-
-impl Default for DataKinds {
-    fn default() -> Self {
-        Self::OTHER
-    }
-}
-
 impl DataKinds {
-    pub fn to_mime_type(&self) -> &'static str {
+    pub(crate) fn to_mime_type(&self) -> &'static str {
         match *self {
             DataKinds::TEXT   => "text/plain",
             DataKinds::XML    => "application/xml",
@@ -966,7 +873,7 @@ impl DataKinds {
             _ => unreachable!(),
         }
     }
-    pub fn from_mime_type(mime_type: &str) -> Option<Self> {
+    pub(crate) fn from_mime_type(mime_type: &str) -> Option<Self> {
         match mime_type {
             "text/plain"       => Some(DataKinds::TEXT),
             "application/xml"  => Some(DataKinds::XML),
@@ -1014,9 +921,8 @@ impl DataOffer {
         self.kinds
     }
 
-    // TODO: write some better result types in general, eg also EvlResult
     /// A `DataOffer` can be read multiple times. Also using different `DataKinds`.
-    pub fn receive(&self, kind: DataKinds, nonblocking: bool) -> Result<DataReader, EvlError> {
+    pub fn receive(&self, kind: DataKinds, mode: IoMode) -> Result<DataReader, EvlError> {
 
         let (reader, writer) = pipe2(OFlag::empty())?;
 
@@ -1027,7 +933,7 @@ impl DataOffer {
         self.con.flush()?; // <--- this is important, so we can immediatly read without deadlocking
 
         // set only the writing end to be nonblocking, if enabled
-        if nonblocking {
+        if let IoMode::Nonblocking = mode {
             let old_flags = fcntl::fcntl(reader.as_raw_fd(), fcntl::FcntlArg::F_GETFL)?;
             let new_flags = OFlag::from_bits_retain(old_flags) | OFlag::O_NONBLOCK;
             fcntl::fcntl(reader.as_raw_fd(), fcntl::FcntlArg::F_SETFL(new_flags))?;
@@ -1065,13 +971,6 @@ impl io::Write for DataWriter {
     fn flush(&mut self) -> io::Result<()> {
         self.writer.flush()
     }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub enum IoMode {
-    #[default]
-    Blocking,
-    Nonblocking,
 }
 
 pub type DataSourceId = u32;
@@ -1129,10 +1028,6 @@ impl DataSource {
 }
 
 // ### custom icon ###
-
-pub enum IconFormat {
-    Argb8,
-}
 
 pub struct CustomIcon {
     _file: fs::File,
@@ -1254,7 +1149,7 @@ impl<T: 'static + Send> PopupWindow<T> {
         let xdg_surface = evb.wl.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
         let xdg_positioner = evb.wl.wm.create_positioner(&evb.qh, ());
 
-        let parent_guard = parent.shared.lock().unwrap();
+        let parent_guard = parent.platform.shared.lock().unwrap();
         xdg_positioner.set_size(size.width as i32, size.height as i32);
         xdg_positioner.set_anchor_rect(0, 0, parent_guard.new_width as i32, parent_guard.new_height as i32);
         drop(parent_guard);
@@ -1273,37 +1168,6 @@ impl<T: 'static + Send> PopupWindow<T> {
 
     pub fn destroy(self) {}
 
-}
-
-/// The layers are ordered from bottom most to top most.
-pub enum WindowLayer {
-    // Below everything.
-    // eg. desktop widgets, file icons
-    Background,
-    // Always below normal programs.
-    Bottom,
-    // Always above normal programs.
-    // eg. fullscreen windows, windows task manager
-    Top,
-    // Above everything.
-    // eg. key-press display, fps counter, notifications
-    Overlay
-}
-
-pub enum WindowAnchor {
-    Top,
-    Bottom,
-    Left,
-    Right
-}
-
-/// Keyboard window interactivity.
-pub enum KbInteractivity {
-    /// Window can't have keyboard focus.
-    None,
-    /// Top/Overlay windows will grab keyboard focus
-    /// Can be buggy. I advise against using it.
-    Exclusive
 }
 
 pub struct LayerWindow<T: 'static + Send> {
@@ -1390,7 +1254,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
     }
 
-    pub fn interactivity(&self, value: KbInteractivity) {
+    pub fn set_interactivity(&self, value: KbInteractivity) {
 
         let wl_intr = match value {
             KbInteractivity::None => KeyboardInteractivity::None,
@@ -1405,53 +1269,7 @@ impl<T: 'static + Send> LayerWindow<T> {
     
 }
 
-// ### general purpose types ###
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Size {
-    pub width: u32,
-    pub height: u32
-}
-
-impl Size {
-    pub const INFINITE: Size = Size { width: u32::MAX, height: u32::MAX };
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Pos {
-    pub x: u32,
-    pub y: u32
-}
-
-impl Pos {
-    pub const ORIGIN: Pos = Pos { x: 0, y: 0 };
-}
-
-/// A rectangular region on a surface.
-///
-/// The origin is in the top left of the surface.
-/// Normally EGL specifies the origin in the bottom left of the surface but this is **NOT**
-/// what this library does. We recalculate the origin for consistency with windowing systems.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Rect {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-}
-
-impl Rect {
-    pub const INFINITE: Self = Self::new(0, 0, i32::MAX, i32::MAX);
-    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
-        Self { x, y, w, h}
-    }
-}
-
 // ### egl api ###
-
-#[derive(Clone, Copy)]
-pub struct PresentToken { id: WindowId }
 
 type FnSwapBuffersWithDamage = fn(
     khronos_egl::EGLDisplay,
@@ -1505,11 +1323,7 @@ impl EglInstance {
     
 }
 
-/// Egl context and surface.
-/// Can render to Windows. You should create one of these per window and bind
-/// the one you want to render to.
-/// To render to a pixel buffer see [`EglPixelBuffer`].
-pub struct EglBase {
+struct EglBase {
     instance: Arc<EglInstance>,
     egl_surface: egl::Surface,
     egl_context: egl::Context,
@@ -1609,7 +1423,7 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &Arc<EglInstance>, window: &W, size: Size) -> Result<Self, EvlError> {
+    pub fn new<T: 'static + Send>(instance: &Arc<EglInstance>, window: &window::BaseWindow<T>, size: Size) -> Result<Self, EvlError> {
 
         let config = {
             let attribs = [
@@ -1626,7 +1440,7 @@ impl EglContext {
         };
 
         let wl_egl_surface = wayland_egl::WlEglSurface::new(
-            window.wl_surface.id(),
+            window.platform.wl_surface.id(),
             size.width as i32,
             size.height as i32
         )?;
@@ -1649,7 +1463,7 @@ impl EglContext {
 
         Ok(Self {
             inner,
-            id: window.id,
+            id: window.platform.id,
             wl_egl_surface,
         })
         
@@ -1743,82 +1557,6 @@ impl EglPixelBuffer {
 // ### events ###
 
 #[derive(Debug)]
-pub enum QuitReason {
-    /// Quit requested via `request_quit`.
-    User,
-    /// SIGTERM received. For example on shutdown. Only generated when `signals` feature is enabled.
-    System,
-    /// SIGINT received. Only generated when `signals` feature is enabled.
-    CtrlC,
-}
-
-#[derive(Debug)]
-pub enum Event<T> {
-    /// Your own events. See [`EvlProxy`].
-    User(T),
-    /// Your app was resumed from the background or started and should show it's view.
-    Resume,
-    /// Your app's view should be destroyed but it can keep running in the background.
-    Suspend,
-    /// Your app should quit.
-    QuitRequested { reason: QuitReason },
-    /// A monitor was discovered or updated.
-    MonitorUpdate { id: MonitorId, state: Monitor },
-    /// A monitor was removed.
-    MonitorRemove { id: MonitorId },
-    // /// A  mouse, keyboard or touch device was discovered or removed.
-    // /// If you never get this event, there is no keyboard or mouse attached.
-    // Device { exists: bool, device: () }, // TODO: implement this (wl_seat) also implement controller support through this
-    // Device { exists: bool, device: () }, // TODO: implement this (wl_seat)
-    /// An event that belongs to a specific window. (eg. focus change, mouse movement)
-    Window { id: WindowId, event: WindowEvent },
-    /// Requests you sending data to another client.
-    DataSource { id: DataSourceId, event: DataSourceEvent },
-}
-
-#[derive(Debug)]
-pub enum WindowEvent {
-    CloseRequested,
-    RedrawRequested,
-    Resize { size: Size, flags: ConfigureFlags },
-    Rescale { scale: f64 },
-    Decorations { active: bool },
-    Enter,
-    Leave,
-    MouseMotion { x: f64, y: f64 },
-    MouseDown { x: f64, y: f64, button: MouseButton },
-    MouseUp { x: f64, y: f64, button: MouseButton },
-    MouseScroll { axis: ScrollAxis, value: f64 },
-    KeyDown { key: Key, repeat: bool },
-    KeyUp { key: Key },
-    TextCompose { chr: char },
-    TextInput { chr: char },
-    /// A Drag-and-drop event.
-    Dnd { event: DndEvent, internal: bool },
-}
-
-#[derive(Debug)]
-/// Events for a [`DataSource`].
-pub enum DataSourceEvent {
-    /// Data of the specific [`DataKind`] you advertised was requested to be transferred.
-    /// Could be send multiple times.
-    Send { kind: DataKinds, writer: DataWriter },
-    /// Data was successfully transfarred.
-    /// Could be send multiple times, one per `Send`.
-    Success,
-    /// Your data source is no longer used and can be dropped.
-    /// *This event may never be sent in rare cases.*
-    Close,
-}
-
-#[derive(Debug)]
-pub enum DndEvent {
-    Motion { x: f64, y: f64, handle: DndHandle },
-    Drop { x: f64, y: f64, offer: DataOffer },
-    Cancel,
-}
-
-#[derive(Debug)]
 pub struct DndHandle {
     last_serial: u32,
     wl_data_offer: Option<WlDataOffer>,
@@ -1832,58 +1570,6 @@ impl DndHandle {
                 wl_data_offer.accept(self.last_serial, Some(mime_type.into()));
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum InputMode {
-    SingleKey,
-    Text,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MouseButton {
-    Left,
-    Right,
-    Middle,
-    X1,
-    X2,
-    Unknown(u32),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Key {
-    Escape,
-    Tab,
-    CapsLock,
-    Shift,
-    Control,
-    Alt,
-    AltGr,
-    /// Windows key.
-    Super, // windows key
-    /// Application menu key.
-    AppMenu,
-    Return,
-    Backspace,
-    Space,
-    ArrowUp,
-    ArrowDown,
-    ArrowLeft,
-    ArrowRight,
-    F(u32), // f1, f2, f3, etc.
-    Char(char), // a-z, A-Z, 1-9, + special chars
-    DeadChar(char),
-    Unknown(u32),
-}
-
-impl Key {
-    pub fn modifier(&self) -> bool {
-        matches!(
-            self,
-            Self::Shift | Self::Control | Self::CapsLock |
-            Self::Alt | Self::AltGr | Self::Super
-        )
     }
 }
 
@@ -2138,10 +1824,13 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> f
             },
             WlOutputEvent::Done => {
                 let id = get_monitor_id(wl_output);
-                evl.events.push(Event::MonitorUpdate { id, state: Monitor {
+                let platform = Monitor {
                     info: guard.clone(),
                     wl_output: wl_output.clone(),
-                } });
+                };
+                evl.events.push(Event::MonitorUpdate {
+                    id, state: window::Monitor { platform }
+                });
             },
             _ => (),
         }
@@ -2180,7 +1869,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
             }
 
             let id = get_window_id(&surface);
-            let internal = evl.offer_data.dnd_active;
+            let sameapp = evl.offer_data.dnd_active;
 
             evl.offer_data.has_offer = Some(surface);
             evl.offer_data.current_offer = wl_data_offer.clone();
@@ -2188,14 +1877,17 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
             evl.offer_data.x = x;
             evl.offer_data.y = y;
 
-            let advertisor = DndHandle {
+            let platform = DndHandle {
                 last_serial: evl.last_serial,
                 wl_data_offer,
             };
 
             evl.events.push(Event::Window {
                 id,
-                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor }, internal }
+                event: WindowEvent::Dnd {
+                    event: DndEvent::Motion { x, y, handle: window::DndHandle { platform } },
+                    sameapp
+                }
             });
 
         }
@@ -2205,17 +1897,20 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
             evl.offer_data.x = x;
             evl.offer_data.y = y;
 
-            let advertisor = DndHandle {
+            let platform = DndHandle {
                 last_serial: evl.last_serial,
                 wl_data_offer: evl.offer_data.current_offer.clone(),
             };
 
             let surface = evl.offer_data.has_offer.as_ref().unwrap();
-            let internal = evl.offer_data.dnd_active;
+            let sameapp = evl.offer_data.dnd_active;
 
             evl.events.push(Event::Window {
                 id: get_window_id(surface),
-                event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, handle: advertisor }, internal }
+                event: WindowEvent::Dnd {
+                    event: DndEvent::Motion { x, y, handle: window::DndHandle { platform } },
+                    sameapp
+                }
             });
 
         }
@@ -2230,7 +1925,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
                 let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
                 let kinds = data.lock().unwrap().clone();
 
-                let data = DataOffer {
+                let platform = DataOffer {
                     wl_data_offer,
                     con: evl.con.get_ref().clone(),
                     kinds,
@@ -2238,11 +1933,14 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
                 };
 
                 let surface = evl.offer_data.has_offer.as_ref().unwrap();
-                let internal = evl.offer_data.dnd_active;
+                let sameapp = evl.offer_data.dnd_active;
 
                 evl.events.push(Event::Window {
                     id: get_window_id(surface),
-                    event: WindowEvent::Dnd { event: DndEvent::Drop { x, y, offer: data }, internal },
+                    event: WindowEvent::Dnd {
+                        event: DndEvent::Drop { x, y, offer: window::DataOffer { platform } },
+                        sameapp
+                    },
                 });
 
             }
@@ -2251,11 +1949,11 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
         else if let WlDataDeviceEvent::Leave = event {
 
             let surface = evl.offer_data.has_offer.as_ref().unwrap();
-            let internal = evl.offer_data.dnd_active;
+            let sameapp = evl.offer_data.dnd_active;
 
             evl.events.push(Event::Window {
                 id: get_window_id(surface),
-                event: WindowEvent::Dnd { event: DndEvent::Cancel, internal },
+                event: WindowEvent::Dnd { event: DndEvent::Cancel, sameapp },
             });
 
             evl.offer_data.has_offer = None;
@@ -2319,10 +2017,10 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for BaseL
             fcntl::fcntl(fd.as_raw_fd(), fcntl::FcntlArg::F_SETFL(new_flags)).expect("handle error");
 
             let kind = DataKinds::from_mime_type(&mime_type).unwrap();
-            let writer = DataWriter { writer: fs::File::from(fd) };
+            let platform = DataWriter { writer: fs::File::from(fd) };
 
             evl.events.push(Event::DataSource {
-                id, event: DataSourceEvent::Send { kind, writer }
+                id, event: DataSourceEvent::Send { kind, writer: window::DataWriter { platform } }
             });
 
         }
@@ -2568,11 +2266,6 @@ fn process_configure<T: 'static + Send>(evl: &mut BaseLoop<T>, guard: MutexGuard
 
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ConfigureFlags {
-    pub fullscreen: bool
-}
- 
 fn read_configure_flags(states: Vec<u8>) -> ConfigureFlags {
     states.chunks_exact(4)
         .flat_map(|chunk| chunk.try_into())
@@ -3016,7 +2709,7 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut BaseLoop<T>, id: Window
             },
             CursorStyle::Custom { icon, hotspot } => {
                 wl_pointer.set_cursor(
-                    serial, Some(&icon.wl_surface),
+                    serial, Some(&icon.platform.wl_surface),
                     hotspot.x as i32, hotspot.y as i32
                 )
             },
@@ -3030,12 +2723,6 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut BaseLoop<T>, id: Window
         // mat
     }
 
-}
-
-#[derive(Debug)]
-pub enum ScrollAxis {
-    Vertical,
-    Horizontal
 }
 
 // ### error handling ###

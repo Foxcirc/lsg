@@ -32,21 +32,22 @@
 [ ] Clean up & TODO's
 
 # Other platform features
-[ ] Clipboard
-[ ] Notifications (using libnotify DBUS interface OR portal)
-[ ] System tray (using kde StatusNotifier OR portal)
-[ ] File manager (using ??? or portal)
+[x] Clipboard
+[ ] Notifications (using libnotify DBUS interface OR xdp.Notification)
+[ ] System tray (using kde StatusNotifier OR xdp.TrayIcon)
+[ ] File manager (using ??? or xdp)
 [ ] Screen saver (idle inhibition)
 
 # Egl todo's
-[ ] platform window support on egl >= 1.5
+[ ] "platform" window support on egl >= 1.5
 [ ] better errors
 [ ] pbuffer from clientbuffer?
+[x] pixmaps
 
 # Platforms that will be supported
-- Linux (Wayland only)
-- Windows
-- Android
+[x] Linux (Wayland only)
+[ ] Windows
+[ ] Android
 
 # Let's fucking go!
 

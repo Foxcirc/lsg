@@ -32,8 +32,8 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = EglContext::new(&egl, &window, size)?; // create an egl context for our window
     // ctx.bind(&egl)?; // make the context current
 
-    window.transparency(true);
-    window.input_mode(&mut evl, InputMode::SingleKey);
+    window.set_transparency(true);
+    window.set_input_mode(&mut evl, InputMode::SingleKey);
 
     let mut popup_window: Option<Window<&str>> = None;
     let mut popup_ctx: Option<EglContext> = None;
@@ -50,7 +50,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
             match event {
                 Event::User(message) => {
                     println!("title: {}", &message);
-                    window.title(message);
+                    window.set_title(message);
                 },
                 Event::Resume => {
                     // window.title("no-test");
@@ -132,7 +132,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::KeyDown { key, .. } => {
                         if let Key::Tab = key {
                             max = !max;
-                            window.fullscreen(max, None);
+                            window.set_fullscreen(max, None);
                         }
                         if let Key::Space = key {
                             window.set_cursor(&mut evl, CursorStyle::Predefined { shape: CursorShape::Help });

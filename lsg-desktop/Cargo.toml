@@ -10,6 +10,12 @@ path = "src/test.rs"
 harness = false
 edition = "2021" # why is 2015 the default?
 
+[features]
+default = ["window", "signals", "environment", "xdp"]
+window = []
+signals = []
+environment = []
+xdp = []
 
 [dependencies]
 wayland-client = "0.31.2"
