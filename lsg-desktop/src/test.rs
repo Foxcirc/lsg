@@ -2,7 +2,7 @@
 use std::io::{Write, Read};
 
 use futures_lite::future::block_on;
-use lsg_desktop::*;
+use lsg_desktop::window::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(app, "lsg-test")?
@@ -62,7 +62,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                 },
                 Event::MonitorUpdate { id, state } => {
                     println!("new monitor with id {id}: {state:?}");
-                    println!("refresh as fps: {}", state.info.fps());
+                    println!("refresh as fps: {}", state.info().fps());
                 },
                 Event::MonitorRemove { .. } => todo!(),
                 Event::Window { id, event } if id == window.id() => match event {
@@ -150,7 +150,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         else if let Key::ArrowDown = key {
                             if let Some(offer) = evl.get_clip_board() {
-                                let mut stream = offer.receive(DataKinds::TEXT, false).unwrap();
+                                let mut stream = offer.receive(DataKinds::TEXT, IoMode::Blocking).unwrap();
                                 let mut buf = String::new();
                                 let _res = stream.read_to_string(&mut buf);
                                 println!("{}", buf);
@@ -173,15 +173,15 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                         print!("{}", chr);
                         std::io::stdout().flush().unwrap();
                     },
-                    WindowEvent::Dnd { event, internal } => match event {
+                    WindowEvent::Dnd { event, sameapp } => match event {
                         DndEvent::Motion { handle: dnd, .. } => {
                             dnd.advertise(&[DataKinds::TEXT]);
                         },
                         DndEvent::Drop { x, y, offer } => {
-                            println!("object dropped at {x}, {y}, internal: {internal}");
+                            println!("object dropped at {x}, {y}, sameapp: {sameapp}");
                             println!("available kinds: {:?}", offer.kinds());
-                            if !internal {
-                                let mut stream = offer.receive(DataKinds::TEXT, false).unwrap();
+                            if !sameapp {
+                                let mut stream = offer.receive(DataKinds::TEXT, IoMode::Blocking).unwrap();
                                 let mut buf = String::new();
                                 let _res = stream.read_to_string(&mut buf);
                                 println!("{}", buf);

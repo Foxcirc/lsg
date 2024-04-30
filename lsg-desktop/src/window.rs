@@ -7,7 +7,7 @@ use std::{
 use bitflags::bitflags;
 use khronos_egl as egl;
 
-use crate::wayland as platform;
+use crate::platform;
 
 macro_rules! foreward_debug {
     () => {
@@ -67,7 +67,7 @@ impl<T: 'static + Send> EventLoop<T> {
         self.platform.next().await
     }
 
-    pub fn on_dispatch_thread<R>(&mut self, func: impl FnOnce(&mut Self) -> R) -> R {
+    pub fn on_dispatch_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
         self.platform.on_dispatch_thread(func)
     }
 
@@ -109,20 +109,32 @@ pub fn run<E: 'static + Send, T, H: FnOnce(EventLoop<E>) -> T>(handler: H, appli
 
 pub type MonitorId = u32;
 
-#[derive(Debug, Default, Clone)] // TODO: foreward-implement all debug impls using the macro
+// #[derive(Debug, Default, Clone)] // TODO: foreward-implement all debug impls using the macro
+
+#[derive(Debug, Default, Clone)]
 pub struct MonitorInfo {
-    pub(crate) platform: platform::MonitorInfo,
+    pub name: String,
+    pub description: String,
+    pub size: Size,
+    /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
+    pub refresh: u32,
 }
 
 impl MonitorInfo {
     /// Trimmed conversion.
     pub fn fps(&self) -> u32 {
-        self.platform.fps()
+        self.refresh / 1000
     }    
 }
 
 pub struct Monitor {
     pub(crate) platform: platform::Monitor,
+}
+
+impl Monitor {
+    pub fn info(&self) -> &MonitorInfo {
+        self.platform.info()
+    }
 }
 
 impl fmt::Debug for Monitor {
@@ -586,7 +598,7 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &Arc<EglInstance>, window: &W, size: Size) -> Result<Self, EvlError> {
+    pub fn new<T: 'static + Send, W: ops::Deref<Target = BaseWindow<T>>>(instance: &EglInstance, window: &W, size: Size) -> Result<Self, EvlError> {
         Ok(Self {
             platform: platform::EglContext::new(&instance.platform, &window, size)?
         })

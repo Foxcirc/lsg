@@ -367,9 +367,9 @@ impl<T: 'static + Send> EventLoop<T> {
         
     }
 
-    pub fn on_dispatch_thread<R>(&mut self, func: impl FnOnce(&mut Self) -> R) -> R {
+    pub fn on_dispatch_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
         // on linux, this code should run on the main thread anyways
-        func(self)
+        func()
     }
 
     pub fn new_proxy(&mut self) -> EventProxy<T> {
@@ -504,26 +504,16 @@ fn get_monitor_id(output: &WlOutput) -> MonitorId {
     output.id().protocol_id()
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct MonitorInfo {
-    pub name: String,
-    pub description: String,
-    pub size: Size,
-    /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
-    pub refresh: u32,
-}
-
-impl MonitorInfo {
-    /// Trimmed conversion.
-    pub fn fps(&self) -> u32 {
-        self.refresh / 1000
-    }    
-}
-
 pub struct Monitor {
     /// Information about the monitor.
-    pub info: MonitorInfo,
+    info: window::MonitorInfo,
     wl_output: WlOutput,
+}
+
+impl Monitor {
+    pub fn info(&self) -> &window::MonitorInfo {
+        &self.info
+    }
 }
 
 impl fmt::Debug for Monitor {
@@ -577,8 +567,9 @@ impl<T: 'static + Send> BaseWindow<T> {
             new_width:  size.width,
             new_height: size.height,
             flags: ConfigureFlags::default(),
-            frame_callback_registered: false,
             redraw_requested: false,
+            frame_callback_registered: false,
+            already_redrawing: false,
             // need to access some wayland objects
             frac_scale_data,
         }));
@@ -604,12 +595,14 @@ impl<T: 'static + Send> BaseWindow<T> {
         guard.redraw_requested = true;
     }
 
+    /// You must always redraw if asked to.
     pub fn pre_present_notify(&self) -> PresentToken {
         // note: it seems you have request the frame callback before swapping buffers
         //       otherwise the callback will never fire because the compositor thinks the content didn't change
         let mut guard = self.shared.lock().unwrap();
         if !guard.frame_callback_registered {
             guard.frame_callback_registered = true;
+            guard.already_redrawing = false; // reset it here, because this must be invoked after a frame event was received
             self.wl_surface.frame(&self.qh, Arc::clone(&self.shared));
             self.wl_surface.commit();
         }
@@ -635,8 +628,9 @@ struct WindowShared {
     new_width: u32,
     new_height: u32,
     flags: ConfigureFlags,
-    frame_callback_registered: bool,
     redraw_requested: bool,
+    frame_callback_registered: bool,
+    already_redrawing: bool,
     // need to access some wayland objects
     frac_scale_data: Option<FracScaleData>,
 }
@@ -1788,18 +1782,18 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents>
 }
 
 fn process_new_output<T: 'static + Send>(monitor_list: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<BaseLoop<T>>) {
-    let info = MonitorInfo::default();
+    let info = window::MonitorInfo::default();
     let output = registry.bind(name, 2, qh, Mutex::new(info)); // first time in my life using Mutex without an Arc
     let id = get_monitor_id(&output);
     monitor_list.insert(id);
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<window::MonitorInfo>> for BaseLoop<T> {
     fn event(
         evl: &mut Self,
         wl_output: &WlOutput,
         event: WlOutputEvent,
-        data: &Mutex<MonitorInfo>,
+        data: &Mutex<window::MonitorInfo>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
@@ -2260,7 +2254,7 @@ fn process_configure<T: 'static + Send>(evl: &mut BaseLoop<T>, guard: MutexGuard
         flags: guard.flags
     } });
 
-    if !guard.redraw_requested {
+    if !guard.redraw_requested && !guard.already_redrawing {
         evl.events.push(Event::Window { id: guard.id, event: WindowEvent::RedrawRequested });
     }
 
@@ -2292,6 +2286,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
         if guard.redraw_requested {
             guard.redraw_requested = false;
             guard.frame_callback_registered = false;
+            guard.already_redrawing = true; // prevent another redraw event from getting sent in case a Configure event arrives just after this
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::RedrawRequested });
         }
     }
