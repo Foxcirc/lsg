@@ -158,9 +158,6 @@ impl DbusConnection {
 
         assert!(result != 0); // TODO: more robust errors
 
-        // unsafe { dbus::dbus_connection_flush(self.con) }; // write the pending message (unlikely blocking);
-        // // TODO: ^^^^ remove in favor of dbus_watch_xxxx
-
         enum Either<'lock> {
             Dispatch(async_lock::MutexGuard<'lock, ()>),  // todo: use rc instead of box
             Reply,
@@ -190,58 +187,43 @@ impl DbusConnection {
 
                     loop {
                         
-                        unsafe { dbus::dbus_connection_read_write_dispatch(self.con, -1) };
-
-                        let result = unsafe { dbus::dbus_connection_pop_message(self.con) };
-                        if let Some(val) = NonNull::new(result) {
-                            let guard = self.shared.replies.lock().await;
-                            let sender = guard.events.get(&my_serial).unwrap();
-                            let resp = DbusResponse::consume(val);
-                            let val_serial = unsafe { dbus::dbus_message_get_reply_serial(val.as_ptr()) };
-                            if my_serial == val_serial {
-                                return Ok(resp);
-                            } else {
-                                sender.try_send(resp).unwrap(); // can't block
-                            }
-                        }
-                        
                         // check if any fd is ready
+                        // TODO: does this loop actually block until readability? cause with dbus_con_dispatch() it is bugged
                         poll_fn(|ctx| {
 
                             let mut ready = false;
 
                             for it in fds.active.values() {
-
-                                let mut flags = 0;
-
-                                if let Poll::Ready(val) = it.fd.poll_readable(ctx) {
-                                    flags |= match val.is_ok() {
-                                        true  => dbus::DBUS_WATCH_READABLE,
-                                        false => dbus::DBUS_WATCH_ERROR,
-                                    };
-                                    ready = true;
-                                }
-
-                                if let Poll::Ready(val) = it.fd.poll_writable(ctx) {
-                                    flags |= match val.is_ok() {
-                                        true  => dbus::DBUS_WATCH_WRITABLE,
-                                        false => dbus::DBUS_WATCH_ERROR,
-                                    };
-                                    ready = true;
-                                };
-
-                                unsafe { dbus::dbus_watch_handle(it.watch, flags as u32) };
-
+                                ready |= it.fd.poll_readable(ctx).is_ready()
+                                      |  it.fd.poll_writable(ctx).is_ready()
                             }
 
-                            if ready {
-                                Poll::Ready(())
-                            } else {
-                                Poll::Pending
-                            }
+                            if ready { Poll::Ready(()) }
+                            else { Poll::Pending }
 
                         }).await;
 
+                        unsafe { dbus::dbus_connection_read_write_dispatch(self.con, 0) };
+
+                        let result = unsafe { dbus::dbus_connection_pop_message(self.con) };
+
+                        if let Some(val) = NonNull::new(result) {
+
+                            let result_serial = unsafe { dbus::dbus_message_get_reply_serial(result) };
+
+                            let guard = self.shared.replies.lock().await;
+                            let sender = guard.events.get(&my_serial).unwrap();
+
+                            let resp = DbusResponse::consume(val);
+
+                            if my_serial == result_serial {
+                                return Ok(resp);
+                            } else {
+                                sender.try_send(resp).unwrap(); // can't block
+                            }
+
+                        }
+                        
                     }
 
                 },
