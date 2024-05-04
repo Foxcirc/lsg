@@ -29,6 +29,7 @@
 [x] Handling things like sigterm as the Quit event
 [x] Request user attention
 [x] Changing/hiding the cursor (CursorIcon::None to hide)
+[x] Cross platform structure
 [ ] Clean up & TODO's
 
 # Other platform features
