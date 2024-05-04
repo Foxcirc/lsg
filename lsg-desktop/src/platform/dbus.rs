@@ -70,13 +70,12 @@ impl DbusConnection {
             let data: &mut FdData = unsafe { &mut *data.cast() };
 
             let fd = unsafe { dbus::dbus_watch_get_unix_fd(watch) };
-            println!("add fd: {fd}");
 
             if !data.active.contains_key(&fd) {
                 match async_io::Async::new(DbusFd { inner: fd }) {
                     Ok(async_fd) => {
                         let result = DbusWatch { fd: async_fd, watch };
-                        data.active.insert(fd, result);
+                            data.active.insert(fd, result);
                     },
                     Err(err) => data.err = Some(err),
                 };
@@ -91,7 +90,6 @@ impl DbusConnection {
             let data: &mut FdData = unsafe { &mut *data.cast() };
 
             let fd = unsafe { dbus::dbus_watch_get_unix_fd(watch) };
-            println!("remove fd: {fd}");
 
             data.active.remove(&fd);
 
@@ -111,12 +109,15 @@ impl DbusConnection {
 
         extern fn free_data(data: *mut ffi::c_void) {
             // data is NOT the whole `shared` but the variable `raw`
-            unsafe { drop(Arc::from_raw(data as *const AsyncMutex<FdData>)) }
+            unsafe { drop(Arc::from_raw(data as *const FdData)) }
         }
 
-        let fds = Arc::new(AsyncMutex::new(FdData {
-            active: HashMap::with_capacity(1), err: None
-        }));
+        // we can't use a mutex to store these, since this would lead to recursive locking in the dbus cb's
+        let fds = Arc::new(FdData {
+            lock: AsyncMutex::new(()),
+            active: HashMap::with_capacity(1),
+            err: None
+        });
 
         let raw = Arc::into_raw(Arc::clone(&fds));
 
@@ -143,8 +144,6 @@ impl DbusConnection {
 
     pub async fn send(&self, message: DbusMessage) -> Result<DbusResponse, DbusError> {
 
-        // let mut pending = ptr::null_mut();
-
         let mut my_serial = 0;
 
         let result = unsafe { dbus::dbus_connection_send( // add to send queue
@@ -157,41 +156,13 @@ impl DbusConnection {
         guard.events.insert(my_serial, sender);
         drop(guard);
 
-        // let result = unsafe { dbus::dbus_connection_send_with_reply( // add to send queue
-        //     self.con, message.inner, &mut pending, -1 /* timeout */
-        // ) };
-        // assert!(!pending.is_null());
-
         assert!(result != 0); // TODO: more robust errors
 
-        // extern fn handler(message: *mut dbus::DBusMessage, data: *mut ffi::c_void) {
-        //     let data: &mut MessageData = unsafe { &mut *data.cast() };
-        //     data.response = NonNull::new(message);
-        //     data.ready.notify(1); // only one listener anyways
-        // }
-
-        // extern fn free(data: *mut ffi::c_void) {
-        //     // unsafe { drop(Box::from_raw(data)) }
-        //     // TODO: ^^^^ reenable and use Rc<RefCell>
-        // }
-
-        // let data = Box::leak(Box::new(MessageData { // TODO: use into_raw to convey the unsafety of this better (because box is actually shared and deallocated at some point by "free-user-data" dbus handler func)
-        //     ready: event_listener::Event::new(),
-        //     response: None,
-        // }));
-
-        // unsafe { dbus::dbus_pending_call_set_notify(
-        //     pending,
-        //     Some(handler),
-        //     data as *mut _ as *mut _, // shared pointers are for noobs
-        //     Some(free))
-        // };
-
-        unsafe { dbus::dbus_connection_flush(self.con) }; // write the pending message (unlikely blocking);
-        // TODO: ^^^^ remove in favor of dbus_watch_xxxx
+        // unsafe { dbus::dbus_connection_flush(self.con) }; // write the pending message (unlikely blocking);
+        // // TODO: ^^^^ remove in favor of dbus_watch_xxxx
 
         enum Either<'lock> {
-            Dispatch(async_lock::MutexGuard<'lock, FdData>),  // todo: use rc instead of box
+            Dispatch(async_lock::MutexGuard<'lock, ()>),  // todo: use rc instead of box
             Reply,
         }
 
@@ -203,7 +174,7 @@ impl DbusConnection {
             };
             
             let dispatch = async {
-                let guard = self.shared.fds.lock().await;
+                let guard = self.shared.fds.lock.lock().await;
                 // we have to keep the guard alive so we can safely access `shared` later
                 Either::Dispatch(guard) 
             };
@@ -212,7 +183,10 @@ impl DbusConnection {
             match message.or(dispatch).await {
 
                 // this thread is now responsible for pumping the dbus event loop
-                Either::Dispatch(fds_guard) => {
+                Either::Dispatch(_guard) => {
+
+                    // SAFETY: since we fdds.lock, we can mutably access the active fd's
+                    let fds = unsafe { &mut *Arc::as_ptr(&self.shared.fds).cast_mut() };
 
                     loop {
                         
@@ -236,7 +210,7 @@ impl DbusConnection {
 
                             let mut ready = false;
 
-                            for it in fds_guard.active.values() {
+                            for it in fds.active.values() {
 
                                 let mut flags = 0;
 
@@ -305,11 +279,12 @@ impl AsFd for DbusFd {
 }
 
 struct SharedData {
-    fds: Arc<AsyncMutex<FdData>>,
+    fds: Arc<FdData>,
     replies: AsyncMutex<ReplyData>
 }
 
 struct FdData {
+    lock: AsyncMutex<()>, // lock that the current dispatcher task holds
     active: HashMap<RawFd, DbusWatch>,
     err: Option<io::Error>,
 }
