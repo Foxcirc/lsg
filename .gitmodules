@@ -1,0 +1,3 @@
+[submodule "lsg-desktop/src/platform/basu"]
+	path = lsg-desktop/src/platform/basu
+	url = https://git.sr.ht/~emersion/basu

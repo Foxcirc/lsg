@@ -1,4 +1,3 @@
-
 #[test]
 fn dbus() {
 
@@ -20,8 +19,10 @@ fn dbus() {
 
         println!("{:?}", resp.args);
 
-        let text: &str = resp.arg(0).unwrap();
-        println!("{}", text);
+        // let text: &str = resp.arg(0).unwrap();
+        // println!("{}", text);
+
+        println!("DONE!");
         
     })
     
@@ -30,6 +31,7 @@ fn dbus() {
 // #### dbus implementation ####
 
 use async_lock::Mutex as AsyncMutex;
+use dbus::dbus_watch_get_enabled;
 use futures_lite::{FutureExt, pin, ready};
 use libdbus_sys as dbus;
 use std::{mem, ffi, fmt, error::Error as StdError, ptr::{self, NonNull}, os::fd::{BorrowedFd, RawFd, AsFd}, io, future::poll_fn, task::Poll, collections::HashMap, sync::Arc};
@@ -124,7 +126,7 @@ impl DbusConnection {
         let shared = Arc::new(SharedData {
             fds,
             replies: AsyncMutex::new(ReplyData {
-                events: HashMap::with_capacity(1)
+                channels: HashMap::with_capacity(1)
             })
         });
 
@@ -144,19 +146,37 @@ impl DbusConnection {
 
     pub async fn send(&self, message: DbusMessage) -> Result<DbusResponse, DbusError> {
 
-        let mut my_serial = 0;
+        let mut call = ptr::null_mut();
 
-        let result = unsafe { dbus::dbus_connection_send( // add to send queue
-            self.con, message.inner, &mut my_serial,
+        let result = unsafe { dbus::dbus_connection_send_with_reply( // add to send queue
+            self.con, message.inner, &mut call, -1 /* default timeout */
         ) };
+
+        assert!(result != 0); // TODO: more robust errors
 
         let (sender, receiver) = flume::bounded(1);
 
         let mut guard = self.shared.replies.lock().await;
-        guard.events.insert(my_serial, sender);
+        guard.channels.insert(call as usize, sender);
         drop(guard);
 
-        assert!(result != 0); // TODO: more robust errors
+        extern fn handle(call: *mut dbus::DBusPendingCall, data: *mut ffi::c_void) {
+            println!("resp!");
+            std::process::exit(0);
+            let data: &SharedData = unsafe { &*data.cast() };
+            let reply = unsafe { dbus::dbus_pending_call_steal_reply(call) };
+            let guard = data.replies.lock_blocking(); // lock_blocking is suboptimal here, but it shouldn't block long
+            let event = guard.channels.get(&(call as usize)).unwrap();
+            event.try_send(reply).unwrap(); // can't fail because we only ever send once
+        }
+
+        extern fn free_data(data: *mut ffi::c_void) {
+            unsafe { Arc::from_raw(data as *const SharedData) };
+        }
+
+        // TODO: make all ptrs into NonNull, also pending
+        let shared2 = Arc::clone(&self.shared);
+        unsafe { dbus::dbus_pending_call_set_notify(call, Some(handle), Arc::into_raw(shared2) as *mut _, Some(free_data)) };
 
         enum Either<'lock> {
             Dispatch(async_lock::MutexGuard<'lock, ()>),  // todo: use rc instead of box
@@ -182,44 +202,63 @@ impl DbusConnection {
                 // this thread is now responsible for pumping the dbus event loop
                 Either::Dispatch(_guard) => {
 
-                    // SAFETY: since we fdds.lock, we can mutably access the active fd's
+                    // SAFETY: since we hold fds.lock (_guard), we can mutably access the active fd's
                     let fds = unsafe { &mut *Arc::as_ptr(&self.shared.fds).cast_mut() };
 
                     loop {
                         
                         // check if any fd is ready
-                        // TODO: does this loop actually block until readability? cause with dbus_con_dispatch() it is bugged
                         poll_fn(|ctx| {
 
                             let mut ready = false;
 
                             for it in fds.active.values() {
-                                ready |= it.fd.poll_readable(ctx).is_ready()
-                                      |  it.fd.poll_writable(ctx).is_ready()
+                                let enabled = unsafe { dbus_watch_get_enabled(it.watch) };
+                                if enabled == 0 { continue }; // TODO: this can probably be removed
+                                let mut flags = 0;
+                                if let Poll::Ready(res) = it.fd.poll_readable(ctx) {
+                                    match res {
+                                        Ok(..) => flags |= dbus::DBUS_WATCH_READABLE,
+                                        Err(err) if is_hup(&err) => flags |= dbus::DBUS_WATCH_HANGUP,
+                                        Err(..) => flags |= dbus::DBUS_WATCH_ERROR,
+                                    }
+                                }
+                                if let Poll::Ready(res) = it.fd.poll_writable(ctx) {
+                                    match res {
+                                        Ok(..) => flags |= dbus::DBUS_WATCH_WRITABLE,
+                                        Err(err) if is_hup(&err) => flags |= dbus::DBUS_WATCH_HANGUP,
+                                        Err(..) => flags |= dbus::DBUS_WATCH_ERROR,
+                                    }
+                                }
+                                if flags != 0 {
+                                    let res = unsafe { dbus::dbus_watch_handle(it.watch, flags as u32) };
+                                    assert!(res == 1, "TODO: out of memory");
+                                    ready = true;
+                                }
                             }
+
+                            println!("ready = {}", ready);
 
                             if ready { Poll::Ready(()) }
                             else { Poll::Pending }
 
                         }).await;
 
-                        unsafe { dbus::dbus_connection_read_write_dispatch(self.con, 0) };
+                        loop {
 
-                        let result = unsafe { dbus::dbus_connection_pop_message(self.con) };
-
-                        if let Some(val) = NonNull::new(result) {
-
-                            let result_serial = unsafe { dbus::dbus_message_get_reply_serial(result) };
+                            let status = unsafe { dbus::dbus_connection_dispatch(self.con) };
+                            println!("iter");
 
                             let guard = self.shared.replies.lock().await;
-                            let sender = guard.events.get(&my_serial).unwrap();
-
-                            let resp = DbusResponse::consume(val);
-
-                            if my_serial == result_serial {
+                            if let Ok(ptr) = receiver.try_recv() {
+                                let val = NonNull::new(ptr).unwrap();
+                                let resp = DbusResponse::consume(val);
                                 return Ok(resp);
-                            } else {
-                                sender.try_send(resp).unwrap(); // can't block
+                            }
+                            drop(guard);
+
+                            if status == dbus::DBusDispatchStatus::Complete {
+                                break
                             }
 
                         }
@@ -242,6 +281,10 @@ impl DbusConnection {
 
     }
 
+}
+
+fn is_hup(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::Interrupted
 }
 
 struct MessageData {
@@ -272,7 +315,7 @@ struct FdData {
 }
 
 struct ReplyData {
-    events: HashMap<u32 /* message serial */, flume::Sender<DbusResponse>>,
+    channels: HashMap<usize /* message id */, flume::Sender<*mut dbus::DBusMessage>>,
 }
 
 struct DbusWatch {
