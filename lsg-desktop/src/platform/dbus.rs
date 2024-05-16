@@ -169,7 +169,9 @@ mod sys {
         pub fn sd_bus_message_enter_container(msg: *mut SdMessage, kind: SdBasicKind, contents: *const SdBasicKind) -> SdResult;
         pub fn sd_bus_message_exit_container(msg: *mut SdMessage) -> SdResult;
 
-        pub fn sd_bus_message_read(msg: *mut SdMessage, kinds: *const SdBasicKind, ...) -> SdResult;
+        pub fn sd_bus_message_append_basic(msg: *mut SdMessage, kind: SdBasicKind, out: *const ffi::c_void) -> SdResult;
+        pub fn sd_bus_message_open_container(msg: *mut SdMessage, kind: SdBasicKind, contents: *const SdBasicKind) -> SdResult;
+        pub fn sd_bus_message_close_container(msg: *mut SdMessage) -> SdResult;
 
         // error
 
@@ -183,7 +185,7 @@ mod sys {
     
 }
 
-use std::{collections::{hash_map::DefaultHasher, HashMap}, error, ffi::{self, CStr, CString}, future::poll_fn, hash::{Hash, Hasher}, io::{self, Write}, mem::zeroed, os::fd::{AsFd, BorrowedFd, RawFd}, pin::Pin, ptr::{self, NonNull}, task::{self, Poll, Waker}};
+use std::{collections::{hash_map::DefaultHasher, HashMap}, error, ffi::{self, CStr, CString}, future::poll_fn, hash::{Hash, Hasher}, io::{self, Write}, mem::zeroed, os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd}, pin::Pin, ptr::{self, NonNull}, sync::Arc, task::{self, Poll, Waker}};
 use async_lock::Mutex as AsyncMutex;
 use futures_lite::{stream::unfold, FutureExt};
 
@@ -195,7 +197,7 @@ fn dbus() {
     block_on(async {
 
     
-        let mut con = DbusConnection::new().unwrap();
+        let mut con = Connection::new().unwrap();
 
         let call = DbusCall::new(
              "org.freedesktop.DBus",
@@ -220,7 +222,7 @@ fn dbus() {
 
 // #### dbus implementation ####
 
-pub struct DbusConnection {
+pub struct Connection {
     bus: *mut sys::SdBus,
     buslock: AsyncMutex<()>,
     busfd: async_io::Async<BusFd>,
@@ -251,7 +253,7 @@ impl AsFd for BusFd {
 // unsafe impl Send for DbusConnection {}
 // unsafe impl Sync for DbusConnection {} TODO:
 
-impl Drop for DbusConnection {
+impl Drop for Connection {
     fn drop(&mut self) {
         unsafe { sys::sd_bus_flush(self.bus) };
         unsafe { sys::sd_bus_close(self.bus) };
@@ -259,7 +261,7 @@ impl Drop for DbusConnection {
     }
 }
 
-impl DbusConnection {
+impl Connection {
 
     pub fn new() -> io::Result<Self> {
 
@@ -282,7 +284,7 @@ impl DbusConnection {
         
     }
 
-    pub async fn send<'b>(&mut self, call: DbusCall<'b>) -> io::Result<DbusResponse> {
+    pub async fn send<'b>(&mut self, call: DbusCall<'b>) -> RequestResult<DbusResponse> {
 
         let dest   = CString::new(call.dest).map_err(io_error_other)?; // TODO: use an Arena
         let path   = CString::new(call.path).map_err(io_error_other)?;
@@ -296,6 +298,9 @@ impl DbusConnection {
         ) }.ok()?;
 
         assert!(!msg.is_null());
+        for arg in call.args {
+            push_arg(msg, arg);
+        }
 
         let mut cookie = 0;
         unsafe { sys::sd_bus_send(self.bus, msg, &mut cookie) }.ok()?;
@@ -307,11 +312,11 @@ impl DbusConnection {
         guard.channels.insert(id, sender);
         drop(guard);
 
-        self.run(&receiver).await
+        self.drive(&receiver).await
 
     }
 
-    pub async fn listen<'a, 's>(&'s self, signal: DbusSignal<'a>) -> io::Result<impl futures_lite::Stream<Item = io::Result<DbusResponse>> + 's> {
+    pub async fn listen<'a, 's>(&'s self, signal: DbusSignal<'a>) -> io::Result<impl futures_lite::Stream<Item = RequestResult<DbusResponse>> + 's> {
 
         let path   = CString::new(signal.path).map_err(io_error_other)?; // TODO: use an Arena
         let iface  = CString::new(signal.iface).map_err(io_error_other)?;
@@ -356,15 +361,15 @@ impl DbusConnection {
         };
 
         Ok(unfold(state, |it| async {
-            Some((self.run(&it.receiver).await, it))
+            Some((self.drive(&it.receiver).await, it))
         }))
         
     }
 
     /// This will try to wait for dbus messages and process them until
     /// there is a response abailable on the `receiver`.
-    /// Only one task will drive dbus at a time.
-    async fn run(&self, receiver: &flume::Receiver<DbusResponse>) -> io::Result<DbusResponse> {
+    /// Only one task will drive the dbus at a time. (get it)
+    async fn drive(&self, receiver: &flume::Receiver<DbusResponse>) -> RequestResult<DbusResponse> {
         
         loop {
 
@@ -429,7 +434,7 @@ impl DbusConnection {
                                     unsafe { sys::sd_bus_message_unref(msg) };
                                     unsafe { sys::sd_bus_error_free(raw) };
 
-                                    return Err(err);
+                                    return Err(RequestError::Dbus(err));
 
                                 },
 
@@ -456,9 +461,9 @@ impl DbusConnection {
 
                                     let resp = DbusResponse::consume(msg)?;
 
-                                    let path = unsafe { CStr::from_ptr(resp.path) };
-                                    let iface = unsafe { CStr::from_ptr(resp.iface) };
-                                    let method = unsafe { CStr::from_ptr(resp.method) };
+                                    let path = unsafe { CStr::from_ptr(resp._path) };
+                                    let iface = unsafe { CStr::from_ptr(resp._iface) };
+                                    let method = unsafe { CStr::from_ptr(resp._method) };
 
                                     let hash = hash_dbus_signal(path, iface, method);
 
@@ -489,6 +494,28 @@ impl DbusConnection {
 
 }
 
+fn push_arg(msg: *mut sys::SdMessage, arg: Arg<'_>) {
+
+    match arg {
+        
+        Arg::Byte(val)     => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::Byte,   (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::Bool(val)     => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::Bool,   (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::I16(val)      => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::I16,    (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::U16(val)      => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::U16,    (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::I32(val)      => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::I32,    (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::U32(val)      => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::U32,    (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::I64(val)      => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::I64,    (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::U64(val)      => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::U64,    (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::Double(val)   => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::Double, (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::UnixFd(val)   => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::UnixFd, (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::Str(val)      => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::String, val    as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::OwnedStr(val) => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::String, (&val) as *const _ as *const ffi::c_void).ok().unwrap(); },
+        Arg::Fd(val)       => unsafe { sys::sd_bus_message_append_basic(msg, sys::SdBasicKind::UnixFd, &val.as_raw_fd() as *const _ as *const ffi::c_void).ok().unwrap(); },
+
+    }
+    
+}
+
 fn io_error_other<E: Into<Box<dyn error::Error + Send + Sync>>>(err: E) -> io::Error {
     io::Error::other(err)
 }
@@ -515,6 +542,7 @@ pub struct DbusCall<'a> {
     path: &'a str,
     iface: &'a str,
     method: &'a str,
+    args: Vec<Arg<'a>>,
 }
 
 impl<'a> DbusCall<'a> {
@@ -525,13 +553,14 @@ impl<'a> DbusCall<'a> {
             dest,
             path,
             iface,
-            method
+            method,
+            args: Vec::new()
         }
 
     }
     
-    pub fn arg<'b, A: Into<Arg<'b>>>(&mut self, input: A) {
-        todo!()
+    pub fn arg<A: ValidArg<'a>>(&mut self, input: A) {
+        self.args.push(input.into_arg());
     }
     
 }
@@ -556,10 +585,10 @@ impl<'a> DbusSignal<'a> {
 
 pub struct DbusResponse {
     inner: *mut sys::SdMessage,
-    sender: *const ffi::c_char,
-    path: *const ffi::c_char,
-    iface: *const ffi::c_char,
-    method: *const ffi::c_char,
+    _sender: *const ffi::c_char,
+    _path: *const ffi::c_char,
+    _iface: *const ffi::c_char,
+    _method: *const ffi::c_char,
     pub args: Vec<RawArg>,
 }
 
@@ -571,7 +600,7 @@ impl Drop for DbusResponse {
 
 impl DbusResponse {
 
-    pub(crate) fn consume(msg: *mut sys::SdMessage) -> io::Result<Self> {
+    pub(crate) fn consume(msg: *mut sys::SdMessage) -> ParseResult<Self> {
 
         assert!(!msg.is_null());
 
@@ -596,10 +625,10 @@ impl DbusResponse {
 
         Ok(Self {
             inner: msg,
-            sender,
-            path,
-            iface: interface,
-            method,
+            _sender: sender,
+            _path: path,
+            _iface: interface,
+            _method: method,
             args
         })
 
@@ -620,9 +649,11 @@ impl DbusResponse {
     
 }
 
-fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const sys::SdBasicKind) -> io::Result<Option<RawArg>> {
+fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const sys::SdBasicKind) -> ParseResult<Option<RawArg>> {
     
     match kind {
+
+        // basic kinds
 
         sys::SdBasicKind::Null => {
             unreachable!();
@@ -686,6 +717,9 @@ fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const s
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut RawFd as _) }.ok()?;
             Ok(Some(RawArg::Simple(SimpleArg::UnixFd(val))))
         },
+
+        // compound kinds
+
         sys::SdBasicKind::Array => {
 
             if let sys::SdBasicKind::PairBegin = unsafe { *contents } {
@@ -694,7 +728,8 @@ fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const s
 
                 let mut map: HashMap<SimpleArg, RawArg> = HashMap::new();
 
-                unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+                // enter the array
+                unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok()?;
             
                 // TODO: remove all the debug unwraps and cascade the error
 
@@ -702,41 +737,28 @@ fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const s
 
                     // unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
 
-                    let mut kind = sys::SdBasicKind::Null;
-                    let mut contents = ptr::null_mut();
-                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
-                    if more == 0 { break }
-
+                    let Some((kind, contents)) = peek_kind(msg) else { break };
                     assert!(matches!(kind, sys::SdBasicKind::Pair));
 
-                    unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+                    // enter the pair
+                    unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok()?;
 
-                    let mut kind = sys::SdBasicKind::Null;
-                    let mut contents = ptr::null_mut();
-                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
-                    if more == 0 { break }
-
+                    let (kind, contents) = peek_kind(msg).ok_or(ParseError::eof())?;
+                    let key = read_arg(msg, kind, ptr::null())?.ok_or(ParseError::eof())?;
                     assert!(contents.is_null()); // cannot have contents since this must be a basic value
 
-                    // let Some(key) = read_arg(msg, sys::SdBasicKind::PairBegin, ptr::null()).unwrap() else { break }; 
-                    let Some(key) = read_arg(msg, kind, ptr::null()).unwrap() else { unreachable!() };
+                    let (kind, contents) = peek_kind(msg).ok_or(ParseError::eof())?;
+                    let val = read_arg(msg, kind, contents)?.ok_or(ParseError::eof())?;
 
-                    let mut kind = sys::SdBasicKind::Null;
-                    let mut contents = ptr::null_mut();
-                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
-                    if more == 0 { break }
-
-                    let Some(val) = read_arg(msg, kind, contents).unwrap() else { unreachable!() }; // a pair must contain two items
-
-                    let RawArg::Simple(key) = key else { unreachable!() };
+                    let RawArg::Simple(key) = key else { return Err(ParseError::protocol()) };
                     map.insert(key, val);
 
-                    unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+                    unsafe { sys::sd_bus_message_exit_container(msg) }.ok()?;
                     unsafe { sys::sd_bus_message_skip(msg, ptr::null()) }; // consume the "pair"
 
                 };
 
-                unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+                unsafe { sys::sd_bus_message_exit_container(msg) }.ok()?;
                 // TODO: do we need to skip the map here?
 
                 Ok(Some(RawArg::Compound(CompoundArg::Map(map))))
@@ -746,22 +768,18 @@ fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const s
                 // this is an array
 
                 let mut args = Vec::new();
-
-                unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+                
+                unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok()?;
             
                 loop {
 
-                    let mut kind = sys::SdBasicKind::Null;
-                    let mut contents = ptr::null_mut();
-                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
-                    if more == 0 { break }
-
-                    let Some(arg) = read_arg(msg, kind, contents)? else { break };
+                    let Some((kind, contents)) = peek_kind(msg) else { break };
+                    let arg = read_arg(msg, kind, contents)?.ok_or(ParseError::eof())?;
                     args.push(arg);
 
                 };
 
-                unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+                unsafe { sys::sd_bus_message_exit_container(msg) }.ok()?;
 
                 Ok(Some(RawArg::Compound(CompoundArg::Array(args))))
                 
@@ -771,24 +789,21 @@ fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const s
         sys::SdBasicKind::Struct |
         sys::SdBasicKind::Variant => {
 
-            unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+            unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok()?;
 
             let mut args = Vec::new();
 
             loop {
 
-                let mut kind = sys::SdBasicKind::Null;
-                let mut contents = ptr::null_mut();
-                let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
-                if more == 0 { break };
-                
                 // TODO: there seems to be a case where read_arg expects contents to be non-null without asserting it
-                let Some(arg) = read_arg(msg, kind, contents).unwrap() else { unreachable!() };
+
+                let Some((kind, contents)) = peek_kind(msg) else { break };
+                let arg = read_arg(msg, kind, contents)?.ok_or(ParseError::eof())?;
                 args.push(arg);
                 
             }
 
-            unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+            unsafe { sys::sd_bus_message_exit_container(msg) }.ok()?;
             unsafe { sys::sd_bus_message_skip(msg, ptr::null()) }; // consume the "variant"
 
             Ok(Some(RawArg::Compound(CompoundArg::Struct(args))))
@@ -802,6 +817,17 @@ fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const s
 
     }
 
+}
+
+fn peek_kind(msg: *mut sys::SdMessage) -> Option<(sys::SdBasicKind, *const sys::SdBasicKind)> {
+    let mut kind = sys::SdBasicKind::Null;
+    let mut contents = ptr::null_mut();
+    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
+    if more == 0 {
+        None
+    } else {
+        Some((kind, contents))
+    }
 }
 
 #[derive(Debug)]
@@ -823,48 +849,82 @@ pub enum Arg<'a> {
     UnixFd(RawFd),
     Str(&'a str),
     OwnedStr(String),
+    Fd(BorrowedFd<'a>),
 }
 
 impl<'a> From<String>  for Arg<'a> { fn from(value: String)  -> Self { Self::OwnedStr(value) } }
 
 pub trait ValidArg<'a> {
+    fn into_arg(self) -> Arg<'a> where Self: Sized;
     fn from_raw_arg(arg: &RawArg) -> Option<Self> where Self: Sized;
-    fn into_arg(self) -> Arg<'a> where Self: Sized + 'a;
-}
-
-impl<'a> ValidArg<'a> for i32 {
-    fn from_raw_arg(arg: &RawArg) -> Option<Self> {
-        if let RawArg::Simple(SimpleArg::I32(val)) = arg { Some(*val) }
-        else { None }
-    }
-    fn into_arg(self) -> Arg<'a> {
-        Arg::I32(self)
-    }
 }
 
 impl<'a> ValidArg<'a> for &'a str {
-    fn from_raw_arg(arg: &RawArg) -> Option<Self> {
-        if let RawArg::Simple(SimpleArg::Str(val)) = arg {
-            Some(unsafe { &**val }.to_str().unwrap())
-        }
-        else { None }
-    }
     fn into_arg(self) -> Arg<'a> where Self: Sized + 'a {
         Arg::Str(self)
+    }
+    fn from_raw_arg(arg: &RawArg) -> Option<Self> {
+        if let RawArg::Simple(SimpleArg::Str(val)) = arg { Some(unsafe { &**val }.to_str().unwrap()) }
+        else { None }
     }
 }
 
 impl<'a> ValidArg<'a> for String {
-    fn from_raw_arg(arg: &RawArg) -> Option<Self> {
-        if let RawArg::Simple(SimpleArg::Str(val)) = arg {
-            Some(unsafe { &**val }.to_str().ok()?.to_string())
-        }
-        else { None }
-    }
     fn into_arg(self) -> Arg<'a> where Self: Sized + 'a {
         Arg::OwnedStr(self)
     }
+    fn from_raw_arg(arg: &RawArg) -> Option<Self> {
+        if let RawArg::Simple(SimpleArg::Str(val)) = arg { Some(unsafe { &**val }.to_str().ok()?.to_string()) }
+        else { None }
+    }
 }
+
+impl<'a> ValidArg<'a> for f64 {
+    fn into_arg(self) -> Arg<'a> where Self: Sized + 'a {
+        Arg::Double(self)
+    }
+    fn from_raw_arg(arg: &RawArg) -> Option<Self> {
+        if let RawArg::Simple(SimpleArg::Double(val)) = arg { Some(f64::from_bits(*val)) }
+        else { None }
+    }
+}
+
+impl<'a> ValidArg<'a> for BorrowedFd<'a> {
+    fn into_arg(self) -> Arg<'a> where Self: Sized + 'a {
+        Arg::Fd(self)
+    }
+    fn from_raw_arg(arg: &RawArg) -> Option<Self> {
+        if let RawArg::Simple(SimpleArg::UnixFd(val)) = arg { Some(unsafe { BorrowedFd::borrow_raw(*val) }) }
+        else { None }
+    }
+}
+
+macro_rules! impl_valid_arg {
+    ($(($name: ident: $t: ident)),*,) => {
+        $(
+            impl<'a> ValidArg<'a> for $t {
+                fn into_arg(self) -> Arg<'a> where Self: Sized + 'a {
+                    Arg::$name(self)
+                }
+                fn from_raw_arg(arg: &RawArg) -> Option<Self> {
+                    if let RawArg::Simple(SimpleArg::$name(val)) = arg { Some(*val) }
+                    else { None }
+                }
+            }
+        )*
+    };
+}
+
+impl_valid_arg!(
+    (Byte: u8),
+    (Bool: bool),
+    (I16: i16),
+    (U16: u16),
+    (I32: i32),
+    (U32: u32),
+    (I64: i64),
+    (U64: u64),
+);
 
 #[derive(Debug)]
 pub enum RawArg {
@@ -884,8 +944,8 @@ pub enum SimpleArg {
     I64(i64),
     U64(u64),
     Double(u64), // so I don't have to write a custom Eq impl
-    Str(*const CStr),
     UnixFd(RawFd),
+    Str(*const CStr),
 }
 
 #[derive(Debug)]
@@ -893,4 +953,48 @@ pub enum CompoundArg {
     Array(Vec<RawArg>),
     Struct(Vec<RawArg>),
     Map(HashMap<SimpleArg, RawArg>),
+}
+
+#[derive(Debug)]
+pub struct ParseError {
+    inner: io::Error,
+}
+
+pub type ParseResult<T> = Result<T, ParseError>;
+
+impl From<io::Error> for ParseError {
+    fn from(inner: io::Error) -> Self {
+        Self { inner }
+    }
+}
+
+impl ParseError {
+    /// No more data, but data was expected.
+    fn eof() -> Self {
+        Self { inner: io::Error::new(io::ErrorKind::UnexpectedEof, "not enough values") }
+    }
+    /// Otherwise uncovered protocol violation.
+    fn protocol() -> Self {
+        Self { inner: io::Error::new(io::ErrorKind::Other, "protocol violation") }
+    }
+}
+
+#[derive(Debug)]
+pub enum RequestError {
+    Dbus(io::Error),
+    Parse(ParseError)
+}
+
+pub type RequestResult<T> = Result<T, RequestError>;
+
+impl From<io::Error> for RequestError {
+    fn from(value: io::Error) -> Self {
+        Self::Dbus(value)
+    }
+}
+
+impl From<ParseError> for RequestError {
+    fn from(value: ParseError) -> Self {
+        Self::Parse(value)
+    }
 }
