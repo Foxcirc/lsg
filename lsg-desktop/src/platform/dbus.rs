@@ -1,6 +1,8 @@
 
 mod sys {
 
+    // TODO: don't use io::Error everywhere as the values and messages don't make sense at all
+
     use std::{ffi, io};
 
     #[repr(transparent)]
@@ -84,7 +86,7 @@ mod sys {
     #[repr(i8)] // ffi::c_char, i do not fear UB
     pub enum SdBasicKind { // i do not fear UB
         // invalid
-        Null   = 0,
+        Null  = 0,
         // simple types
         Byte      = 'y' as u32 as i8, // uint8_t *
         Bool      = 'b' as u32 as i8, // int * (not bool *)
@@ -104,8 +106,10 @@ mod sys {
         Variant     = 'v' as u32 as i8, // const char* (signature), any
         StructBegin = '(' as u32 as i8, // ... (items)
         StructEnd   = ')' as u32 as i8, // 
-        PairBegin    = '{' as u32 as i8, // any, any (a pair)
-        PairEnd      = '}' as u32 as i8, // 
+        PairBegin   = '{' as u32 as i8, // any, any (a pair)
+        PairEnd     = '}' as u32 as i8, // 
+        Pair        = 'e' as u32 as i8, // dict entry phantom type (undocumented)
+        Struct      = 'r' as u32 as i8, // dict entry phantom type (undocumented)
     }
 
     extern {
@@ -160,9 +164,12 @@ mod sys {
         pub fn sd_bus_message_get_member(msg: *mut SdMessage) -> *const ffi::c_char;
 
         pub fn sd_bus_message_peek_type(msg: *mut SdMessage, kind: &mut SdBasicKind, contents: &mut *mut SdBasicKind) -> SdResult;
+        pub fn sd_bus_message_skip(msg: *mut SdMessage, kinds: *const SdBasicKind /* null-terminated array */) -> SdResult;
         pub fn sd_bus_message_read_basic(msg: *mut SdMessage, kind: SdBasicKind, out: *mut ffi::c_void) -> SdResult;
         pub fn sd_bus_message_enter_container(msg: *mut SdMessage, kind: SdBasicKind, contents: *const SdBasicKind) -> SdResult;
         pub fn sd_bus_message_exit_container(msg: *mut SdMessage) -> SdResult;
+
+        pub fn sd_bus_message_read(msg: *mut SdMessage, kinds: *const SdBasicKind, ...) -> SdResult;
 
         // error
 
@@ -201,9 +208,11 @@ fn dbus() {
 
         // println!("{:?}", resp.args);
 
-        let text: &str = resp.arg(0);
+        // let text: &str = resp.arg(0);
         // let text: &str = resp.arg(1);
-        println!("{}", text);
+        // println!("{}", text);
+
+        dbg!(&resp.args);
         
     })
     
@@ -426,6 +435,8 @@ impl DbusConnection {
 
                                 sys::SdMessageKind::Response => {
 
+                                    // unsafe { sys::sd_bus_message_dump(msg, ptr::null_mut(), sys::SdDumpKind::WithHeader).ok()? };
+
                                     let mut cookie = 0;
                                     let ret = unsafe { sys::sd_bus_message_get_reply_cookie(msg, &mut cookie) };
                                     if ret.ok().is_ok() {
@@ -458,8 +469,6 @@ impl DbusConnection {
                                         // we are actually expecting this signal
                                         sender.try_send(resp).unwrap(); // can't block
                                     }
-
-                                    // unsafe { sys::sd_bus_message_dump(msg, ptr::null_mut(), sys::SdDumpKind::WithHeader).ok()? };
 
                                 }
 
@@ -523,33 +532,6 @@ impl<'a> DbusCall<'a> {
     
     pub fn arg<'b, A: Into<Arg<'b>>>(&mut self, input: A) {
         todo!()
-    //     let arg: DbusArg = input.into();
-    //     match arg {
-    //         DbusArg::I32(num) => {
-    //             let ptr = self.arena.push_i32(num as i32);
-    //             unsafe { dbus::dbus_message_iter_append_basic(
-    //                 &mut self.iter,
-    //                 dbus::DBUS_TYPE_INT32,
-    //                 ptr.cast()
-    //             ) };
-    //         },
-    //         DbusArg::OwnedStr(text) => {
-    //             let ptr = self.arena.push_string(text);
-    //             unsafe { dbus::dbus_message_iter_append_basic(
-    //                 &mut self.iter,
-    //                 dbus::DBUS_TYPE_STRING,
-    //                 ptr.cast()
-    //             ) };
-    //         },
-    //         DbusArg::Str(text) => {
-    //             let ptr = self.arena.push_str(text);
-    //             unsafe { dbus::dbus_message_iter_append_basic(
-    //                 &mut self.iter,
-    //                 dbus::DBUS_TYPE_STRING,
-    //                 ptr.cast()
-    //             ) };
-    //         }
-    //     }
     }
     
 }
@@ -578,7 +560,7 @@ pub struct DbusResponse {
     path: *const ffi::c_char,
     iface: *const ffi::c_char,
     method: *const ffi::c_char,
-    args: Vec<RawArg>,
+    pub args: Vec<RawArg>,
 }
 
 impl Drop for DbusResponse {
@@ -600,8 +582,16 @@ impl DbusResponse {
 
         let mut args = Vec::new();
 
-        while let Some(arg) = read_arg(msg)? {
+        loop {
+
+            let mut kind = sys::SdBasicKind::Null;
+            let mut contents = ptr::null_mut();
+            let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
+            if more == 0 { break }
+
+            let Some(arg) = read_arg(msg, kind, contents)? else { break };
             args.push(arg);
+
         };
 
         Ok(Self {
@@ -613,163 +603,202 @@ impl DbusResponse {
             args
         })
 
-        // let mut args = Vec::new();
-
-        // let mut iter = unsafe { mem::zeroed() };
-        // unsafe { dbus::dbus_message_iter_init(raw.as_ptr(), &mut iter) }; // TODO: what does this retval mean?
-
-        // loop {
-        //     let kind = unsafe { dbus::dbus_message_iter_get_arg_type(&mut iter) };
-        //     match kind {
-        //         dbus::DBUS_TYPE_INVALID => break,
-        //         dbus::DBUS_TYPE_STRING => {
-        //             let mut out = ptr::null_mut();
-        //             unsafe { dbus::dbus_message_iter_get_basic(&mut iter, ((&mut out) as *mut *mut i8).cast()) };
-        //             args.push(RawArg::Str(out));
-        //         },
-        //         dbus::DBUS_TYPE_INT32 => {
-        //             let mut out = 0i32;
-        //             unsafe { dbus::dbus_message_iter_get_basic(&mut iter, ((&mut out) as *mut i32).cast()) };
-        //             args.push(RawArg::I32(out));
-        //         },
-        //         _ => println!("unknown return type..."),
-        //     }
-        //     unsafe { dbus::dbus_message_iter_next(&mut iter) };
-        // }
-
-        // Self {
-        //     args,
-        //     message: raw,
-        // }
-        
     }
 
     #[track_caller]
-    pub fn arg<'a, T: IsArg<'a>>(&'a self, idx: usize) -> T {
-        self.get(idx).unwrap()
+    pub fn arg<'a, T: ValidArg<'a>>(&'a self, idx: usize) -> T {
+        match self.get(idx) {
+            Ok(val) => val,
+            Err(err) => panic!("cannot read arg #{idx}: {err:?}")
+        }
     }
 
-    pub fn get<'a, T: IsArg<'a>>(&'a self, idx: usize) -> Result<T, ArgError> {
+    pub fn get<'a, T: ValidArg<'a>>(&'a self, idx: usize) -> Result<T, ArgError> {
         let arg = self.args.get(idx).ok_or(ArgError::DoesntExist)?;
-        T::from_raw_arg(arg).ok_or(ArgError::Invalid)
+        T::from_raw_arg(arg).ok_or(ArgError::InvalidType)
     }
     
 }
 
-fn read_arg(msg: *mut sys::SdMessage) -> io::Result<Option<RawArg>> {
-
-    let mut kind = sys::SdBasicKind::Null;
-    let mut contents = ptr::null_mut();
-                println!("peeking type...");
-    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
-                println!("got type: {:?}", kind);
-    if more == 0 {
-        println!("done this ->");
-        return Ok(None)
-    }
+fn read_arg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const sys::SdBasicKind) -> io::Result<Option<RawArg>> {
     
     match kind {
 
         sys::SdBasicKind::Null => {
-            unreachable!()
+            unreachable!();
         },
         sys::SdBasicKind::Byte => {
             let mut val: u8 = 0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut u8 as _) }.ok()?;
-            Ok(Some(RawArg::Byte(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::Byte(val))))
         },
         sys::SdBasicKind::Bool => {
             let mut val: ffi::c_int = 0;
-            unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut ffi::c_int as _) }.ok()?;
-            Ok(Some(RawArg::Bool(val == 1)))
+            unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut i32 as _) }.ok()?;
+            Ok(Some(RawArg::Simple(SimpleArg::Bool(val == 1))))
         },
         sys::SdBasicKind::I16 => {
             let mut val: i16 = 0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut i16 as _) }.ok()?;
-            Ok(Some(RawArg::I16(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::I16(val))))
         },
         sys::SdBasicKind::U16 => {
             let mut val: u16 = 0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut u16 as _) }.ok()?;
-            Ok(Some(RawArg::U16(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::U16(val))))
         },
         sys::SdBasicKind::I32 => {
             let mut val: i32 = 0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut i32 as _) }.ok()?;
-            Ok(Some(RawArg::I32(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::I32(val))))
         },
         sys::SdBasicKind::U32 => {
             let mut val: u32 = 0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut u32 as _) }.ok()?;
-            Ok(Some(RawArg::U32(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::U32(val))))
         },
         sys::SdBasicKind::I64 => {
             let mut val: i64 = 0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut i64 as _) }.ok()?;
-            Ok(Some(RawArg::I64(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::I64(val))))
         },
         sys::SdBasicKind::U64 => {
             let mut val: u64 = 0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut u64 as _) }.ok()?;
-            Ok(Some(RawArg::U64(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::U64(val))))
         },
         sys::SdBasicKind::Double => {
             let mut val: f64 = 0.0;
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut f64 as _) }.ok()?;
-            Ok(Some(RawArg::Double(val)))
+            Ok(Some(RawArg::Simple(SimpleArg::Double(val.to_bits()))))
         },
-        sys::SdBasicKind::String => {
+        sys::SdBasicKind::String |
+        sys::SdBasicKind::Signature |
+        sys::SdBasicKind::ObjPath => {
             let mut val: *const ffi::c_char = ptr::null();
             unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut *const ffi::c_char as _) }.ok()?;
             assert!(!val.is_null());
             let cstr = unsafe { CStr::from_ptr(val) };
-            Ok(Some(RawArg::Str(cstr)))
-        },
-        sys::SdBasicKind::ObjPath => {
-            unimplemented!("ObjPath");
-        },
-        sys::SdBasicKind::Signature => {
-            unimplemented!("Signature");
+            Ok(Some(RawArg::Simple(SimpleArg::Str(cstr))))
         },
         sys::SdBasicKind::UnixFd => {
-            todo!("UnixFd");
+            let mut val: RawFd = 0;
+            unsafe { sys::sd_bus_message_read_basic(msg, kind, (&mut val) as *mut RawFd as _) }.ok()?;
+            Ok(Some(RawArg::Simple(SimpleArg::UnixFd(val))))
         },
         sys::SdBasicKind::Array => {
 
-            unsafe {
-                println!("Type of contents is: {:?}", CStr::from_ptr(contents as _));
-            };
+            if let sys::SdBasicKind::PairBegin = unsafe { *contents } {
+
+                // this is a map
+
+                let mut map: HashMap<SimpleArg, RawArg> = HashMap::new();
+
+                unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+            
+                // TODO: remove all the debug unwraps and cascade the error
+
+                loop {
+
+                    // unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+
+                    let mut kind = sys::SdBasicKind::Null;
+                    let mut contents = ptr::null_mut();
+                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
+                    if more == 0 { break }
+
+                    assert!(matches!(kind, sys::SdBasicKind::Pair));
+
+                    unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+
+                    let mut kind = sys::SdBasicKind::Null;
+                    let mut contents = ptr::null_mut();
+                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
+                    if more == 0 { break }
+
+                    assert!(contents.is_null()); // cannot have contents since this must be a basic value
+
+                    // let Some(key) = read_arg(msg, sys::SdBasicKind::PairBegin, ptr::null()).unwrap() else { break }; 
+                    let Some(key) = read_arg(msg, kind, ptr::null()).unwrap() else { unreachable!() };
+
+                    let mut kind = sys::SdBasicKind::Null;
+                    let mut contents = ptr::null_mut();
+                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
+                    if more == 0 { break }
+
+                    let Some(val) = read_arg(msg, kind, contents).unwrap() else { unreachable!() }; // a pair must contain two items
+
+                    let RawArg::Simple(key) = key else { unreachable!() };
+                    map.insert(key, val);
+
+                    unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+                    unsafe { sys::sd_bus_message_skip(msg, ptr::null()) }; // consume the "pair"
+
+                };
+
+                unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+                // TODO: do we need to skip the map here?
+
+                Ok(Some(RawArg::Compound(CompoundArg::Map(map))))
+                
+            } else {
+
+                // this is an array
+
+                let mut args = Vec::new();
+
+                unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
+            
+                loop {
+
+                    let mut kind = sys::SdBasicKind::Null;
+                    let mut contents = ptr::null_mut();
+                    let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
+                    if more == 0 { break }
+
+                    let Some(arg) = read_arg(msg, kind, contents)? else { break };
+                    args.push(arg);
+
+                };
+
+                unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+
+                Ok(Some(RawArg::Compound(CompoundArg::Array(args))))
+                
+            }
+
+        },
+        sys::SdBasicKind::Struct |
+        sys::SdBasicKind::Variant => {
 
             unsafe { sys::sd_bus_message_enter_container(msg, kind, contents) }.ok().unwrap();
 
-            // read the array length
-            // let mut len: i32 = 0;
-            // unsafe { sys::sd_bus_message_read_basic(msg, sys::SdBasicKind::I64, (&mut len) as *mut i32 as _) }.ok().unwrap();
-            
             let mut args = Vec::new();
-            while let Some(arg) = read_arg(msg).unwrap() {
+
+            loop {
+
+                let mut kind = sys::SdBasicKind::Null;
+                let mut contents = ptr::null_mut();
+                let more = unsafe { sys::sd_bus_message_peek_type(msg, &mut kind, &mut contents) }.ok().unwrap();
+                if more == 0 { break };
+                
+                // TODO: there seems to be a case where read_arg expects contents to be non-null without asserting it
+                let Some(arg) = read_arg(msg, kind, contents).unwrap() else { unreachable!() };
                 args.push(arg);
-            };
+                
+            }
 
             unsafe { sys::sd_bus_message_exit_container(msg) }.ok().unwrap();
+            unsafe { sys::sd_bus_message_skip(msg, ptr::null()) }; // consume the "variant"
 
-            Ok(Some(RawArg::Array(args)))
+            Ok(Some(RawArg::Compound(CompoundArg::Struct(args))))
+
         },
-        sys::SdBasicKind::Variant => {
-            todo!("Variant");
-        },
-        sys::SdBasicKind::StructBegin => {
-            todo!("StructBegin");
-        },
-        sys::SdBasicKind::StructEnd => {
-            todo!("StructEnd");
-        },
-        sys::SdBasicKind::PairBegin => {
-            todo!("MapBegin");
-        },
-        sys::SdBasicKind::PairEnd => {
-            todo!("MapEnd");
-        },
+        sys::SdBasicKind::Pair        => { unreachable!() },
+        sys::SdBasicKind::StructBegin => { unreachable!(); },
+        sys::SdBasicKind::StructEnd   => { unreachable!(); },
+        sys::SdBasicKind::PairBegin   => { Ok(Some(RawArg::Ignore)) },
+        sys::SdBasicKind::PairEnd     => { Ok(Some(RawArg::Ignore)) },
 
     }
 
@@ -778,7 +807,7 @@ fn read_arg(msg: *mut sys::SdMessage) -> io::Result<Option<RawArg>> {
 #[derive(Debug)]
 pub enum ArgError {
     DoesntExist,
-    Invalid,
+    InvalidType,
 }
 
 pub enum Arg<'a> {
@@ -791,29 +820,21 @@ pub enum Arg<'a> {
     I64(i64),
     U64(u64),
     Double(f64),
-    // ObjPath(i32),
-    // Signature(i32),
     UnixFd(RawFd),
-    // Array(i32),
-    // Variant(i32),
-    // StructBegin(i32),
-    // StructEnd(i32),
-    // MapBegin(i32),
-    // MapEnd(i32),
     Str(&'a str),
     OwnedStr(String),
 }
 
 impl<'a> From<String>  for Arg<'a> { fn from(value: String)  -> Self { Self::OwnedStr(value) } }
 
-pub trait IsArg<'a> {
+pub trait ValidArg<'a> {
     fn from_raw_arg(arg: &RawArg) -> Option<Self> where Self: Sized;
     fn into_arg(self) -> Arg<'a> where Self: Sized + 'a;
 }
 
-impl<'a> IsArg<'a> for i32 {
+impl<'a> ValidArg<'a> for i32 {
     fn from_raw_arg(arg: &RawArg) -> Option<Self> {
-        if let RawArg::I32(val) = arg { Some(*val) }
+        if let RawArg::Simple(SimpleArg::I32(val)) = arg { Some(*val) }
         else { None }
     }
     fn into_arg(self) -> Arg<'a> {
@@ -821,9 +842,9 @@ impl<'a> IsArg<'a> for i32 {
     }
 }
 
-impl<'a> IsArg<'a> for &'a str {
+impl<'a> ValidArg<'a> for &'a str {
     fn from_raw_arg(arg: &RawArg) -> Option<Self> {
-        if let RawArg::Str(val) = arg {
+        if let RawArg::Simple(SimpleArg::Str(val)) = arg {
             Some(unsafe { &**val }.to_str().unwrap())
         }
         else { None }
@@ -833,9 +854,9 @@ impl<'a> IsArg<'a> for &'a str {
     }
 }
 
-impl<'a> IsArg<'a> for String {
+impl<'a> ValidArg<'a> for String {
     fn from_raw_arg(arg: &RawArg) -> Option<Self> {
-        if let RawArg::Str(val) = arg {
+        if let RawArg::Simple(SimpleArg::Str(val)) = arg {
             Some(unsafe { &**val }.to_str().ok()?.to_string())
         }
         else { None }
@@ -847,6 +868,13 @@ impl<'a> IsArg<'a> for String {
 
 #[derive(Debug)]
 pub enum RawArg {
+    Simple(SimpleArg),
+    Compound(CompoundArg),
+    Ignore,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum SimpleArg {
     Byte(u8),
     Bool(bool),
     I16(i16),
@@ -855,15 +883,14 @@ pub enum RawArg {
     U32(u32),
     I64(i64),
     U64(u64),
-    Double(f64),
-    // ObjPath(i32),
-    // Signature(i32),
-    UnixFd(RawFd),
-    Array(Vec<RawArg>),
-    // Variant(i32),
-    // StructBegin(i32),
-    // StructEnd(i32),
-    // MapBegin(i32),
-    // MapEnd(i32),
+    Double(u64), // so I don't have to write a custom Eq impl
     Str(*const CStr),
+    UnixFd(RawFd),
+}
+
+#[derive(Debug)]
+pub enum CompoundArg {
+    Array(Vec<RawArg>),
+    Struct(Vec<RawArg>),
+    Map(HashMap<SimpleArg, RawArg>),
 }
