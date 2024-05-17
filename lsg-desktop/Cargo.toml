@@ -11,11 +11,8 @@ harness = false
 edition = "2021" # why is 2015 the default?
 
 [features]
-default = ["window", "signals", "environment", "xdp"]
-window = []
-signals = []
-environment = []
-xdp = []
+default = ["signals"]
+signals = ["async-signals"]
 
 [dependencies]
 
@@ -34,17 +31,13 @@ bv = "0.11.1" # bitvecs
 
 # async/futures deps
 futures-lite = "2.3.0"
-flume = "0.11.0" # todo: use async-channel
 async-io = "2.3.2"
-async-signals = "0.4.0"
 async-lock = "3.3.0"
+async-channel = "2.3.1"
+async-broadcast = "0.7.0"
+async-signals = { version = "0.4.0", optional = true }
 
 [dev-dependencies]
 
 # for testing the windowing portion of lsg-desktop
 lsg-gl = { path = "../lsg-gl" }
-
-[build-dependencies]
-
-# for building basu
-cc = "1.0.96"

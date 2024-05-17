@@ -52,11 +52,13 @@ use xkbcommon::xkb;
 use nix::{
     fcntl::{self, OFlag}, unistd::pipe2
 };
+
 #[cfg(feature = "signals")]
 use nix::sys::signal::Signal;
 
 use async_io::{Async, Timer};
-use futures_lite::FutureExt;
+use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
+use futures_lite::{future::block_on, FutureExt};
 
 use std::{
     mem, fmt, env, ops, fs,
@@ -98,13 +100,13 @@ struct BaseLoop<T: 'static + Send = ()> {
 }
 
 struct ProxyData<T: 'static + Send> {
-    sender: flume::Sender<Event<T>>,
-    receiver: flume::Receiver<Event<T>>
+    sender: AsyncSender<Event<T>>,
+    receiver: AsyncReceiver<Event<T>>
 }
 
 impl<T: 'static + Send> ProxyData<T> {
     fn new() -> Self {
-        let (sender, receiver) = flume::unbounded();
+        let (sender, receiver) = async_channel::unbounded();
         Self { sender, receiver }
     }
 }
@@ -211,13 +213,13 @@ impl PressedKeys {
 // ### event proxy ###
 
 pub struct EventProxy<T> {
-    sender: flume::Sender<Event<T>>,
+    sender: AsyncSender<Event<T>>,
 }
 
 impl<T> EventProxy<T> {
 
     pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
-        self.sender.send(event)
+        block_on(self.sender.send(event))
             .map_err(|err| SendError { inner: err.into_inner() })
     }
 
@@ -321,7 +323,7 @@ impl<T: 'static + Send> EventLoop<T> {
             };
 
             let channel = async {
-                let event = self.base.proxy_data.receiver.recv_async().await.unwrap();
+                let event = self.base.proxy_data.receiver.recv().await.unwrap();
                 Ok(Either::Channel(event))
             };
 
@@ -590,7 +592,7 @@ impl<T: 'static + Send> BaseWindow<T> {
 
     #[track_caller]
     pub fn request_redraw(&self, token: PresentToken) {
-        assert!(self.id == token.id, "token for another window, see PresentToken docs");
+        debug_assert!(self.id == token.id, "token for another window, see PresentToken docs");
         let mut guard = self.shared.lock().unwrap();
         guard.redraw_requested = true;
     }
@@ -992,7 +994,7 @@ impl DataSource {
 
         let evb = &mut evl.base;
 
-        assert!(!offers.is_empty(), "must offer at least one DataKind");
+        debug_assert!(!offers.is_empty(), "must offer at least one DataKind");
 
         let wl_data_source = evb.wl.data_device_mgr.create_data_source(&evb.qh, mode);
 
@@ -1074,12 +1076,12 @@ impl CustomIcon {
 
         // some basic checks that the dimensions of the data match the specified size
 
-        assert!(
+        debug_assert!(
             data.len() as u32 == size.width * size.height * bytes_per_pixel as u32,
             "length of data doesn't match specified dimensions and format"
         );
 
-        assert!(
+        debug_assert!(
             data.len() != 0,
             "length of data must be greater then 0"
         );
@@ -1477,7 +1479,7 @@ impl EglContext {
     #[track_caller]
     pub fn swap_buffers(&mut self, damage: Option<&[Rect]>, token: PresentToken) -> Result<(), EvlError> {
 
-        assert!(self.id == token.id, "present token for another window");
+        debug_assert!(self.id == token.id, "present token for another window");
 
         self.inner.swap_buffers(damage)
 
