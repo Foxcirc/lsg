@@ -7,7 +7,7 @@ use std::{
 use bitflags::bitflags;
 use khronos_egl as egl;
 
-use crate::platform;
+use crate::platform::wayland as platform;
 
 macro_rules! foreward_debug {
     () => {
@@ -688,6 +688,8 @@ pub enum Event<T> {
     Window { id: WindowId, event: WindowEvent },
     /// Requests you sending data to another client.
     DataSource { id: DataSourceId, event: DataSourceEvent },
+    // ///  Notification event. (eg. an invoked action)
+    // Notification { id: NotificationId, event: NotificationEvent }
 }
 
 #[derive(Debug)]

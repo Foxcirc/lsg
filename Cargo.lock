@@ -859,6 +859,8 @@ dependencies = [
  "khronos-egl",
  "lsg-gl",
  "nix 0.28.0",
+ "tracing",
+ "tracing-subscriber",
  "wayland-client",
  "wayland-egl",
  "wayland-protocols",

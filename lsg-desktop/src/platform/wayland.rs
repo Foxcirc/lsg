@@ -90,7 +90,7 @@ struct BaseLoop<T: 'static + Send = ()> {
     wl: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
     proxy_data: ProxyData<T>,
-    // -- state --
+    // -- windowing state --
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
     offer_data: OfferData, // drag-and-drop / selection data
