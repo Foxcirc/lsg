@@ -1,15 +1,13 @@
 
 use core::fmt;
-use std::{collections::{hash_map::DefaultHasher, HashMap, HashSet}, convert::Infallible, error, ffi::{self, CStr, CString}, hash::{Hash, Hasher}, io, os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd}, ptr::{self, NonNull}, sync::Arc, time::Duration};
+use std::{collections::{hash_map::DefaultHasher, HashMap, HashSet}, convert::Infallible, ffi::{self, CStr, CString}, hash::{Hash, Hasher}, io, os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd}, ptr::{self, NonNull}, sync::Arc, time::Duration};
 use async_lock::Mutex as AsyncMutex;
 use futures_lite::{pin, FutureExt};
 
 #[test]
-fn dbus() {
+fn call() {
 
-    use futures_lite::future::block_on;
-
-    block_on(async {
+    async_io::block_on(async {
 
     
         let con = Connection::new().unwrap();
@@ -39,15 +37,13 @@ fn dbus() {
 #[test]
 fn notifications() {
 
-    use futures_lite::future::block_on;
-
     // let subscriber = tracing_subscriber::FmtSubscriber::builder()
     //     .with_max_level(tracing::Level::TRACE)
     //     .finish();
 
     // tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    block_on(async {
+    async_io::block_on(async {
 
         let con = Connection::new().unwrap();
         let proxy = NotifyProxy::new(&con);
@@ -144,150 +140,8 @@ impl Reactor {
                 };
 
                 match request.or(readable).await {
-
-                    Either::Request(request) => match request {
-
-                        DbusRequest::Call(send, call) => {
-                       
-                            let dest   = CString::new(call.dest).map_err(io_error_other)?; // TODO: arena
-                            let path   = CString::new(call.path).map_err(io_error_other)?;
-                            let iface  = CString::new(call.iface).map_err(io_error_other)?;
-                            let method = CString::new(call.method).map_err(io_error_other)?;
-
-                            let mut msg = ptr::null_mut();
-                            unsafe { sys::sd_bus_message_new_method_call(
-                                guard.bus, &mut msg,
-                                dest.as_ptr(), path.as_ptr(), iface.as_ptr(), method.as_ptr()
-                            ) }.ok().map_err(|_| RequestError::argfmt())?;
-
-                            assert!(!msg.is_null());
-                            for arg in call.args {
-                                push_arg(msg, arg).unwrap(); // should not fail
-                            }
-
-                            let mut cookie = 0;
-                            unsafe { sys::sd_bus_send(guard.bus, msg, &mut cookie) }.ok()?;
-
-                            let cookie = Id::Cookie(cookie);
-                            guard.calls.insert(cookie, send);
-
-                        },
-
-                        DbusRequest::Signal(signal) => {
-
-                            let hash = hash_dbus_signal(&signal.path, &signal.iface, &signal.method);
-                            let id = Id::SignalHash(hash);
-
-                            if guard.listening.insert(id) {
-
-                                // the signal was previously unregistered
-                                
-                                let path   = CString::new(signal.path).map_err(io_error_other)?; // TODO: arena
-                                let iface  = CString::new(signal.iface).map_err(io_error_other)?;
-                                let method = CString::new(signal.method).map_err(io_error_other)?;
-
-                                extern fn ignore(_msg: *mut sys::SdMessage, _data: *mut ffi::c_void, _err: *mut sys::SdError) -> sys::SdHandlerStatus {
-                                    // note: _msg is only borrowed here
-                                    // the message is processed in the main event loop
-                                    sys::SdHandlerStatus::Forward // call other handlers if registered
-                                }
-
-                                let mut slot = ptr::null_mut();
-                                unsafe {
-                                    sys::sd_bus_match_signal(
-                                        guard.bus, &mut slot,
-                                        ptr::null(), path.as_ptr(), iface.as_ptr(), method.as_ptr(),
-                                        ignore, ptr::null_mut())
-                                }.ok().map_err(|_| RequestError::argfmt())?;
-
-                                assert!(!slot.is_null());
-
-                                // slot will be bound to the lifetime of the whole bus
-                                // i am too exhausted to implement anything more efficient here
-                                unsafe { sys::sd_bus_slot_set_floating(slot, true as ffi::c_int) };
-
-                            }
-                        
-                        },
-
-                    },
-
-                    Either::Readable(result) => {
-
-                        result?;
-
-                        'inner: loop {
-
-                            let mut msg = ptr::null_mut();
-                            let worked = unsafe { sys::sd_bus_process(guard.bus, &mut msg) }.ok()?;
-
-                            if !msg.is_null() {
-
-                                let mut kind = sys::SdMessageKind::Null;
-                                unsafe { sys::sd_bus_message_get_type(msg, &mut kind).ok()? };
-
-                                match kind {
-
-                                    sys::SdMessageKind::Null=> unreachable!(),
-                                    sys::SdMessageKind::MethodCall => unreachable!(),
-
-                                    sys::SdMessageKind::Error => {
-
-                                        let raw = unsafe { sys::sd_bus_message_get_error(msg) };
-                                        assert!(!raw.is_null());
-
-                                        let name = unsafe { (&*raw).name };
-                                        let cstr = unsafe { CStr::from_ptr(name) };
-
-                                        let err = io::Error::other(cstr.to_string_lossy());
-
-                                        unsafe { sys::sd_bus_message_unref(msg) };
-                                        unsafe { sys::sd_bus_error_free(raw) };
-
-                                        return Err(RequestError::Dbus(err));
-
-                                    },
-
-                                    sys::SdMessageKind::Response => {
-
-                                        // unsafe { sys::sd_bus_message_dump(msg, ptr::null_mut(), sys::SdDumpKind::WithHeader).ok()? };
-
-                                        let mut cookie = 0;
-                                        let ret = unsafe { sys::sd_bus_message_get_reply_cookie(msg, &mut cookie) };
-
-                                        if ret.ok().is_ok() {
-
-                                            let resp = DbusResponse::consume(msg)?; // BUG: if this is an error, the message is leaked
-
-                                            let id = Id::Cookie(cookie);
-                                            let send = guard.calls.remove(&id).unwrap();
-                                            send.try_send(resp).unwrap();
-
-                                        }
-
-                                    },
-
-                                    sys::SdMessageKind::Signal => {
-
-                                        let resp = DbusResponse::consume(msg)?;
-                                        guard.signals.broadcast_direct(Arc::new(resp)).await.unwrap();
-
-                                    }
-
-                                }
-
-                            };
-
-                            if worked == 0 {
-                                // no more events to process, return and release the lock
-                                // so this task also has a chance to wake up and check if it has received new data
-                                break 'inner;
-                            }
-
-                        }
-
-                    }
-
+                    Either::Request(request) => process_request(&mut guard, request)?,
+                    Either::Readable(result) => process_events(&mut guard, result)?
                 }
 
             }
@@ -295,6 +149,158 @@ impl Reactor {
         }
 
     }
+    
+}
+
+fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Result<(), io::Error>) -> RequestResult<()> {
+
+    result?;
+
+    'inner: loop {
+
+        let mut msg = ptr::null_mut();
+        let worked = unsafe { sys::sd_bus_process(guard.bus, &mut msg) }.ok()?;
+
+        if !msg.is_null() {
+
+            let mut kind = sys::SdMessageKind::Null;
+            unsafe { sys::sd_bus_message_get_type(msg, &mut kind).ok()? };
+
+            match kind {
+
+                sys::SdMessageKind::Null=> unreachable!(),
+                sys::SdMessageKind::MethodCall => unreachable!(),
+
+                sys::SdMessageKind::Error => {
+
+                    let raw = unsafe { sys::sd_bus_message_get_error(msg) };
+                    assert!(!raw.is_null());
+
+                    let name = unsafe { (&*raw).name };
+                    let cstr = unsafe { CStr::from_ptr(name) };
+
+                    let err = io::Error::other(cstr.to_string_lossy());
+
+                    unsafe { sys::sd_bus_message_unref(msg) };
+                    unsafe { sys::sd_bus_error_free(raw) };
+
+                    return Err(RequestError::Dbus(err));
+
+                },
+
+                sys::SdMessageKind::Response => {
+
+                    // unsafe { sys::sd_bus_message_dump(msg, ptr::null_mut(), sys::SdDumpKind::WithHeader).ok()? };
+
+                    let mut cookie = 0;
+                    let ret = unsafe { sys::sd_bus_message_get_reply_cookie(msg, &mut cookie) };
+
+                    if ret.ok().is_ok() {
+
+                        let resp = DbusResponse::consume(msg)?; // BUG: if this is an error, the message is leaked
+
+                        let id = Id::Cookie(cookie);
+                        let send = guard.calls.remove(&id).unwrap();
+                        send.try_send(resp).unwrap();
+
+                    }
+
+                },
+
+                sys::SdMessageKind::Signal => {
+
+                    let resp = DbusResponse::consume(msg)?;
+                    guard.signals.try_broadcast(Arc::new(resp)).unwrap(); // wait for other tasks if full
+
+                }
+
+            }
+
+        };
+
+        if worked == 0 {
+            // no more events to process, return and release the lock
+            // so this task also has a chance to wake up and check if it has received new data
+            break 'inner;
+        }
+
+    }
+
+    Ok(())
+    
+}
+
+fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: DbusRequest) -> RequestResult<()> {
+
+
+    match request {
+
+        DbusRequest::Call(send, call) => {
+   
+            let dest   = CString::new(call.dest).map_err(io::Error::other)?; // TODO: arena
+            let path   = CString::new(call.path).map_err(io::Error::other)?;
+            let iface  = CString::new(call.iface).map_err(io::Error::other)?;
+            let method = CString::new(call.method).map_err(io::Error::other)?;
+
+            let mut msg = ptr::null_mut();
+            unsafe { sys::sd_bus_message_new_method_call(
+                guard.bus, &mut msg,
+                dest.as_ptr(), path.as_ptr(), iface.as_ptr(), method.as_ptr()
+            ) }.ok().map_err(|_| RequestError::argfmt())?;
+
+            assert!(!msg.is_null());
+            for arg in call.args {
+                push_arg(msg, arg).unwrap(); // should not fail
+            }
+
+            let mut cookie = 0;
+            unsafe { sys::sd_bus_send(guard.bus, msg, &mut cookie) }.ok()?;
+
+            let cookie = Id::Cookie(cookie);
+            guard.calls.insert(cookie, send);
+
+        },
+
+        DbusRequest::Signal(signal) => {
+
+            let hash = hash_dbus_signal(&signal.path, &signal.iface, &signal.method);
+            let id = Id::SignalHash(hash);
+
+            if guard.listening.insert(id) {
+
+                // the signal was previously unregistered
+            
+                let path   = CString::new(signal.path).map_err(io::Error::other)?; // TODO: arena
+                let iface  = CString::new(signal.iface).map_err(io::Error::other)?;
+                let method = CString::new(signal.method).map_err(io::Error::other)?;
+
+                extern fn ignore(_msg: *mut sys::SdMessage, _data: *mut ffi::c_void, _err: *mut sys::SdError) -> sys::SdHandlerStatus {
+                    // note: _msg is only borrowed here
+                    // the message is processed in the main event loop
+                    sys::SdHandlerStatus::Forward // call other handlers if registered
+                }
+
+                let mut slot = ptr::null_mut();
+                unsafe {
+                    sys::sd_bus_match_signal(
+                        guard.bus, &mut slot,
+                        ptr::null(), path.as_ptr(), iface.as_ptr(), method.as_ptr(),
+                        ignore, ptr::null_mut())
+                }.ok().map_err(|_| RequestError::argfmt())?;
+
+                assert!(!slot.is_null());
+
+                // slot will be bound to the lifetime of the whole bus
+                // i am too exhausted to implement anything more efficient here
+                unsafe { sys::sd_bus_slot_set_floating(slot, true as ffi::c_int) };
+
+            }
+    
+        },
+
+    }
+
+    Ok(())
     
 }
 
@@ -343,7 +349,8 @@ impl Connection {
         assert!(!bus.is_null());
 
         let reqs = async_channel::bounded(8);
-        let signals = async_broadcast::broadcast(8);
+        let mut signals = async_broadcast::broadcast(16);
+        signals.0.set_overflow(true); // drop old signals if not consumed
 
         let reactor = Reactor {
             locked: AsyncMutex::new(BusData {
@@ -547,10 +554,6 @@ fn push_arg(msg: *mut sys::SdMessage, arg: Arg) -> ParseResult<()> {
 
     Ok(())
     
-}
-
-fn io_error_other<E: Into<Box<dyn error::Error + Send + Sync>>>(err: E) -> io::Error {
-    io::Error::other(err)
 }
 
 fn hash_dbus_signal<S: AsRef<[u8]>>(path: S, iface: S, method: S) -> u64 {
