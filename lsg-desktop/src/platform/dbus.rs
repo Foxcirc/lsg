@@ -1,18 +1,78 @@
 
 use core::fmt;
-use std::{collections::{hash_map::DefaultHasher, HashMap, HashSet}, convert::Infallible, ffi::{self, CStr, CString}, hash::{Hash, Hasher}, io, os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd}, ptr::{self, NonNull}, sync::Arc, time::Duration};
+use std::{collections::{hash_map::DefaultHasher, HashMap, HashSet}, convert::Infallible, ffi::{self, CStr, CString}, hash::{Hash, Hasher}, io::{self, Write}, mem, os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd}, ptr::{self, NonNull}, sync::Arc, thread::sleep_ms, time::Duration};
 use async_lock::Mutex as AsyncMutex;
 use futures_lite::{pin, FutureExt};
+
+#[test]
+fn bug() {
+
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
+    use nix::libc as libc;
+    use std::fs::File;
+
+    async_io::block_on(async {
+
+        // create a new pipe
+        let mut fds = [0, 0];
+        let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert!(res == 0);
+
+        let [read, write] = fds.map(|fd|
+            unsafe { OwnedFd::from_raw_fd(fd) }
+        );
+
+        // write some data to the pipe
+        let mut file = File::from(write);
+        file.write_all(b"foo bar").expect("write file");
+        file.flush().expect("flush file");
+
+        // create and async adapter to the read end
+        let adapter = async_io::Async::new(read)
+            .expect("create async adapter");
+
+        let mut is_first_time = true;
+        
+        for _ in 0..10 {
+
+            let ready = async {
+                if is_first_time {
+                    is_first_time = false;
+                    futures_lite::future::ready(1).await
+                } else {
+                    // futures_lite::future::ready(1).await
+                    futures_lite::future::pending().await
+                }
+            };
+
+            let io = async {
+                adapter.readable().await.expect("await readablity");
+                2
+            };
+
+            // BUG(1): the order of this `or` doesn't matter since async-io's readable
+            //         never returns `Poll::Ready` on first poll
+            let result = io.or(ready).await;
+            dbg!(result);
+        }
+        
+    });
+    
+}
 
 #[test]
 fn call() {
 
     async_io::block_on(async {
-
     
         let con = Connection::new().unwrap();
 
-        let call = DbusCall::new(
+        let call = MethodCall::new(
              "org.freedesktop.DBus",
              "/org/freedesktop/DBus",
              "org.freedesktop.DBus.Debug.Stats",
@@ -66,6 +126,50 @@ fn notifications() {
     
 }
 
+#[test]
+fn service() {
+
+    // let subscriber = tracing_subscriber::FmtSubscriber::builder()
+    //     .with_max_level(tracing::Level::TRACE)
+    //     .finish();
+
+    // tracing::subscriber::set_global_default(subscriber).unwrap();
+
+    async_io::block_on(async {
+
+        let con = Connection::new().unwrap();
+
+        // let mut service = Service::new("org.freedesktop.StatusNotifierItem-X-X");
+        let mut service = Service::new("lsg.test");
+
+        let mut iface = Iface::new();
+        iface.property("foo", 10i32);
+        service.add(
+            "/StatusNotifierItem",
+            "org.kde.StatusNotifierItem",
+            iface
+        );
+
+        con.run(service).await.unwrap();
+
+        // let pid = nix::unistd::getpid().as_raw();
+        // let name = format!("org.freedesktop.StatusNotifierItem-{}-1", pid);
+
+        // let mut call = MethodCall::new(
+        //     "org.kde.StatusNotifierWatcher",
+        //     "/StatusNotifierWatcher",
+        //     "org.kde.StatusNotifierWatcher",
+        //     "RegisterStatusNotifierItem"
+        // );
+
+        // call.arg(name);
+
+        // con.send(call).await.unwrap();
+        
+    })
+    
+}
+
 // #### dbus implementation ####
 
 struct Reactor {
@@ -76,13 +180,15 @@ struct BusData {
     bus: *mut sys::SdBus,
     busfd: async_io::Async<BusFd>,
     /// messages to send
-    reqs: async_channel::Receiver<DbusRequest>,
+    reqs: async_channel::Receiver<ClientMessage>,
     /// received responses to send back to the tasks
-    calls: HashMap<Id, async_channel::Sender<DbusResponse>>,
+    calls: HashMap<Id, async_channel::Sender<Message>>,
     /// received signals to send back to the tasks
-    signals: async_broadcast::Sender<Arc<DbusResponse>>,
+    signals: async_broadcast::Sender<Arc<Message>>,
     /// signals we are already listening on
     listening: HashSet<Id>,
+    /// registered services
+    services: HashMap<String, Service>,
 }
 
 impl Drop for Reactor {
@@ -97,7 +203,7 @@ impl Drop for Reactor {
 impl Reactor {
 
     /// Run the reactor and process events. This future never completes.
-    pub async fn run(&self) -> RequestResult<Infallible> {
+    pub async fn run(&self) -> DbusResult<Infallible> {
 
         let mut guard = self.locked.lock().await;                
 
@@ -116,15 +222,18 @@ impl Reactor {
             let events = unsafe { sys::sd_bus_get_events(guard.bus) }.ok()?;
 
             if events & 0x4 /* POLLOUT */ as u32 == 1 {
+
                 // the async-io `writable` method is very slow right now and
                 // the fd should always be writable, so we don't actually wait here
-                // self.busfd.readable()
-                //     .or(self.busfd.writable()).await?;
+
+                println!("processing events (writable)");
+                process_events(&mut guard, Ok(()))?;
+
             } else {
 
                 enum Either {
                     /// We should send this request.
-                    Request(DbusRequest),
+                    Request(ClientMessage),
                     /// The bus fd is now readable.
                     Readable(io::Result<()>),
                 }
@@ -139,7 +248,13 @@ impl Reactor {
                     Either::Readable(val)
                 };
 
-                match request.or(readable).await {
+                // BUG: right now, on load, the `readable` future never resolves even though the connection
+                // is readable. this seems to be a bug in async-io where a thread is incorrectly parked and never unparked or something
+                // this is my conclusion because as soon as another system thread interacts with our program, the future resolves.
+                // this bug also goes away if the `request` future is replaced by `pending().await`
+                // the bug also happens when you replace the channel recv with future::ready, so it just always happens when the other future resolves (first?)
+
+                match readable.or(request).await {
                     Either::Request(request) => process_request(&mut guard, request)?,
                     Either::Readable(result) => process_events(&mut guard, result)?
                 }
@@ -152,7 +267,7 @@ impl Reactor {
     
 }
 
-fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Result<(), io::Error>) -> RequestResult<()> {
+fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Result<(), io::Error>) -> DbusResult<()> {
 
     result?;
 
@@ -166,10 +281,11 @@ fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Resul
             let mut kind = sys::SdMessageKind::Null;
             unsafe { sys::sd_bus_message_get_type(msg, &mut kind).ok()? };
 
+            dbg!(&kind);
+
             match kind {
 
-                sys::SdMessageKind::Null=> unreachable!(),
-                sys::SdMessageKind::MethodCall => unreachable!(),
+                sys::SdMessageKind::Null => unreachable!(),
 
                 sys::SdMessageKind::Error => {
 
@@ -184,7 +300,7 @@ fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Resul
                     unsafe { sys::sd_bus_message_unref(msg) };
                     unsafe { sys::sd_bus_error_free(raw) };
 
-                    return Err(RequestError::Dbus(err));
+                    return Err(DbusError::Dbus(err));
 
                 },
 
@@ -197,7 +313,7 @@ fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Resul
 
                     if ret.ok().is_ok() {
 
-                        let resp = DbusResponse::consume(msg)?; // BUG: if this is an error, the message is leaked
+                        let resp = Message::consume(msg)?; // BUG: if this is an error, the message is leaked
 
                         let id = Id::Cookie(cookie);
                         let send = guard.calls.remove(&id).unwrap();
@@ -209,10 +325,65 @@ fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Resul
 
                 sys::SdMessageKind::Signal => {
 
-                    let resp = DbusResponse::consume(msg)?;
-                    guard.signals.try_broadcast(Arc::new(resp)).unwrap(); // wait for other tasks if full
+                    let signal = Message::consume(msg)?;
+                    guard.signals.try_broadcast(Arc::new(signal)).unwrap(); // wait for other tasks if full
 
                 }
+
+                sys::SdMessageKind::MethodCall => {
+
+                    let req = Message::consume(msg)?;
+
+                    if let Some(service) = guard.services.get_mut(&req.dest) {
+
+                        let result = service.handle(req);
+                        let resp = match result {
+
+                            MethodReply::Ok { args } => {
+
+                                let mut resp = ptr::null_mut();
+                                unsafe { sys::sd_bus_message_new_method_return(msg, &mut resp) }
+                                    .ok().map_err(|_| DbusError::invalid_arguments())?;
+                                assert!(!msg.is_null());
+
+                                for arg in args {
+                                    push_arg(msg, arg).unwrap(); // should not fail
+                                }
+
+                                resp
+
+                            },
+
+                            MethodReply::Err { name, msg: desc } => {
+
+                                let cname = CString::new(name).unwrap();
+                                let cdesc = CString::new(desc).unwrap(); // todo: fuck this
+
+                                let mut err: sys::SdError = unsafe { mem::zeroed() };
+                                unsafe { sys::sd_bus_error_set(&mut err, cname.as_ptr(), cdesc.as_ptr()) }.ok().unwrap();
+                                // err.name = cname.as_ptr().cast_mut();
+                                // err.msg = cdesc.as_ptr().cast_mut();
+                                
+                                let mut resp = ptr::null_mut();
+                                dbg!(msg);
+                                dbg!(&resp);
+                                dbg!(cname, err.name);
+                                unsafe { sys::sd_bus_message_new_method_error(msg, &mut resp, &err) }.ok().unwrap();
+
+                                // TODO: is err leaked here?
+
+                                resp
+
+                            }
+
+                        };
+
+                        let mut _cookie = 0;
+                        unsafe { sys::sd_bus_send(guard.bus, resp, &mut _cookie) }.ok()?;
+
+                    }
+                    
+                },
 
             }
 
@@ -230,12 +401,11 @@ fn process_events(guard: &mut async_lock::MutexGuard<'_, BusData>, result: Resul
     
 }
 
-fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: DbusRequest) -> RequestResult<()> {
-
+fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: ClientMessage) -> DbusResult<()> {
 
     match request {
 
-        DbusRequest::Call(send, call) => {
+        ClientMessage::MethodCall(send, call) => {
    
             let dest   = CString::new(call.dest).map_err(io::Error::other)?; // TODO: arena
             let path   = CString::new(call.path).map_err(io::Error::other)?;
@@ -246,7 +416,7 @@ fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: Dbu
             unsafe { sys::sd_bus_message_new_method_call(
                 guard.bus, &mut msg,
                 dest.as_ptr(), path.as_ptr(), iface.as_ptr(), method.as_ptr()
-            ) }.ok().map_err(|_| RequestError::argfmt())?;
+            ) }.ok().map_err(|_| DbusError::invalid_arguments())?;
 
             assert!(!msg.is_null());
             for arg in call.args {
@@ -261,7 +431,7 @@ fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: Dbu
 
         },
 
-        DbusRequest::Signal(signal) => {
+        ClientMessage::SignalMatch(signal) => {
 
             let hash = hash_dbus_signal(&signal.path, &signal.iface, &signal.method);
             let id = Id::SignalHash(hash);
@@ -286,7 +456,7 @@ fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: Dbu
                         guard.bus, &mut slot,
                         ptr::null(), path.as_ptr(), iface.as_ptr(), method.as_ptr(),
                         ignore, ptr::null_mut())
-                }.ok().map_err(|_| RequestError::argfmt())?;
+                }.ok().map_err(|_| DbusError::invalid_arguments())?;
 
                 assert!(!slot.is_null());
 
@@ -296,6 +466,57 @@ fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: Dbu
 
             }
     
+        },
+
+        ClientMessage::AddService(mut service) => {
+
+            println!("adding service {}", &service.name);
+
+            extern fn ignore(_msg: *mut sys::SdMessage, _data: *mut ffi::c_void, _err: *mut sys::SdError) -> sys::SdResult {
+                // this handler also ignores the message, since it is handeled in the main
+                // event loop
+                // note: _msg is only borrowed here
+                sys::SdResult::OK
+            }
+
+            let raw = CString::new(&service.name[..]).unwrap();  // todo: temp str to cstr
+            unsafe { sys::sd_bus_request_name(guard.bus, raw.as_ptr(), 0) };
+
+            let mut paths = HashMap::new(); // unique paths
+
+            for (info, iface) in &mut service.ifaces {
+
+                // only add paths once but add the slot to all interfaces
+                // with the same path
+
+                paths.entry(&info.path)
+                .and_modify(|slot| {
+
+                    unsafe { sys::sd_bus_slot_ref(*slot) };
+                    iface.slot = *slot;
+
+                })
+                .or_insert_with(|| {
+                        
+                    let path = CString::new(&info.path[..]).unwrap(); // todo: temp str to cstr
+                    let mut slot = ptr::null_mut();
+                    unsafe { sys::sd_bus_add_object(
+                        guard.bus, &mut slot,
+                        path.as_ptr(), ignore,
+                        ptr::null_mut()
+                    ) };
+        
+                    assert!(!slot.is_null());
+
+                    iface.slot = slot; // don't need to ref it here
+                    slot
+
+                });
+
+            }
+
+            guard.services.insert(service.name.clone(), service);
+            
         },
 
     }
@@ -313,8 +534,8 @@ fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: Dbu
 pub struct Connection {
     reactor: Arc<Reactor>,
     /// handle to send requests
-    reqs: async_channel::Sender<DbusRequest>,
-    signals: async_broadcast::Receiver<Arc<DbusResponse>>,
+    reqs: async_channel::Sender<ClientMessage>,
+    signals: async_broadcast::Receiver<Arc<Message>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -360,6 +581,7 @@ impl Connection {
                 calls: HashMap::new(),
                 signals: signals.0,
                 listening: HashSet::new(),
+                services: HashMap::new(),
             }),
         };
 
@@ -371,15 +593,15 @@ impl Connection {
         
     }
     
-    pub async fn send(&self, call: DbusCall) -> RequestResult<DbusResponse> {
+    pub async fn send(&self, call: MethodCall) -> DbusResult<Message> {
         
         let (send, recv) = async_channel::bounded(1);
-        let req = DbusRequest::Call(send, call);
+        let req = ClientMessage::MethodCall(send, call);
         self.reqs.try_send(req).unwrap();
 
         enum Either {
-            Resp(DbusResponse),
-            Reactor(RequestResult<Infallible>),
+            Resp(Message),
+            Reactor(DbusResult<Infallible>),
         }
             
         let next = async { Either::Resp(recv.recv().await.unwrap()) };
@@ -394,12 +616,12 @@ impl Connection {
 
     }
 
-    pub async fn listen(&self, signal: DbusSignal) -> RequestResult<Listener> {
+    pub async fn listen(&self, signal: SignalMatch) -> DbusResult<Listener> {
 
         let hash = hash_dbus_signal(&signal.path, &signal.iface, &signal.method);
         let id = Id::SignalHash(hash);
 
-        let req = DbusRequest::Signal(signal);
+        let req = ClientMessage::SignalMatch(signal);
         self.reqs.try_send(req).unwrap();
 
         Ok(Listener {
@@ -410,22 +632,35 @@ impl Connection {
 
     }
 
+    /// Run a service.
+    /// Will never resolve.
+    pub async fn run(&self, service: Service) -> DbusResult<()> {
+
+        let req = ClientMessage::AddService(service);
+        self.reqs.try_send(req).unwrap();
+
+        self.reactor.run().await?;
+
+        Ok(())
+        
+    }
+
 }
 
 #[derive(Clone)]
 pub struct Listener {
     id: Id,
     con: Connection,
-    recv: async_broadcast::Receiver<Arc<DbusResponse>>,
+    recv: async_broadcast::Receiver<Arc<Message>>,
 }
 
 impl Listener {
 
-    pub async fn next(&mut self) -> RequestResult<Arc<DbusResponse>> {
+    pub async fn next(&mut self) -> DbusResult<Arc<Message>> {
 
         enum Either {
-            Resp(Arc<DbusResponse>),
-            Reactor(RequestResult<Infallible>),
+            Resp(Arc<Message>),
+            Reactor(DbusResult<Infallible>),
         }
 
         loop {
@@ -437,17 +672,7 @@ impl Listener {
 
                 Either::Resp(resp) => {
 
-                    assert!(
-                        !resp._path.is_null() &&
-                        !resp._iface.is_null() &&
-                        !resp._method.is_null()
-                    );
-
-                    let path = unsafe { CStr::from_ptr(resp._path) };
-                    let iface = unsafe { CStr::from_ptr(resp._iface) };
-                    let method = unsafe { CStr::from_ptr(resp._method) };
-
-                    let hash = hash_dbus_signal(path.to_bytes(), iface.to_bytes(), method.to_bytes());
+                    let hash = hash_dbus_signal(&resp.path, &resp.iface, &resp.method);
 
                     if self.id == Id::SignalHash(hash) {
                         return Ok(resp)
@@ -470,8 +695,13 @@ impl Listener {
 fn push_arg(msg: *mut sys::SdMessage, arg: Arg) -> ParseResult<()> {
 
     match arg {
+
+        // basic kind
+
         Arg::Simple(simple) => {
+
             let vals = match simple {
+
                 SimpleArg::Byte(val)   => Some((sys::SdBasicKind::Byte,   &val as *const _ as *const ffi::c_void)),
                 SimpleArg::I16(val)    => Some((sys::SdBasicKind::I16,    &val as *const _ as *const ffi::c_void)),
                 SimpleArg::U16(val)    => Some((sys::SdBasicKind::U16,    &val as *const _ as *const ffi::c_void)),
@@ -480,6 +710,7 @@ fn push_arg(msg: *mut sys::SdMessage, arg: Arg) -> ParseResult<()> {
                 SimpleArg::I64(val)    => Some((sys::SdBasicKind::I64,    &val as *const _ as *const ffi::c_void)),
                 SimpleArg::U64(val)    => Some((sys::SdBasicKind::U64,    &val as *const _ as *const ffi::c_void)),
                 SimpleArg::Double(val) => Some((sys::SdBasicKind::Double, &val as *const _ as *const ffi::c_void)),
+
                 // the following values need lifetime extension because they don't reference `arg` directly
                 SimpleArg::Bool(val)   => {
                     let new = val as ffi::c_int;
@@ -487,27 +718,37 @@ fn push_arg(msg: *mut sys::SdMessage, arg: Arg) -> ParseResult<()> {
                     unsafe { sys::sd_bus_message_append_basic(msg, kind, ptr).ok()?; }
                     None
                 },
+
                 SimpleArg::Fd(val)     => {
                     let new = val.as_raw_fd();
                     let (kind, ptr) = (sys::SdBasicKind::UnixFd, &new as *const _ as *const ffi::c_void); // TODO: is this okay or is the pointer invalid
                     unsafe { sys::sd_bus_message_append_basic(msg, kind, ptr).ok()?; }
                     None
                 },
+
                 SimpleArg::String(val) => {
                     let cstr = CString::new(val).unwrap();
                     let (kind, ptr) = (sys::SdBasicKind::String, cstr.as_ptr() as *const ffi::c_void);
                     unsafe { sys::sd_bus_message_append_basic(msg, kind, ptr).ok()?; }
                     None
                 },
+
             };
+
             if let Some((kind, ptr)) = vals {
                 unsafe { sys::sd_bus_message_append_basic(msg, kind, ptr).ok()?; }
             }
+
         },
+
+        // container kinds
+
         Arg::Compound(compound) => match compound {
 
             CompoundArg::Array(kind, items) => {
+
                 let contents = [kind, sys::SdBasicKind::Null];
+
                 unsafe { sys::sd_bus_message_open_container(msg, sys::SdBasicKind::Array, contents.as_ptr()).ok()? };
                 for it in items {
                     push_arg(msg, it)?;
@@ -521,22 +762,20 @@ fn push_arg(msg: *mut sys::SdMessage, arg: Arg) -> ParseResult<()> {
                     sys::SdBasicKind::PairBegin,
                     tkey, tval,
                     sys::SdBasicKind::PairEnd,
-                    // sys::SdBasicKind::Pair,
                     sys::SdBasicKind::Null,
                 ]; // {key, val}
                 
                 unsafe { sys::sd_bus_message_open_container(msg, sys::SdBasicKind::Array, contents.as_ptr()).ok().unwrap() };
-
                 for (key, val) in map.into_iter() {
 
                     let contents = [tkey, tval, sys::SdBasicKind::Null]; // {key, val}
+
                     unsafe { sys::sd_bus_message_open_container(msg, sys::SdBasicKind::Pair, contents.as_ptr()).ok().unwrap() };
                     push_arg(msg, Arg::Simple(key))?;
                     push_arg(msg, val)?;
                     unsafe { sys::sd_bus_message_close_container(msg).ok().unwrap() };
 
                 }
-
                 unsafe { sys::sd_bus_message_close_container(msg).ok().unwrap() };
                 
             },
@@ -564,7 +803,95 @@ fn hash_dbus_signal<S: AsRef<[u8]>>(path: S, iface: S, method: S) -> u64 {
     hasher.finish()
 }
 
-pub struct DbusCall {
+pub struct Service {
+    name: String,
+    ifaces: HashMap<IfaceInfo, Iface>,
+}
+
+impl Service {
+
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            ifaces: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, path: &str, iface: &str, value: Iface) {
+        self.ifaces.insert(
+            IfaceInfo { path: path.to_string(), name: iface.to_string()  },
+            value
+        );
+    }
+
+    fn handle(&mut self, req: Message) -> MethodReply {
+
+        dbg!(&req);
+
+        let info = IfaceInfo {
+            path: req.path.clone(), // TODO: not clone every time here
+            name: req.iface.clone(),
+        };
+
+        if req.method == "Introspect" {
+            
+        }
+        
+        else if let Some(iface) = self.ifaces.get_mut(&info) {
+            if let Some(exposed) = iface.exposed.get_mut(&req.method) {
+
+                
+            }
+        };
+
+        MethodReply::err("lsg.unimplemented", "not implemented")
+        
+    }
+    
+}
+
+enum Exposed {
+    Property(Arg),
+    Method(Box<dyn Fn(Message) -> MethodReply>), // todo: arenas of dyn
+}
+
+#[derive(PartialEq, Eq, Hash)]
+pub struct IfaceInfo {
+    path: String,
+    name: String,
+}
+
+pub struct Iface {
+    exposed: HashMap<String, Exposed>,
+    slot: *mut sys::SdSlot,
+}
+
+impl Iface {
+
+    pub fn new() -> Self {
+        Self {
+            exposed: HashMap::new(),
+            slot: ptr::null_mut(),
+        }
+    }
+
+    pub fn property<T: ValidArg>(&mut self, name: &str, val: T) {
+        self.exposed.insert(
+            name.to_string(),
+            Exposed::Property(val.into_arg())
+        );
+    }
+
+    pub fn method<F: Fn(Message) -> MethodReply + 'static>(&mut self, name: &str, cb: F) {
+        self.exposed.insert(
+            name.to_string(),
+            Exposed::Method(Box::new(cb))
+        );
+    }
+    
+}
+
+pub struct MethodCall {
     dest: String, // todo: arena :(
     path: String,
     iface: String,
@@ -572,7 +899,7 @@ pub struct DbusCall {
     args: Vec<Arg>,
 }
 
-impl DbusCall {
+impl MethodCall {
 
     pub fn new(dest: &str, path: &str, iface: &str, method: &str) -> Self {
 
@@ -592,13 +919,13 @@ impl DbusCall {
     
 }
 
-pub struct DbusSignal {
+pub struct SignalMatch {
     path: String,
     iface: String,
     method: String,
 }
 
-impl DbusSignal {
+impl SignalMatch {
 
     pub fn new(path: &str, iface: &str, method: &str) -> Self {
         Self {
@@ -610,37 +937,100 @@ impl DbusSignal {
 
 }
 
-enum DbusRequest {
-    Call(async_channel::Sender<DbusResponse>, DbusCall),
-    Signal(DbusSignal),
+pub enum MethodReply {
+    Ok { args: Vec<Arg> },
+    Err { name: String, msg: String },
 }
 
-pub struct DbusResponse {
+impl MethodReply {
+
+    pub fn ok() -> Self {
+        Self::Ok {
+            args: Vec::new()
+        }
+    }
+    
+    pub fn err(name: &str, msg: &str) -> Self {
+        Self::Err {
+            name: name.to_string(),
+            msg: msg.to_string(),
+        }
+    }
+    
+    pub fn arg<A: ValidArg>(&mut self, input: A) {
+        if let Self::Ok { args } = self {
+            args.push(input.into_arg());
+        } else {
+            panic!("cannot push args onto an error reply");
+        }
+    }
+    
+}
+
+pub struct SignalTrigger {
+    path: String, // todo: arena
+    iface: String,
+    method: String,
+    args: Vec<Arg>,
+}
+
+impl SignalTrigger {
+
+    pub fn new(path: &str, iface: &str, method: &str) -> Self {
+
+        Self {
+            path: path.to_string(),
+            iface: iface.to_string(),
+            method: method.to_string(),
+            args: Vec::new(),
+        }
+
+    }
+    
+    pub fn arg<A: ValidArg>(&mut self, input: A) {
+        self.args.push(input.into_arg());
+    }
+    
+}
+
+enum ClientMessage {
+    MethodCall(async_channel::Sender<Message>, MethodCall),
+    SignalMatch(SignalMatch),
+    AddService(Service),
+}
+
+enum ServerMessage {
+    MethodReply(MethodReply),
+    SignalTrigger(SignalTrigger),
+}
+
+pub struct Message {
     inner: *mut sys::SdMessage,
-    _sender: *const ffi::c_char,
-    _path: *const ffi::c_char,
-    _iface: *const ffi::c_char,
-    _method: *const ffi::c_char,
+    sender: String,
+    dest: String,
+    path: String,
+    iface: String,
+    method: String,
     pub args: Vec<RawArg>,
 }
 
-impl Drop for DbusResponse {
+impl Drop for Message {
     fn drop(&mut self) {
         unsafe { sys::sd_bus_message_unref(self.inner) };
     }
 }
 
-impl DbusResponse {
+impl Message {
 
     pub(crate) fn consume(msg: *mut sys::SdMessage) -> ParseResult<Self> {
 
         assert!(!msg.is_null());
 
-        // these are used for identifying signals
-        let sender     = unsafe { sys::sd_bus_message_get_sender(msg) };
-        let path       = unsafe { sys::sd_bus_message_get_path(msg) };
-        let interface  = unsafe { sys::sd_bus_message_get_interface(msg) };
-        let method     = unsafe { sys::sd_bus_message_get_member(msg) };
+        let sender = NonNull::new(unsafe { sys::sd_bus_message_get_sender(msg)      } as *mut _).map(|it| unsafe { CStr::from_ptr(it.as_ptr()) }.to_str().unwrap().to_string()).unwrap_or_default();
+        let dest   = NonNull::new(unsafe { sys::sd_bus_message_get_destination(msg) } as *mut _).map(|it| unsafe { CStr::from_ptr(it.as_ptr()) }.to_str().unwrap().to_string()).unwrap_or_default();
+        let path   = NonNull::new(unsafe { sys::sd_bus_message_get_path(msg)        } as *mut _).map(|it| unsafe { CStr::from_ptr(it.as_ptr()) }.to_str().unwrap().to_string()).unwrap_or_default();
+        let iface  = NonNull::new(unsafe { sys::sd_bus_message_get_interface(msg)   } as *mut _).map(|it| unsafe { CStr::from_ptr(it.as_ptr()) }.to_str().unwrap().to_string()).unwrap_or_default();
+        let method = NonNull::new(unsafe { sys::sd_bus_message_get_member(msg)      } as *mut _).map(|it| unsafe { CStr::from_ptr(it.as_ptr()) }.to_str().unwrap().to_string()).unwrap_or_default();
 
         let mut args = Vec::new();
 
@@ -658,10 +1048,11 @@ impl DbusResponse {
 
         Ok(Self {
             inner: msg,
-            _sender: sender,
-            _path: path,
-            _iface: interface,
-            _method: method,
+            sender,
+            dest,
+            path,
+            iface,
+            method,
             args
         })
 
@@ -682,15 +1073,14 @@ impl DbusResponse {
     
 }
 
-impl fmt::Debug for DbusResponse {
+impl fmt::Debug for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "DbusResponse {{")?;
-        writeln!(f, "\tsender: {:?}", NonNull::new(self._sender.cast_mut()).map(|ptr| unsafe { CStr::from_ptr(ptr.as_ptr()) }))?;
-        writeln!(f, "\tpath: {:?}",   NonNull::new(self._path.cast_mut()).  map(|ptr| unsafe { CStr::from_ptr(ptr.as_ptr()) } ))?;
-        writeln!(f, "\tiface: {:?}",  NonNull::new(self._iface.cast_mut()). map(|ptr| unsafe { CStr::from_ptr(ptr.as_ptr()) }))?;
-        writeln!(f, "\tmethod: {:?}", NonNull::new(self._method.cast_mut()).map(|ptr| unsafe { CStr::from_ptr(ptr.as_ptr()) }))?;
-        writeln!(f, "\t### response args ###")?;
-        writeln!(f, "{:#?}", self.args)?;
+        writeln!(f, "    sender: {:?}", self.sender)?;
+        writeln!(f, "    path: {:?}",   self.path)?;
+        writeln!(f, "    iface: {:?}",  self.iface)?;
+        writeln!(f, "    method: {:?}", self.method)?;
+        writeln!(f, "    args: {:#?}", self.args)?;
         writeln!(f, "}}")
     }
 }
@@ -1197,13 +1587,13 @@ impl ParseError {
 }
 
 #[derive(Debug)]
-pub enum RequestError {
+pub enum DbusError {
     Dbus(io::Error),
     Parse(ParseError),
 }
 
-impl RequestError {
-    fn argfmt() -> Self {
+impl DbusError {
+    fn invalid_arguments() -> Self {
         Self::Dbus(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid dbus parameter (eg. object path not starting with `/`)"
@@ -1211,15 +1601,15 @@ impl RequestError {
     }
 }
 
-pub type RequestResult<T> = Result<T, RequestError>;
+pub type DbusResult<T> = Result<T, DbusError>;
 
-impl From<io::Error> for RequestError {
+impl From<io::Error> for DbusError {
     fn from(value: io::Error) -> Self {
         Self::Dbus(value)
     }
 }
 
-impl From<ParseError> for RequestError {
+impl From<ParseError> for DbusError {
     fn from(value: ParseError) -> Self {
         Self::Parse(value)
     }
@@ -1237,9 +1627,9 @@ impl NotifyProxy {
         Self { con: con.clone() }
     }
 
-    pub async fn send(&self, notif: Notif<'_>) -> RequestResult<NotifId> {
+    pub async fn send(&self, notif: Notif<'_>) -> DbusResult<NotifId> {
 
-        let mut call = DbusCall::new(
+        let mut call = MethodCall::new(
             "org.freedesktop.Notifications",
             "/org/freedesktop/Notifications",
             "org.freedesktop.Notifications",
@@ -1283,9 +1673,9 @@ impl NotifyProxy {
     }
 
     /// Forcefully close a notification.
-    pub async fn close(&self, id: NotifId) -> RequestResult<()> {
+    pub async fn close(&self, id: NotifId) -> DbusResult<()> {
 
-        let mut call = DbusCall::new(
+        let mut call = MethodCall::new(
             "org.freedesktop.Notifications",
             "/org/freedesktop/Notifications",
             "org.freedesktop.Notifications",
@@ -1301,9 +1691,9 @@ impl NotifyProxy {
     }
 
     /// Wait until an action is invoked.
-    pub async fn invoked(&self, id: NotifId) -> RequestResult<InvokedAction> {
+    pub async fn invoked(&self, id: NotifId) -> DbusResult<InvokedAction> {
 
-        let signal = DbusSignal::new(
+        let signal = SignalMatch::new(
             "/org/freedesktop/Notifications",
             "org.freedesktop.Notifications",
             "ActionInvoked"
@@ -1503,10 +1893,12 @@ mod sys {
 
     #[repr(C)]
     pub struct SdError {
-        /// Can be NULL.
+        /// can be null
         pub name: *mut ffi::c_char,
-        /// Can be NULL.
-        pub msg: *mut ffi::c_char
+        /// can be null
+        pub msg: *mut ffi::c_char,
+        /// more unspecified fields, uuhh this is unsafe
+        _need_free: i32, // whatever, it's internal
     }
 
     #[derive(Clone, Copy)]
@@ -1516,6 +1908,17 @@ mod sys {
     }
 
     impl SdResult {
+
+        pub const OK: Self = Self::new(0);
+        pub const ERR: Self = Self::new(-1);
+
+        pub const fn new(code: i32) -> Self {
+            Self { inner: code }
+        }
+
+        pub fn io(err: io::Error) -> Self {
+            Self { inner: - err.raw_os_error().unwrap_or(1) }
+        }
 
         pub fn ok(&self) -> Result<u32, io::Error> {
 
@@ -1529,14 +1932,14 @@ mod sys {
 
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     #[repr(u64)]
     pub enum SdDumpKind { // this should've been a bool honestly
         WithHeader  = 1 << 0,
         SubtreeOnly = 1 << 1,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     #[repr(u8)]
     pub enum SdMessageKind { // i do not fear UB
         Null = 0,
@@ -1546,7 +1949,7 @@ mod sys {
         Signal = 4,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     #[repr(i32)]
     pub enum SdHandlerStatus { // i do not fear UB
         /// Use the `out` argument to return a more precise error.
@@ -1557,11 +1960,17 @@ mod sys {
         Consume = 1,
     }
 
-    pub type SdMessageHandler = extern fn(
+    pub type SdMessageFilter = extern fn(
         msg: *mut SdMessage,
         data: *mut ffi::c_void,
         out: *mut SdError
     ) -> SdHandlerStatus;
+    
+    pub type SdMessageHandler = extern fn(
+        msg: *mut SdMessage,
+        data: *mut ffi::c_void,
+        out: *mut SdError
+    ) -> SdResult;
     
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     #[repr(i8)] // ffi::c_char, i do not fear UB
@@ -1609,7 +2018,20 @@ mod sys {
         pub fn sd_bus_process(bus: *mut SdBus, out: &mut *mut SdMessage) -> SdResult;
         pub fn sd_bus_wait(bus: *mut SdBus, timeout: u64) -> SdResult;
 
-        pub fn sd_bus_send(bus: *mut SdBus, msg: *mut SdMessage, cookie: &mut u64) -> SdResult;
+        // services
+
+        pub fn sd_bus_request_name(bus: *mut SdBus, name: *const ffi::c_char, flags: u64) -> SdResult;
+        pub fn sd_bus_release_name(bus: *mut SdBus, name: *const ffi::c_char) -> SdResult;
+        
+        pub fn sd_bus_add_object(
+            bus: *mut SdBus,
+            out: &mut *mut SdSlot,
+            // path
+            path: *const ffi::c_char,
+            // cb
+            callback: SdMessageHandler,
+            data: *mut ffi::c_void,
+        );
 
         // signals
 
@@ -1620,10 +2042,13 @@ mod sys {
             sender: *const ffi::c_char, path: *const ffi::c_char,
             interface: *const ffi::c_char, member: *const ffi::c_char,
             // cb
-            callback: SdMessageHandler, data: *mut ffi::c_void
+            callback: SdMessageFilter,
+            data: *mut ffi::c_void
         ) -> SdResult;
 
         // message
+
+        pub fn sd_bus_send(bus: *mut SdBus, msg: *mut SdMessage, cookie: &mut u64) -> SdResult;
 
         pub fn sd_bus_message_new_method_call(
             // obj
@@ -1631,6 +2056,14 @@ mod sys {
             // dest
             dest: *const ffi::c_char, path: *const ffi::c_char,
             iface: *const ffi::c_char, method: *const ffi::c_char
+        ) -> SdResult;
+
+        pub fn sd_bus_message_new_method_return(
+            call: *mut SdMessage, out: &mut *mut SdMessage,
+        ) -> SdResult;
+
+        pub fn sd_bus_message_new_method_error(
+            call: *mut SdMessage, out: &mut *mut SdMessage, err: *const SdError,
         ) -> SdResult;
 
         pub fn sd_bus_message_ref(msg: *mut SdMessage) -> *mut SdMessage;
@@ -1644,6 +2077,7 @@ mod sys {
         pub fn sd_bus_message_get_error(msg: *mut SdMessage) -> *mut SdError;
 
         pub fn sd_bus_message_get_sender(msg: *mut SdMessage) -> *const ffi::c_char;
+        pub fn sd_bus_message_get_destination(msg: *mut SdMessage) -> *const ffi::c_char;
         pub fn sd_bus_message_get_path(msg: *mut SdMessage) -> *const ffi::c_char;
         pub fn sd_bus_message_get_interface(msg: *mut SdMessage) -> *const ffi::c_char;
         pub fn sd_bus_message_get_member(msg: *mut SdMessage) -> *const ffi::c_char;
@@ -1660,6 +2094,8 @@ mod sys {
 
         // error
 
+        pub fn sd_bus_error_set(err: &mut SdError, name: *const ffi::c_char, msg: *const ffi::c_char) -> SdResult;
+        pub fn sd_bus_error_is_set(err: &mut SdError) -> SdResult;
         pub fn sd_bus_error_free(err: *mut SdError);
 
         // slot

@@ -29,6 +29,8 @@ wayland-protocols = { version = "0.31.2", features = ["client", "staging", "unst
 wayland-protocols-wlr = { version = "0.2.0", features = ["client", "wayland-client"] }
 wayland-egl = "0.32.0"
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
+
+# other
 nix = { version = "0.28.0", features = ["signal", "fs"] }
 bitflags = { version = "2.5.0", features = ["std"] }
 bv = "0.11.1" # bitvecs
