@@ -671,7 +671,7 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
                 buf.extend_from_slice(&0u32.to_ne_bytes());
 
                 // the items
-                buf.pad_to(t.align()); // pad even if empty
+                buf.pad_to(signature_align(t)); // pad even if empty
                 let orig = buf.len();
                 for arg in items {
                     serialize_arg(arg, buf);
@@ -732,6 +732,10 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
         }
     };
 
+}
+
+fn signature_align(t: Vec<ArgKind>) -> usize {
+    t[0].align()
 }
 
 macro_rules! deserialize_int {
@@ -808,7 +812,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
                 args.push(arg);
             }
 
-            Some(Arg::Compound(CompoundArg::Array(contents, args)))
+            Some(Arg::Compound(CompoundArg::Array(contents.to_vec(), args))) // TODO: arena
             
         },
         
@@ -818,12 +822,8 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
     
 }
 
-fn unpack_arg<T: ValidArg>(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<T> {
-    T::unpack(deserialize_arg(buf, kinds)?)
-}
-
-fn unpack_simple_arg<T: ValidArg>(buf: &mut DeserializeBuf) -> Option<T> {
-    T::unpack(deserialize_arg(buf, &[T::kind()])?)
+fn unpack_arg<T: ValidArg>(buf: &mut DeserializeBuf) -> Option<T> {
+    T::unpack(deserialize_arg(buf, &T::kinds())?)
 }
 
 fn hash_signal<S: AsRef<[u8]>>(path: S, iface: S, member: S) -> u64 {
@@ -1209,24 +1209,24 @@ impl GenericMessage {
             endianess: 'l', // is overwritten with the first byte read
         };
 
-        let raw: u8 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let raw: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
         let endianess = char::from_u32(raw as u32).ok_or(ParseState::Error)?;
         buf.endianess = endianess; // correct the endianess
 
-        let raw: u8 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let raw: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
         let kind = MessageKind::from_raw(raw).ok_or(ParseState::Partial)?; // TODO: return error instead of unwrapping everywhere (whole library)
 
-        let raw: u8 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let raw: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
         let no_reply = raw & 0x1 == 1;
         let allow_interactive_auth = raw & 0x4 == 1;
 
-        let proto_version: u8 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let proto_version: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
         assert!(proto_version == 1); // TODO: dont panick but error gracefully (see above) ^^
 
-        let body_len: u32 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
-        let serial: u32 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let body_len: u32 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let serial: u32 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
         
-        let header_fields: Vec<(u8, Arg)> = unpack_arg(&mut buf, &[ArgKind::Array, ArgKind::StructBegin, ArgKind::Byte, ArgKind::Variant, ArgKind::StructEnd]).ok_or(ParseState::Partial)?;
+        let header_fields: Vec<(u8, Arg)> = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
 
         buf.consume_pad(8);
 
@@ -1606,15 +1606,15 @@ fn skind(arg: &Arg, out: &mut Vec<ArgKind>) {
             out.push(kind);
         },
         Arg::Compound(compound) => match compound {
-            CompoundArg::Array(kind, ..) => {
+            CompoundArg::Array(kinds, ..) => {
                 out.push(ArgKind::Array);
-                out.push(*kind);
+                out.extend(kinds);
             },
             CompoundArg::Map(tkey, tval, ..) => {
                 out.push(ArgKind::Array);
                 out.push(ArgKind::PairBegin);
                 out.push(*tkey);
-                out.push(*tval);
+                out.extend(tval);
                 out.push(ArgKind::PairEnd);
             },
             CompoundArg::Variant(..) => {
