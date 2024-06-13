@@ -31,7 +31,7 @@ wayland-egl = "0.32.0"
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
 
 # other
-nix = { version = "0.28.0", features = ["signal", "fs"] }
+nix = { version = "0.28.0", features = ["signal", "fs", "user"] }
 bitflags = { version = "2.5.0", features = ["std"] }
 bv = "0.11.1" # bitvecs
 
