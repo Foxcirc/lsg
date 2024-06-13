@@ -734,14 +734,82 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
 
 }
 
+macro_rules! deserialize_int {
+    ($buf:ident, $endianess:expr, $typ:ident) => {
+        {
+            let size = mem::size_of::<$typ>();
+            let bytes = $buf.consume_bytes(size)?.try_into().unwrap();
+            if $endianess == 'l' { $typ::from_le_bytes(bytes) } else if $endianess == 'B' { $typ::from_be_bytes(bytes) } else { unreachable!() }
+        }
+    };
+}
+
 fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
 
     match kinds {
 
         [ArgKind::Byte] => {
             buf.consume_pad(1);
-            let val = buf.consume_bytes(1)?[0];
+            let val = deserialize_int!(buf, buf.endianess, u8);
             Some(Arg::Simple(SimpleArg::Byte(val)))
+        },
+        
+        [ArgKind::Bool] => {
+            buf.consume_pad(4);
+            let val = deserialize_int!(buf, buf.endianess, u32);
+            Some(Arg::Simple(SimpleArg::Bool(val == 1)))
+        },
+        
+        [ArgKind::I16] => {
+            buf.consume_pad(2);
+            let val = deserialize_int!(buf, buf.endianess, i16);
+            Some(Arg::Simple(SimpleArg::I16(val)))
+        },
+        
+        [ArgKind::U16] => {
+            buf.consume_pad(2);
+            let val = deserialize_int!(buf, buf.endianess, u16);
+            Some(Arg::Simple(SimpleArg::U16(val)))
+        },
+        
+        [ArgKind::I32] => {
+            buf.consume_pad(4);
+            let val = deserialize_int!(buf, buf.endianess, i32);
+            Some(Arg::Simple(SimpleArg::I32(val)))
+        },
+        
+        [ArgKind::U32] => {
+            buf.consume_pad(4);
+            let val = deserialize_int!(buf, buf.endianess, u32);
+            Some(Arg::Simple(SimpleArg::U32(val)))
+        },
+        
+        [ArgKind::I64] => {
+            buf.consume_pad(8);
+            let val = deserialize_int!(buf, buf.endianess, i64);
+            Some(Arg::Simple(SimpleArg::I64(val)))
+        },
+        
+        [ArgKind::U64] => {
+            buf.consume_pad(8);
+            let val = deserialize_int!(buf, buf.endianess, u64);
+            Some(Arg::Simple(SimpleArg::U64(val)))
+        },
+
+        [ArgKind::Array, contents @ ..] => {
+
+            buf.consume_pad(8);
+            let len = deserialize_int!(buf, buf.endianess, u32);
+
+            let mut args = Vec::new();
+            let mut start = buf.offset;
+            while buf.offset - start < len as usize {
+                let arg = deserialize_arg(buf, contents)?;
+                args.push(arg);
+            }
+
+            Some(Arg::Compound(CompoundArg::Array(contents, args)))
+            
         },
         
         other => todo!("deserialize arg kind {:?}", other),
@@ -1138,10 +1206,12 @@ impl GenericMessage {
         let mut buf = DeserializeBuf {
             data,
             offset: 0,
+            endianess: 'l', // is overwritten with the first byte read
         };
 
         let raw: u8 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
-        let endianess = char::from_u32(raw as u32);
+        let endianess = char::from_u32(raw as u32).ok_or(ParseState::Error)?;
+        buf.endianess = endianess; // correct the endianess
 
         let raw: u8 = unpack_simple_arg(&mut buf).ok_or(ParseState::Partial)?;
         let kind = MessageKind::from_raw(raw).ok_or(ParseState::Partial)?; // TODO: return error instead of unwrapping everywhere (whole library)
@@ -1179,6 +1249,7 @@ impl GenericMessage {
 struct DeserializeBuf<'a> {
     data: &'a [u8],
     offset: usize,
+    endianess: char,
 }
 impl DeserializeBuf<'_> {
 
@@ -1209,6 +1280,7 @@ fn deserialize_buf() {
     let mut buf = DeserializeBuf {
         data,
         offset: 0,
+        endianess: 'l',
     };
 
     buf.consume_pad(8); // shouldn't consume anything
@@ -1626,8 +1698,8 @@ impl Hash for OpsOwnedFd {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CompoundArg {
-    Array(ArgKind, Vec<Arg>),
-    Map(ArgKind, ArgKind, HashMap<SimpleArg, Arg>),
+    Array(Vec<ArgKind>, Vec<Arg>),
+    Map(ArgKind , Vec<ArgKind>, HashMap<SimpleArg, Arg>),
     Variant(Box<Arg>),
     Struct(Vec<Arg>),
 }
@@ -1635,7 +1707,7 @@ pub enum CompoundArg {
 pub trait ValidArg {
     fn pack(self) -> Arg where Self: Sized;
     fn unpack(arg: Arg) -> Option<Self> where Self: Sized;
-    fn kind() -> ArgKind;
+    fn kinds() -> Vec<ArgKind>;
 }
 
 impl<'a> ValidArg for &'a str {
@@ -1645,8 +1717,8 @@ impl<'a> ValidArg for &'a str {
     fn unpack(_arg: Arg) -> Option<Self> {
         unimplemented!();
     }
-    fn kind() -> ArgKind {
-        ArgKind::String
+    fn kinds() -> Vec<ArgKind> {
+        vec![ArgKind::String]
     }
 }
 
@@ -1658,8 +1730,8 @@ impl ValidArg for String {
         if let Arg::Simple(SimpleArg::String(val)) = arg { Some(val) }
         else { None }
     }
-    fn kind() -> ArgKind {
-        ArgKind::String
+    fn kinds() -> Vec<ArgKind> {
+        vec![ArgKind::String]
     }
 }
 
@@ -1671,8 +1743,8 @@ impl ValidArg for f64 {
         if let Arg::Simple(SimpleArg::Double(val)) = arg { Some(val.inner) }
         else { None }
     }
-    fn kind() -> ArgKind {
-        ArgKind::Double
+    fn kinds() -> Vec<ArgKind> {
+        vec![ArgKind::Double]
     }
 }
 
@@ -1684,8 +1756,8 @@ impl ValidArg for OwnedFd {
         if let Arg::Simple(SimpleArg::Fd(val)) = arg { Some(val.inner) }
         else { None }
     }
-    fn kind() -> ArgKind {
-        ArgKind::UnixFd
+    fn kinds() -> Vec<ArgKind> {
+        vec![ArgKind::UnixFd]
     }
 }
 
@@ -1700,8 +1772,8 @@ macro_rules! impl_valid_arg {
                     if let Arg::Simple(SimpleArg::$name(val)) = arg { Some(val) }
                     else { None }
                 }
-                fn kind() -> ArgKind {
-                    ArgKind::$name
+                fn kinds() -> Vec<ArgKind> {
+                    vec![ArgKind::$name]
                 }
             }
         )*
@@ -1726,14 +1798,14 @@ impl ValidArg for Arg { // variadic arg, TODO: Variadic<Arg> type for less error
     fn unpack(arg: Arg) -> Option<Self> {
         Some(arg)
     }
-    fn kind() -> ArgKind {
-        ArgKind::Variant
+    fn kinds() -> Vec<ArgKind> {
+        vec![ArgKind::Variant]
     }
 }
 
 impl<T: ValidArg> ValidArg for Vec<T> {
     fn pack(self) -> Arg {
-        let kind = T::kind();
+        let kind = T::kinds();
         let contents = self.into_iter().map(T::pack).collect();
         Arg::Compound(CompoundArg::Array(kind, contents))
     }
@@ -1745,15 +1817,15 @@ impl<T: ValidArg> ValidArg for Vec<T> {
         }
         else { None }
     }
-    fn kind() -> ArgKind {
-        ArgKind::Array
+    fn kinds() -> Vec<ArgKind> { // TODO: SmallVec or Arena
+        vec![ArgKind::Array]
     }
 }
 
 impl<K: ValidArg + Eq + Hash, V: ValidArg> ValidArg for HashMap<K, V> {
     fn pack(self) -> Arg {
-        let tkey = K::kind();
-        let tval = V::kind();
+        let tkey = K::kinds()[0];
+        let tval = V::kinds();
         let map = self.into_iter().map(|(k, v)| (as_simple_arg(k.pack()), v.pack())).collect();
         Arg::Compound(CompoundArg::Map(tkey, tval, map))
     }
@@ -1768,8 +1840,8 @@ impl<K: ValidArg + Eq + Hash, V: ValidArg> ValidArg for HashMap<K, V> {
         // else { None }
         todo!("fuck fuck fuck hashmap fuck");
     }
-    fn kind() -> ArgKind {
-        ArgKind::Array
+    fn kinds() -> Vec<ArgKind> {
+        vec![ArgKind::Array]
     }
 }
 
@@ -1808,8 +1880,12 @@ macro_rules! impl_valid_arg_tuple {
                     }
                     else { None }
                 }
-                fn kind() -> ArgKind {
-                    ArgKind::Struct
+                fn kinds() -> Vec<ArgKind> {
+                    let mut result = Vec::with_capacity(6);
+                    result.push(ArgKind::StructBegin);
+                    $(result.extend($big::kinds());)*
+                    result.push(ArgKind::StructEnd);
+                    result
                 }
             }
         )*
