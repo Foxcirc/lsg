@@ -1,6 +1,6 @@
 
 use std::{
-    any::type_name, collections::{hash_map::DefaultHasher, HashMap, HashSet}, convert::Infallible, env, hash::{Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}, sync::Arc, time::Duration
+    any::type_name, collections::{hash_map::DefaultHasher, HashMap, HashSet}, convert::{identity, Infallible}, env, hash::{Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}, sync::Arc, time::Duration
 };
 
 use async_lock::Mutex as AsyncMutex;
@@ -173,14 +173,12 @@ impl Reactor {
             let readable = async {
 
                 let mut buf = [0; 1024];
-                let mut read = 1;
 
-                while read > 0 {
-                    read = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf) ) }.await?;
-                    guard.buf.extend_from_slice(&buf[..read]);
-                }
+                let bytes = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf) ) }.await?;
+                if bytes == 0 { return Err(io::Error::other("kicked by broker")) };
+                guard.buf.extend_from_slice(&buf[..bytes]);
 
-                io::Result::Ok(Either::MoreData)
+                Ok(Either::MoreData)
 
             };
 
@@ -192,7 +190,7 @@ impl Reactor {
 
             match readable.or(request).await? {
                 Either::Request(request) => process_request(&mut guard, request).await?,
-                Either::MoreData => process_incoming(&mut guard)?,
+                Either::MoreData         => process_incoming(&mut guard)?,
             }
 
         }
@@ -203,67 +201,88 @@ impl Reactor {
 
 fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> DbusResult<()> {
 
-    let result = GenericMessage::deserialize(&guard.buf);
-    if let Result::Ok((offset, msg)) = result {
+    loop {
 
-        // remove the data that was parsed
-        guard.buf.drain(..offset);
+        let result = GenericMessage::deserialize(&guard.buf);
 
-        match msg.kind {
+        match result {
 
-            MessageKind::Invalid => unreachable!(),
+            Ok((offset, mut msg)) => {
 
-            MessageKind::Error => {
-                todo!("got error msg");
-            },
+                println!("{:?}", &msg);
 
-            MessageKind::MethodReply => {
+                // remove the data that was parsed
+                guard.buf.drain(..offset);
 
-                let id = Id::Serial(msg.serial);
-                let send = guard.resps.remove(&id).unwrap();
+                match msg.kind {
 
-                let reply = MethodReply::from_generic_msg(msg);
-                send.try_send(reply).unwrap();
+                    MessageKind::Invalid => unreachable!(),
 
-            },
+                    MessageKind::Error => {
+                        todo!("got error msg");
+                    },
 
-            MessageKind::Signal => {
+                    MessageKind::MethodReply => {
 
-                let signal = SignalTrigger::from_generic_msg(msg);
-                guard.signals.try_broadcast(Arc::new(signal)).unwrap(); // wait for other tasks if full
+                        let id = Id::Serial(msg.serial);
+                        let opt = guard.resps.remove(&id);
+
+                        if let Some(sender) = opt {
+                            let reply = MethodReply::deserialize(msg);
+                            sender.try_send(reply).unwrap();
+                        }
+
+                    },
+
+                    MessageKind::Signal => {
+
+                        let signal = SignalTrigger::deserialize(msg).expect("todo: parse error 3");
+                        guard.signals.try_broadcast(Arc::new(signal)).unwrap(); // wait for other tasks if full
+
+                    }
+
+                    MessageKind::MethodCall => {
+
+                        let serial = msg.serial;
+                        let sender = mem::take(&mut msg.sender); // sender is unused after this
+
+                        let call = MethodCall::deserialize(msg).expect("todo: parse error 2");
+
+                        if let Some(service) = guard.services.get_mut(&call.dest) {
+
+                            let result = service.handle(call);
+                            let mut msg = serialize_method_call_result(result);
+
+                            msg.serial = 1; // don't care about the serial
+
+                            msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)   ));
+                            msg.fields.push(header_field(FieldCode::Dest ,       SimpleArg::String(sender)));
+
+                            todo!("send reply");
+
+                        }
+        
+                    },
+
+                }
+
+                continue
 
             }
 
-            MessageKind::MethodCall => {
-
-                let call = MethodCall::from_generic_msg(msg);
-
-                if let Some(service) = guard.services.get_mut(&call.dest) {
-
-                    let result = service.handle(call);
-                    let mut msg = result_to_generic_msg(result);
-                    // don't need to set serial because we don't care about it
-
-                    todo!("send reply");
-
-                }
-        
-            },
+            Err(ParseError::Partial) => break Ok(()), // do nothing and wait for more data
+            Err(other) => todo!("parse error: {other:?}"),
 
         }
 
-    } else if let Result::Err(ParseState::Error) = result {
-        todo!("parse error");
     }
-
-    Ok(())
-
+    
 }
 
-fn result_to_generic_msg(result: Result<MethodReply, MethodError>) -> GenericMessage {
+fn serialize_method_call_result(result: Result<MethodReply, MethodError>) -> GenericMessage {
     match result {
-        Ok(reply) => reply.to_generic_msg(),
-        Err(err) => err.to_generic_msg(),
+        Ok(reply) => reply.serialize(),
+        Err(err) => err.serialize(),
     }
 }
 
@@ -319,24 +338,25 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
             let hello = MethodCall::hello();
 
-            let mut msg = hello.to_generic_msg();
+            let mut msg = hello.serialize();
             msg.serial = 1; // any valid serial works here
             let data = msg.serialize();
 
-            println!("{data:?}");
-
             stream.write_all(&data)?;
             stream.flush()?;
+
+            // the reply will be discarded by the handler
             
-            unsafe { guard.bus.read_with_mut(|it| {
-                let mut buf = [0; 2048];
-                let offset = it.read(&mut buf)?;
-                if offset == 0 { todo!("error: got disconnected") };
-                println!("{:?}", String::from_utf8_lossy(&buf[..offset]));
-                let result = GenericMessage::deserialize(&buf[..offset]).unwrap();
-                dbg!(&result);
-                Ok(())
-            } ) }.await?;
+            // let mut buf = [0; 1024];
+            // let offset = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
+
+            // if offset == 0 { return Err(DbusError::Dbus(io::Error::other("kicked after sending `Hello`"))) }; // TODO: more ergonomic errors
+            // let (end, msg) = GenericMessage::deserialize(&buf[..offset]).expect("todo");
+            // println!("offset: {:?}\nmsg: {:?}\nrest: {:?}", offset, &msg, &buf[end..offset]);
+
+            // let (end, msg) = GenericMessage::deserialize(&buf[end + 2..offset]).expect("todo");
+            // println!("\n{:?}", msg);
+            // assert_eq!(end, offset);
 
         },
 
@@ -345,7 +365,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
             let serial = guard.serial;
             guard.serial += 1;
 
-            let mut msg = call.to_generic_msg();
+            let mut msg = call.serialize();
             msg.serial = serial;
             let data = msg.serialize();
 
@@ -364,7 +384,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
             guard.serial += 1;
             guard.resps.insert(Id::Serial(serial), send);
 
-            let mut msg = call.to_generic_msg();
+            let mut msg = call.serialize();
             msg.serial = serial;
             let data = msg.serialize();
 
@@ -588,7 +608,7 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
 
     match arg {
 
-        Arg::Empty => panic!("cannot serialize 'empty' arg"),
+        Arg::EmptyVariant => panic!("cannot serialize empty variant"),
 
         // basic kind
 
@@ -648,7 +668,9 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
                 buf.extend_from_slice(&0u32.to_ne_bytes());
 
                 // the items
-                buf.pad_to(signature_align(t)); // pad even if empty
+
+                buf.pad_to(align_from_signature(t)); // pad even if empty
+
                 let orig = buf.len();
                 for arg in items {
                     serialize_arg(arg, buf);
@@ -709,87 +731,93 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
 
 }
 
-fn signature_align(t: Vec<ArgKind>) -> usize {
+fn align_from_signature(t: Vec<ArgKind>) -> usize {
     t[0].align()
 }
 
 macro_rules! deserialize_int {
-    ($buf:ident, $endianess:expr, $typ:ident) => {
+    ($buf:ident, $typ:ident) => {
         {
             let size = mem::size_of::<$typ>();
-            let bytes = $buf.consume_bytes(size)?.try_into().unwrap();
-            if $endianess == 'l' { $typ::from_le_bytes(bytes) } else if $endianess == 'B' { $typ::from_be_bytes(bytes) } else { unreachable!() }
+            let bytes = $buf.consume_bytes(size).ok_or(ParseError::Partial)?.try_into().unwrap();
+            if $buf.endianess == 'l' {
+                $typ::from_le_bytes(bytes)
+            } else if $buf.endianess == 'B' {
+                $typ::from_be_bytes(bytes)
+            } else {
+                unreachable!("invalid endianess {:?}", $buf.endianess)
+            }
         }
     };
 }
 
 #[track_caller]
-fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
+fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, ParseError> {
     
-    let res = match kinds {
+    match kinds {
 
         [ArgKind::Byte] => {
             buf.consume_pad(1);
-            let val = deserialize_int!(buf, buf.endianess, u8);
-            Some(Arg::Simple(SimpleArg::Byte(val)))
+            let val = deserialize_int!(buf, u8);
+            Ok(Arg::Simple(SimpleArg::Byte(val)))
         },
         
         [ArgKind::Bool] => {
             buf.consume_pad(4);
-            let val = deserialize_int!(buf, buf.endianess, u32);
-            Some(Arg::Simple(SimpleArg::Bool(val == 1)))
+            let val = deserialize_int!(buf, u32);
+            Ok(Arg::Simple(SimpleArg::Bool(val == 1)))
         },
         
         [ArgKind::I16] => {
             buf.consume_pad(2);
-            let val = deserialize_int!(buf, buf.endianess, i16);
-            Some(Arg::Simple(SimpleArg::I16(val)))
+            let val = deserialize_int!(buf, i16);
+            Ok(Arg::Simple(SimpleArg::I16(val)))
         },
         
         [ArgKind::U16] => {
             buf.consume_pad(2);
-            let val = deserialize_int!(buf, buf.endianess, u16);
-            Some(Arg::Simple(SimpleArg::U16(val)))
+            let val = deserialize_int!(buf, u16);
+            Ok(Arg::Simple(SimpleArg::U16(val)))
         },
         
         [ArgKind::I32] => {
             buf.consume_pad(4);
-            let val = deserialize_int!(buf, buf.endianess, i32);
-            Some(Arg::Simple(SimpleArg::I32(val)))
+            let val = deserialize_int!(buf, i32);
+            Ok(Arg::Simple(SimpleArg::I32(val)))
         },
         
         [ArgKind::U32] => {
             buf.consume_pad(4);
-            let val = deserialize_int!(buf, buf.endianess, u32);
-            Some(Arg::Simple(SimpleArg::U32(val)))
+            let val = deserialize_int!(buf, u32);
+            Ok(Arg::Simple(SimpleArg::U32(val)))
         },
         
         [ArgKind::I64] => {
             buf.consume_pad(8);
-            let val = deserialize_int!(buf, buf.endianess, i64);
-            Some(Arg::Simple(SimpleArg::I64(val)))
+            let val = deserialize_int!(buf, i64);
+            Ok(Arg::Simple(SimpleArg::I64(val)))
         },
         
         [ArgKind::U64] => {
             buf.consume_pad(8);
-            let val = deserialize_int!(buf, buf.endianess, u64);
-            Some(Arg::Simple(SimpleArg::U64(val)))
+            let val = deserialize_int!(buf, u64);
+            Ok(Arg::Simple(SimpleArg::U64(val)))
         },
 
         [ArgKind::String | ArgKind::ObjPath] => {
-            let len: u32 = unpack_arg(buf)?;
-            let raw = buf.consume_bytes(len as usize)?; // ignores the trailing \0
-            let val = String::from_utf8(raw.to_vec()).expect("verify utf8");
-            Some(Arg::Simple(SimpleArg::String(val)))
+            let len = unpack_arg::<u32>(buf)? as usize;
+            let raw = buf.consume_bytes(len + 1).ok_or(ParseError::Partial)?; // +1 for the \0
+            let val = String::from_utf8(raw[..len].to_vec()).expect("verify utf8");
+            Ok(Arg::Simple(SimpleArg::String(val)))
         },
 
         [ArgKind::Signature] => {
-            let len: u8 = unpack_arg(buf)?;
-            let raw = buf.consume_bytes(len as usize)?; // ignores the trailing \0
-            let val = raw.into_iter()
+            let len = unpack_arg::<u8>(buf)? as usize;
+            let raw = buf.consume_bytes(len + 1).ok_or(ParseError::Partial)?; // +1 for the \0
+            let val = raw[..len].into_iter()
                 .map(|it| ArgKind::deserialize(*it).expect("verify signature"))
                 .collect();
-            Some(Arg::Simple(SimpleArg::Signature(val)))
+            Ok(Arg::Simple(SimpleArg::Signature(val)))
         },
 
         [ArgKind::Array, ArgKind::PairBegin, contents @ .., ArgKind::PairEnd] => {
@@ -797,7 +825,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
             let mut iter = iter_complete_types(contents);
 
             let tkey = iter.next().expect("get first element of dict entry");
-            let tval = iter.next().expect("get first element of dict entry");
+            let tval = iter.next().expect("get second element of dict entry");
             assert_eq!(tval.len(), 1); // key type must not be a container
             assert_eq!(iter.next(), None); // should only contain 2 complete types
 
@@ -819,7 +847,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
 
             }
 
-            Some(Arg::Compound(CompoundArg::Map(tkey[0], tval, map)))
+            Ok(Arg::Compound(CompoundArg::Map(tkey[0], tval, map)))
             
         },
 
@@ -834,7 +862,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
                 args.push(arg);
             }
 
-            Some(Arg::Compound(CompoundArg::Array(contents.to_vec(), args))) // TODO: arena
+            Ok(Arg::Compound(CompoundArg::Array(contents.to_vec(), args))) // TODO: arena
             
         },
 
@@ -850,7 +878,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
                 args.push(arg);
             }
 
-            Some(Arg::Compound(CompoundArg::Struct(args)))
+            Ok(Arg::Compound(CompoundArg::Struct(args)))
             
         },
 
@@ -858,21 +886,22 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Option<Arg> {
 
             let Signature(kinds) = unpack_arg(buf)?;
 
-            let arg = if kinds.len() > 0 {
-                deserialize_arg(buf, &kinds)? // read the actual value
+            if kinds.len() > 0 {
+                let arg = deserialize_arg(buf, &kinds)?; // read the actual value
+                Ok(Arg::Compound(CompoundArg::Variant(Box::new(arg))))
             } else {
-                Arg::Empty
-            };
+                // an "empty" variant which really shouldn't be allowed
+                // this variant doesn't even have a signature so we can't produce
+                // a default value here
+                Ok(Arg::EmptyVariant)
+            }
            
-            Some(Arg::Compound(CompoundArg::Variant(Box::new(arg))))
             
         },
         
         other => panic!("cannot deserialize signature {:?}", other),
         
-    };
-
-    res
+    }
     
 }
 
@@ -898,33 +927,27 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Vec<
                 State::OneMore => match kind {
 
                     // simple kinds
-                    ArgKind::Byte      => break,
-                    ArgKind::Bool      => break,
-                    ArgKind::I16       => break,
-                    ArgKind::U16       => break,
-                    ArgKind::I32       => break,
-                    ArgKind::U32       => break,
-                    ArgKind::I64       => break,
-                    ArgKind::U64       => break,
-                    ArgKind::Double    => break,
-                    ArgKind::String    => break,
-                    ArgKind::ObjPath   => break,
-                    ArgKind::Signature => break,
-                    ArgKind::UnixFd    => break,
-                    ArgKind::Variant   => break,
+                    ArgKind::Byte | ArgKind::Bool |
+                    ArgKind::I16 | ArgKind::U16 |
+                    ArgKind::I32 | ArgKind::U32 |
+                    ArgKind::I64 | ArgKind::U64 |
+                    ArgKind::Double |
+                    ArgKind::String | ArgKind::ObjPath | ArgKind::Signature |
+                    ArgKind::UnixFd |
+                    ArgKind::Variant => break, // this one kind already represents a complete type
 
                     // array
                     ArgKind::Array => continue, // parse one more complete type
 
                     // structs
-                    ArgKind::StructBegin => state = State::Struct,
+                    ArgKind::StructBegin => state = State::Struct, // wait until StructEnd
                     ArgKind::StructEnd   => unreachable!(),
 
-                    ArgKind::PairBegin => state = State::Struct,
+                    ArgKind::PairBegin => state = State::Struct, // wait until PairEnd
                     ArgKind::PairEnd   => unreachable!(),
 
-                    ArgKind::Pair   => panic!(),
-                    ArgKind::Struct => panic!(),
+                    ArgKind::Pair   => panic!(), // shouldn't be in a type signature
+                    ArgKind::Struct => panic!(), // shouldn't be in a type signature
 
                 },
 
@@ -945,8 +968,8 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Vec<
 }
 
 #[track_caller]
-fn unpack_arg<T: ValidArg>(buf: &mut DeserializeBuf) -> Option<T> {
-    T::unpack(deserialize_arg(buf, &T::kinds())?)
+fn unpack_arg<T: ValidArg>(buf: &mut DeserializeBuf) -> Result<T, ParseError> {
+    T::unpack(deserialize_arg(buf, &T::kinds())?).ok_or(ParseError::InvalidData)
 }
 
 fn hash_signal<S: AsRef<[u8]>>(path: S, iface: S, member: S) -> u64 {
@@ -1045,11 +1068,11 @@ impl Iface {
 
 #[derive(Debug)] // TODO: derive debug for everything
 pub struct MethodCall {
-    dest: String, // todo: arena :(
-    path: String,
-    iface: String,
-    member: String,
-    args: Vec<Arg>,
+    pub dest: String, // todo: arena :(
+    pub path: String,
+    pub iface: String,
+    pub member: String,
+    pub args: Vec<Arg>,
 }
 
 impl MethodCall {
@@ -1070,7 +1093,7 @@ impl MethodCall {
         self.args.push(input.pack());
     }
 
-    pub(self) fn to_generic_msg(self) -> GenericMessage {
+    pub(self) fn serialize(self) -> GenericMessage {
 
         let mut msg = GenericMessage::default();
 
@@ -1086,8 +1109,16 @@ impl MethodCall {
 
     }
 
-    fn from_generic_msg(msg: GenericMessage) -> Self {
-        todo!("deseal Methdod Call")
+    fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
+
+        Ok(Self {
+            dest: msg.take_field(FieldCode::Dest).ok_or(ParseError::InvalidData)?,
+            path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
+            iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
+            member: msg.take_field(FieldCode::Member).ok_or(ParseError::InvalidData)?,
+            args: msg.args
+        })
+        
     }
 
     pub fn hello() -> Self {
@@ -1151,16 +1182,32 @@ impl MethodReply {
         T::unpack(arg).ok_or(ArgError::InvalidType)
     }
 
-    fn from_generic_msg(msg: GenericMessage) -> MethodReply {
-        todo!("reply from generic msg")
+    pub(self) fn serialize(self) -> GenericMessage {
+
+        let mut msg = GenericMessage::default();
+
+        msg.kind = MessageKind::MethodReply;
+        msg.args = self.args.into_iter()
+            .filter_map(identity)
+            .collect();
+
+        // dest etc. added later
+
+        msg
+
     }
 
-    pub(self) fn to_generic_msg(&self) -> GenericMessage {
-        todo!("reply to generic msg")
+    fn deserialize(msg: GenericMessage) -> Self {
+
+        Self {
+            args: msg.args.into_iter().map(Some).collect()
+        }
+        
     }
     
 }
 
+#[derive(Debug)]
 pub struct SignalTrigger {
     path: String, // todo: arena
     iface: String,
@@ -1200,8 +1247,15 @@ impl SignalTrigger {
         T::unpack(arg).ok_or(ArgError::InvalidType)
     }
 
-    fn from_generic_msg(msg: GenericMessage) -> SignalTrigger {
-        todo!("signal trigger from generic msg");
+fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
+
+        Ok(Self {
+            path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
+            iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
+            member: msg.take_field(FieldCode::Member).ok_or(ParseError::InvalidData)?,
+            args: msg.args.into_iter().map(Some).collect()
+        })
+        
     }
     
 }
@@ -1243,6 +1297,7 @@ impl MessageKind {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum FieldCode {
     Invalid      = 0,
@@ -1263,7 +1318,8 @@ pub struct GenericMessage {
     pub no_reply: bool,
     pub allow_interactive_auth: bool,
     pub kind: MessageKind,
-    pub fields: Vec<(u8, Arg)>, // header fields
+    pub fields: Vec<(u8, Variant)>, // header fields
+    pub sender: String,
     pub args: Vec<Arg>, // message body
 }
 
@@ -1325,7 +1381,7 @@ impl GenericMessage {
 
     }
 
-    pub fn deserialize(data: &[u8]) -> Result<(usize, GenericMessage), ParseState> {
+    pub fn deserialize(data: &[u8]) -> Result<(usize, GenericMessage), ParseError> {
 
         let mut buf = DeserializeBuf {
             data,
@@ -1333,43 +1389,48 @@ impl GenericMessage {
             endianess: 'l', // is overwritten with the first byte read
         };
 
-        let raw: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
-        let endianess = char::from_u32(raw as u32).ok_or(ParseState::Error)?;
+        let raw: u8 = unpack_arg(&mut buf)?;
+        let endianess = char::from_u32(raw as u32).ok_or(ParseError::InvalidData)?;
         buf.endianess = endianess; // correct the endianess
 
-        let raw: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
-        let kind = MessageKind::from_raw(raw).ok_or(ParseState::Partial)?; // TODO: return error instead of panicking everywhere (whole library)
+        let raw: u8 = unpack_arg(&mut buf)?;
+        let kind = MessageKind::from_raw(raw).ok_or(ParseError::Partial)?;
 
-        let raw: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let raw: u8 = unpack_arg(&mut buf)?;
         let no_reply = raw & 0x1 == 1;
         let allow_interactive_auth = raw & 0x4 == 1;
 
-        let proto_version: u8 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
-        assert!(proto_version == 1); // TODO: dont panick but error gracefully (see above) ^^
+        let proto_version: u8 = unpack_arg(&mut buf)?;
+        assert!(proto_version == 1);
+        if proto_version != 1 { return Err(ParseError::Protocol) };
 
-        let body_len: u32 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
-        let serial: u32 = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let body_len: u32 = unpack_arg(&mut buf)?;
+        let serial: u32 = unpack_arg(&mut buf)?;
 
         if buf.data.len() - buf.offset < body_len as usize {
             // no need to do more parsing, we haven't got enough data anyways
-            return Err(ParseState::Partial);
+            return Err(ParseError::Partial);
         }
         
-        let mut header_fields: Vec<(u8, Arg)> = unpack_arg(&mut buf).ok_or(ParseState::Partial)?;
+        let mut header_fields: Vec<(u8, Variant)> = unpack_arg(&mut buf)?;
 
+        let Signature(signature) = take_field(&mut header_fields, FieldCode::Signature)
+            .unwrap_or_default();
+        
+        let sender: String = take_field(&mut header_fields, FieldCode::Sender)
+            .unwrap_or_default();
+        
         buf.consume_pad(8);
 
-        let Signature(signature) = header_fields.iter()
-            .position(|(kind, ..)| *kind == 8)
-            .map(|idx| header_fields.swap_remove(idx))
-            .and_then(|(.., val)| Signature::unpack(val))
-            .ok_or(ParseState::Error)?;
-
+        let before_body = buf.offset;
         let mut args = Vec::with_capacity(2);
         for kinds in iter_complete_types(&signature) {
-            let arg = deserialize_arg(&mut buf, &kinds).ok_or(ParseState::Partial)?;
+            let arg = deserialize_arg(&mut buf, &kinds)?;
             args.push(arg);
         }
+
+        // assure we have read the right amount of args
+        debug_assert_eq!(buf.offset - body_len as usize, before_body);
 
         Ok((
             buf.offset,
@@ -1379,12 +1440,26 @@ impl GenericMessage {
                 allow_interactive_auth,
                 kind,
                 fields: header_fields,
+                sender,
                 args,
             }
         ))
 
     }
 
+    fn take_field<T: ValidArg>(&mut self, target: FieldCode) -> Option<T> {
+        take_field(&mut self.fields, target)
+    }
+
+}
+
+fn take_field<T: ValidArg>(fields: &mut Vec<(u8, Variant)>, target: FieldCode) -> Option<T> {
+    fields.iter()
+        .position(|(code, ..)| *code == target as u8)
+        .and_then(|idx| {
+            let (.., variant) = fields.swap_remove(idx);
+            T::unpack(variant.get()?)
+        })
 }
 
 struct DeserializeBuf<'a> {
@@ -1394,13 +1469,11 @@ struct DeserializeBuf<'a> {
 }
 impl DeserializeBuf<'_> {
 
-    #[track_caller]
-    fn consume_pad(&mut self, padding: usize) {
+    fn consume_pad(&mut self, padding: usize) -> Option<()> {
         let needed = (padding - self.offset % padding) % padding;
-        self.consume_bytes(needed);
+        self.consume_bytes(needed).map(drop)
     }
 
-    #[track_caller]
     fn consume_bytes(&mut self, len: usize) -> Option<&[u8]> {
         if len <= self.data.len() {
             let (bytes, rest) = self.data.split_at(len); // TODO: replace with split_at_checked when it becomes stabilzed
@@ -1469,8 +1542,8 @@ fn deserialize_buf() {
     //     T::unpack(arg).ok_or(ArgError::InvalidType)
     // }
 
-fn header_field(code: FieldCode, arg: SimpleArg) -> (u8, Arg) {
-    (code as u8, Arg::Simple(arg))
+fn header_field(code: FieldCode, arg: SimpleArg) -> (u8, Variant) {
+    (code as u8, Variant::new(Arg::Simple(arg)))
 }
 
 // fn darg(msg: *mut sys::SdMessage, kind: sys::SdBasicKind, contents: *const sys::SdBasicKind) -> ParseResult {
@@ -1741,7 +1814,7 @@ pub enum ArgError {
 pub enum Arg {
     Simple(SimpleArg),
     Compound(CompoundArg),
-    Empty,
+    EmptyVariant,
 }
 
 impl Arg {
@@ -1760,7 +1833,7 @@ impl Arg {
 
 fn skind(arg: &Arg, out: &mut Vec<ArgKind>) { // TODO: think about the relation of this and "ValidArg::kinds"
     match arg {
-        Arg::Empty => panic!("cannot serialize kind of empty arg"),
+        Arg::EmptyVariant => panic!("cannot serialize empty variant"),
         Arg::Simple(simple) => {
             let kind = match simple {
                 SimpleArg::Byte(..)   => ArgKind::Byte,
@@ -1909,11 +1982,13 @@ impl ValidArg for String {
     }
 }
 
-struct Signature(Vec<ArgKind>);
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Signature(pub Vec<ArgKind>);
 
 impl ValidArg for Signature {
     fn pack(self) -> Arg {
-        Arg::Simple(SimpleArg::Signature(self.0))
+        let Self(val) = self;
+        Arg::Simple(SimpleArg::Signature(val))
     }
     fn unpack(arg: Arg) -> Option<Self> {
         if let Arg::Simple(SimpleArg::Signature(val)) = arg { Some(Self(val)) }
@@ -1980,12 +2055,46 @@ impl_valid_arg!(
     (U64: u64),
 );
 
-impl ValidArg for Arg { // variadic arg, TODO: Variadic<Arg> type for less errors
+#[derive(Debug, PartialEq, Eq)]
+pub struct Variant {
+    inner: Option<Arg>,
+}
+
+impl Variant {
+
+    pub fn new(arg: Arg) -> Self {
+        Self { inner: Some(arg) }
+    }
+
+    pub fn new_empty() -> Self {
+        Self { inner: None }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_none()
+    }
+
+    #[track_caller]
+    pub fn get(self) -> Option<Arg> {
+        self.inner
+    }
+
+    #[track_caller]
+    pub fn arg(self) -> Arg {
+        self.inner.expect("variant was empty but expected a value")
+    }
+
+}
+
+impl ValidArg for Variant {
     fn pack(self) -> Arg {
-        Arg::Compound(CompoundArg::Variant(Box::new(self))) // TODO: arenaaaaa
+        let val = self.get().expect("cannot serialize empty variant");
+        Arg::Compound(CompoundArg::Variant(Box::new(val))) // TODO: arenaaaaa
     }
     fn unpack(arg: Arg) -> Option<Self> {
-        Some(arg)
+        if let Arg::Compound(CompoundArg::Variant(val)) = arg { Some(Self::new(*val)) }
+        else if let Arg::EmptyVariant = arg { Some(Self::new_empty()) }
+        else { None }
     }
     fn kinds() -> Vec<ArgKind> {
         vec![ArgKind::Variant]
@@ -2099,9 +2208,27 @@ fn as_simple_arg(arg: Arg) -> SimpleArg {
 }
 
 #[derive(Debug)]
-pub enum ParseState {
+pub enum ParseError {
+    // TODO: "Partial": this is an internal state
+    /// this error will never appear in the public interface,
+    /// it is used to signal that a message is incomplete right now
     Partial,
-    Error,
+    /// a `variant` type contained an empty signature and no data,
+    /// you should probably replace this with a default value.
+    /// see [`catch_empty_variant`]
+    EmptyVariant,
+    /// invalid data was received
+    InvalidData,
+    /// fatal protocol error, e.g. version mismatch
+    Protocol,
+}
+
+pub fn catch_empty_variant<T>(result: Result<T, ParseError>) -> Result<Option<T>, ParseError> {
+    match result {
+        Ok(val) => Ok(Some(val)),
+        Err(ParseError::EmptyVariant) => Ok(None),
+        Err(other) => Err(other),
+    }
 }
 
 #[derive(Debug)]
@@ -2137,14 +2264,15 @@ impl MethodError {
         Self { name: name.to_string(), msg: msg.to_string() } // TODO: arena
     }
 
-    pub fn to_generic_msg(self) -> GenericMessage {
+    pub fn serialize(self) -> GenericMessage {
 
         let mut msg = GenericMessage::default();
 
         msg.kind = MessageKind::Error;
-
         msg.fields.push(header_field(FieldCode::ErrName, SimpleArg::String(self.name)));
         msg.args.push(Arg::Simple(SimpleArg::String(self.msg)));
+
+        // dest etc. added later
 
         msg
         
@@ -2201,12 +2329,12 @@ impl NotifyProxy {
 
         call.arg(actions); // actions
 
-        let mut hints: HashMap<&str, Arg> = HashMap::new();
+        let mut hints: HashMap<&str, Variant> = HashMap::new();
         if let Some(urgency) = notif.urgency {
-            hints.insert("urgency", Arg::Simple(SimpleArg::Byte(urgency.num())));
+            hints.insert("urgency", Variant::new(Arg::Simple(SimpleArg::Byte(urgency.num()))));
         }
         if let Some(category) = notif.category {
-            hints.insert("category", Arg::Simple(SimpleArg::String(category.name().to_string())));
+            hints.insert("category", Variant::new(Arg::Simple(SimpleArg::String(category.name().to_string()))));
         }
 
         call.arg(hints); // hints
