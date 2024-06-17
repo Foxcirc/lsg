@@ -43,7 +43,7 @@
 [ ] "platform" window support on egl >= 1.5
 [ ] better errors
 [ ] pbuffer from clientbuffer?
-[x] pixmaps
+[x] pixmaps (or pbuffers?)
 
 # Platforms that will be supported
 [x] Linux (Wayland only)
