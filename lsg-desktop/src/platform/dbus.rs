@@ -20,26 +20,16 @@ fn call() {
     
         let con = Connection::new().unwrap();
 
-        // let call = MethodCall::new(
-        //      "org.freedesktop.DBus",
-        //      "/org/freedesktop/DBus",
-        //      "org.freedesktop.DBus.Debug.Stats",
-        //      "GetStats",
-        // );
+        let call = MethodCall::new(
+             "org.freedesktop.DBus",
+             "/org/freedesktop/DBus",
+             "org.freedesktop.DBus.Debug.Stats",
+             "GetStats",
+        );
         
-        // let _resp = con.send(call).await.unwrap();
-        //   ^^^^ parsing this is enough (maps, variants, etc. covered)
+        let _resp = con.send(call).await.unwrap();
+          // ^^^^ parsing this is enough (maps, variants, etc. covered)
 
-        con.reactor.run().await.unwrap();
-
-        // println!("{:?}", resp.args);
-
-        // let text: &str = resp.arg(0);
-        // let text: &str = resp.arg(1);
-        // println!("{}", text);
-
-        // dbg!(&resp.args);
-        
     })
     
 }
@@ -686,6 +676,8 @@ pub struct MethodCall {
     pub path: String,
     pub iface: String,
     pub member: String,
+    pub no_reply: bool,
+    pub allow_interactive_auth: bool,
     pub args: Vec<Arg>,
 }
 
@@ -698,6 +690,8 @@ impl MethodCall {
             path: path.to_string(),
             iface: iface.to_string(),
             member: member.to_string(),
+            no_reply: false,
+            allow_interactive_auth: true,
             args: Vec::new(),
         }
 
@@ -730,6 +724,8 @@ impl MethodCall {
             path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
             iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
             member: msg.take_field(FieldCode::Member).ok_or(ParseError::InvalidData)?,
+            no_reply: msg.no_reply,
+            allow_interactive_auth: msg.allow_interactive_auth,
             args: msg.args
         })
         
@@ -805,7 +801,7 @@ impl MethodReply {
             .filter_map(identity)
             .collect();
 
-        // dest etc. added later
+        // dest etc. added later inside `process_incoming`
 
         msg
 
@@ -1292,7 +1288,6 @@ macro_rules! deserialize_int {
     };
 }
 
-#[track_caller]
 fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, ParseError> {
     
     match kinds {
@@ -1367,8 +1362,10 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
 
             let CompleteKind(key_kinds) = iter.next().expect("get first element of dict entry");
             let CompleteKind(val_kinds) = iter.next().expect("get second element of dict entry");
-            assert_eq!(val_kinds.len(), 1); // key type must not be a container
+            assert_eq!(key_kinds.len(), 1, "map key type was a container: {:?}", val_kinds);
             assert_eq!(iter.next(), None); // should only contain 2 complete types
+
+            // dbg!(&key_kinds, &val_kinds);
 
             let len: u32 = unpack_arg(buf)?;
 
@@ -1451,13 +1448,15 @@ struct CompleteKind(pub Vec<ArgKind>);
 
 fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = CompleteKind> + 'd {
 
+    // TODO: unit test this, because it doesn't use nesting and really isn't robust
+
     let mut outer = contents.iter();
 
     iter::from_fn(move || {
 
         enum State {
             OneMore,
-            Struct,
+            Struct(usize /* depth */),
         }
 
         let mut kinds = Vec::with_capacity(2);
@@ -1484,10 +1483,10 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Comp
                     ArgKind::Array => continue, // parse one more complete type
 
                     // structs
-                    ArgKind::StructBegin => state = State::Struct, // wait until StructEnd
+                    ArgKind::StructBegin => state = State::Struct(1), // wait until StructEnd
                     ArgKind::StructEnd   => unreachable!(),
 
-                    ArgKind::PairBegin => state = State::Struct, // wait until PairEnd
+                    ArgKind::PairBegin => state = State::Struct(1), // wait until PairEnd
                     ArgKind::PairEnd   => unreachable!(),
 
                     ArgKind::Pair   => panic!(), // shouldn't be in a type signature
@@ -1495,8 +1494,11 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Comp
 
                 },
 
-                State::Struct => if *kind == ArgKind::StructEnd ||
-                                    *kind == ArgKind::PairEnd { break }
+                State::Struct(ref mut n) => {
+                    if let      ArgKind::StructBegin | ArgKind::PairBegin = kind { *n += 1 }
+                    else if let ArgKind::StructEnd   | ArgKind::PairEnd   = kind { *n -= 1 }
+                    if *n == 0 { break }
+                }
 
             }
 
@@ -1511,7 +1513,6 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Comp
 
 }
 
-#[track_caller]
 fn unpack_arg<T: ValidArg>(buf: &mut DeserializeBuf) -> Result<T, ParseError> {
     T::unpack(deserialize_arg(buf, &T::kinds())?).ok_or(ParseError::InvalidData)
 }
