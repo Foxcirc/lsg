@@ -346,17 +346,6 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
             stream.flush()?;
 
             // the reply will be discarded by the handler
-            
-            // let mut buf = [0; 1024];
-            // let offset = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
-
-            // if offset == 0 { return Err(DbusError::Dbus(io::Error::other("kicked after sending `Hello`"))) }; // TODO: more ergonomic errors
-            // let (end, msg) = GenericMessage::deserialize(&buf[..offset]).expect("todo");
-            // println!("offset: {:?}\nmsg: {:?}\nrest: {:?}", offset, &msg, &buf[end..offset]);
-
-            // let (end, msg) = GenericMessage::deserialize(&buf[end + 2..offset]).expect("todo");
-            // println!("\n{:?}", msg);
-            // assert_eq!(end, offset);
 
         },
 
@@ -376,10 +365,6 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
         ClientMessage::MethodCall(send, call) => {
 
-            // TODO: this would be cool:
-            // store senders in an arena that is reset (but not reallocated) everytime there are no more active senders left
-            // then just use these pointers as the serial, no need for a hashmap anymore
-            
             let serial = guard.serial;
             guard.serial += 1;
             guard.resps.insert(Id::Serial(serial), send);
@@ -445,11 +430,6 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
     
 }
 
-// TODO: implement Send + Sync for some types.
-//     NOT IMPLEMENT FOR
-// -> DbusResponse, since cloning it calls sd_bus_message_ref wich is not threadsafe
-//    if we parse the response and copy the data instantly into an arena, this could be threadsafe tho
-
 #[derive(Clone)]
 pub struct Connection {
     reactor: Arc<Reactor>,
@@ -463,9 +443,6 @@ enum Id {
     Serial(u32),
     SignalHash(u64)
 }
-
-// unsafe impl Send for DbusConnection {}
-// unsafe impl Sync for DbusConnection {} TODO:
 
 impl Connection {
 
@@ -824,9 +801,9 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
 
             let mut iter = iter_complete_types(contents);
 
-            let tkey = iter.next().expect("get first element of dict entry");
-            let tval = iter.next().expect("get second element of dict entry");
-            assert_eq!(tval.len(), 1); // key type must not be a container
+            let CompleteKind(key_kinds) = iter.next().expect("get first element of dict entry");
+            let CompleteKind(val_kinds) = iter.next().expect("get second element of dict entry");
+            assert_eq!(val_kinds.len(), 1); // key type must not be a container
             assert_eq!(iter.next(), None); // should only contain 2 complete types
 
             let len: u32 = unpack_arg(buf)?;
@@ -838,8 +815,8 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
 
                 buf.consume_pad(8); // dict entries are always 8-byte padded
 
-                let key = deserialize_arg(buf, &tkey)?;
-                let val = deserialize_arg(buf, &tval)?;
+                let key = deserialize_arg(buf, &key_kinds)?;
+                let val = deserialize_arg(buf, &val_kinds)?;
 
                 let Arg::Simple(skey) = key else { panic!("a map key must not be a container") };
 
@@ -847,7 +824,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
 
             }
 
-            Ok(Arg::Compound(CompoundArg::Map(tkey[0], tval, map)))
+            Ok(Arg::Compound(CompoundArg::Map(key_kinds[0], val_kinds, map)))
             
         },
 
@@ -873,7 +850,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
             buf.consume_pad(8);
 
             let mut args = Vec::new();
-            for kinds in iter_complete_types(contents) {
+            for CompleteKind(kinds) in iter_complete_types(contents) {
                 let arg = deserialize_arg(buf, &kinds)?;
                 args.push(arg);
             }
@@ -905,7 +882,10 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
     
 }
 
-fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Vec<ArgKind>> + 'd { // TODO return some newtype CompleteKind, to prevent dumb errors
+#[derive(Debug, PartialEq, Eq)]
+struct CompleteKind(pub Vec<ArgKind>);
+
+fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = CompleteKind> + 'd {
 
     let mut outer = contents.iter();
 
@@ -961,7 +941,7 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Vec<
         if kinds.is_empty() {
             None
         } else {
-            Some(kinds)
+            Some(CompleteKind(kinds))
         }
     })
 
@@ -1424,7 +1404,7 @@ impl GenericMessage {
 
         let before_body = buf.offset;
         let mut args = Vec::with_capacity(2);
-        for kinds in iter_complete_types(&signature) {
+        for CompleteKind(kinds) in iter_complete_types(&signature) {
             let arg = deserialize_arg(&mut buf, &kinds)?;
             args.push(arg);
         }
