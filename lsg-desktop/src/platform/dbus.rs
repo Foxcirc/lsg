@@ -1,6 +1,13 @@
 
 use std::{
-    any::type_name, collections::{hash_map::DefaultHasher, HashMap, HashSet}, convert::{identity, Infallible}, env, hash::{Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}, sync::Arc, time::Duration
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    convert::{identity, Infallible},
+    env, mem, iter,
+    sync::Arc,
+    time::Duration,
+    hash::{Hash, Hasher},
+    io::{self, Read, Write},
+    os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream},
 };
 
 use async_lock::Mutex as AsyncMutex;
@@ -209,8 +216,6 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> DbusResu
 
             Ok((offset, mut msg)) => {
 
-                println!("{:?}", &msg);
-
                 // remove the data that was parsed
                 guard.buf.drain(..offset);
 
@@ -219,7 +224,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> DbusResu
                     MessageKind::Invalid => unreachable!(),
 
                     MessageKind::Error => {
-                        todo!("got error msg");
+                        todo!("got an error reply");
                     },
 
                     MessageKind::MethodReply => {
@@ -936,7 +941,9 @@ impl GenericMessage {
 
     pub fn serialize(mut self) -> Vec<u8> {
 
-        let mut buf = Vec::with_capacity(1024);
+        let mut buf = SerializeBuf {
+            data: Vec::with_capacity(1024)
+        };
 
         // ### header ###
         
@@ -954,7 +961,7 @@ impl GenericMessage {
         serialize_arg(1u8.pack(), &mut buf);
 
         // body length, filled in later
-        let idx = buf.len();
+        let idx = buf.data.len();
         serialize_arg(0u32.pack(), &mut buf);
 
         // unique serial
@@ -974,19 +981,19 @@ impl GenericMessage {
 
         // ### body ###
 
-        buf.pad_to(8); // body must be 8-byte aligned
+        buf.insert_pad(8); // body must be 8-byte aligned
 
-        let orig = buf.len();
+        let orig = buf.data.len();
 
         for arg in self.args {
             serialize_arg(arg, &mut buf);
         }
 
         // update the body len
-        let size = buf.len() - orig;
-        buf.splice(idx..idx + 4, (size as u32).to_ne_bytes());
+        let size = buf.data.len() - orig;
+        buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
 
-        buf
+        buf.data
 
     }
 
@@ -1071,11 +1078,23 @@ fn take_field<T: ValidArg>(fields: &mut Vec<(u8, Variant)>, target: FieldCode) -
         })
 }
 
+struct SerializeBuf {
+    data: Vec<u8>,
+}
+
+impl SerializeBuf {
+    pub fn insert_pad(&mut self, padding: usize) {
+        let needed = (padding - self.data.len() % padding) % padding;
+        self.data.resize(self.data.len() + needed, 0);
+    }
+}
+
 struct DeserializeBuf<'a> {
     data: &'a [u8],
     offset: usize,
     endianess: char,
 }
+
 impl DeserializeBuf<'_> {
 
     fn consume_pad(&mut self, padding: usize) -> Option<()> {
@@ -1126,11 +1145,9 @@ fn header_field(code: FieldCode, arg: SimpleArg) -> (u8, Variant) {
 
 // #### type system ####
 
-fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
+fn serialize_arg(arg: Arg, buf: &mut SerializeBuf) {
 
     match arg {
-
-        Arg::EmptyVariant => panic!("cannot serialize empty variant"),
 
         // basic kind
 
@@ -1139,38 +1156,38 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
             match simple {
 
                 // numbers
-                SimpleArg::Byte(val)   => { buf.pad_to(1); buf.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::I16(val)    => { buf.pad_to(2); buf.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::U16(val)    => { buf.pad_to(2); buf.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::I32(val)    => { buf.pad_to(4); buf.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::U32(val)    => { buf.pad_to(4); buf.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::I64(val)    => { buf.pad_to(8); buf.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::U64(val)    => { buf.pad_to(8); buf.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::Double(val) => { buf.pad_to(8); buf.extend_from_slice(&val.inner.to_ne_bytes()) },
+                SimpleArg::Byte(val)   => { buf.insert_pad(1); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                SimpleArg::I16(val)    => { buf.insert_pad(2); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                SimpleArg::U16(val)    => { buf.insert_pad(2); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                SimpleArg::I32(val)    => { buf.insert_pad(4); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                SimpleArg::U32(val)    => { buf.insert_pad(4); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                SimpleArg::I64(val)    => { buf.insert_pad(8); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                SimpleArg::U64(val)    => { buf.insert_pad(8); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                SimpleArg::Double(val) => { buf.insert_pad(8); buf.data.extend_from_slice(&val.inner.to_ne_bytes()) },
 
                 // other
-                SimpleArg::Bool(val) => { buf.pad_to(4); buf.extend_from_slice(&(val as i32).to_ne_bytes()) },
+                SimpleArg::Bool(val) => { buf.insert_pad(4); buf.data.extend_from_slice(&(val as i32).to_ne_bytes()) },
                 SimpleArg::Fd(val) => {
-                    buf.pad_to(4);
-                    buf.extend_from_slice(&val.inner.as_raw_fd().to_ne_bytes());
+                    buf.insert_pad(4);
+                    buf.data.extend_from_slice(&val.inner.as_raw_fd().to_ne_bytes());
                     mem::forget(val); // don't `drop` the OwnedFd since we transfer ownership here
                 },
 
                 SimpleArg::String(val) | SimpleArg::ObjPath(val) => {
                     // the length of the string, in bytes (u32)
-                    buf.pad_to(4);
-                    buf.extend_from_slice(&(val.len() as u32).to_ne_bytes());
+                    buf.insert_pad(4);
+                    buf.data.extend_from_slice(&(val.len() as u32).to_ne_bytes());
                     // the data
-                    buf.extend_from_slice(val.as_bytes());
-                    buf.extend_from_slice(&[0]); // zero-terminated
+                    buf.data.extend_from_slice(val.as_bytes());
+                    buf.data.extend_from_slice(&[0]); // zero-terminated
                 },
 
                 SimpleArg::Signature(val) => {
                     // the length of the string, in bytes (u8)
-                    buf.extend_from_slice(&(val.len() as u8).to_ne_bytes());
+                    buf.data.extend_from_slice(&(val.len() as u8).to_ne_bytes());
                     // the data
-                    buf.extend(val.iter().map(|it| *it as u8));
-                    buf.extend_from_slice(&[0]); // zero-terminated
+                    buf.data.extend(val.iter().map(|it| *it as u8));
+                    buf.data.extend_from_slice(&[0]); // zero-terminated
                 }
 
             };
@@ -1185,46 +1202,46 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
 
                 // the length of the array, in bytes (u32)
                 // this is a dummy value which is replaced later
-                buf.pad_to(4);
-                let idx = buf.len();
-                buf.extend_from_slice(&0u32.to_ne_bytes());
+                buf.insert_pad(4);
+                let idx = buf.data.len();
+                buf.data.extend_from_slice(&0u32.to_ne_bytes());
 
                 // the items
 
-                buf.pad_to(align_from_signature(t)); // pad even if empty
+                buf.insert_pad(align_from_signature(t)); // pad even if empty
 
-                let orig = buf.len();
+                let orig = buf.data.len();
                 for arg in items {
                     serialize_arg(arg, buf);
                 }
 
                 // update the size
-                let size = buf.len() - orig;
+                let size = buf.data.len() - orig;
                 assert!(size < (2usize.pow(26)), "array length too long for dbus ({} bytes)", size);
-                buf.splice(idx..idx + 4, (size as u32).to_ne_bytes());
+                buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
 
             },
 
             CompoundArg::Map(.., map) => {
 
                // the length of the map, in bytes (u32)
-                buf.pad_to(4);
-                let idx = buf.len();
-                buf.extend_from_slice(&(map.len() as u32).to_ne_bytes());
+                buf.insert_pad(4);
+                let idx = buf.data.len();
+                buf.data.extend_from_slice(&(map.len() as u32).to_ne_bytes());
 
-                buf.pad_to(8); // pad even if the map is empty
-                let orig = buf.len();
+                buf.insert_pad(8); // pad even if the map is empty
+                let orig = buf.data.len();
 
                 // the items
                 for (key, val) in map {
-                    buf.pad_to(8);
+                    buf.insert_pad(8);
                     serialize_arg(Arg::Simple(key), buf);
                     serialize_arg(val, buf);
                 }
                 
-                let size = buf.len() - orig;
+                let size = buf.data.len() - orig;
                 assert!(size < 2^26);
-                buf.splice(idx..idx + 4, (size as u32).to_ne_bytes());
+                buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
 
             },
 
@@ -1238,10 +1255,12 @@ fn serialize_arg(arg: Arg, buf: &mut Vec<u8>) {
                 serialize_arg(*val, buf);
 
             }
+
+            CompoundArg::EmptyVariant => panic!("EmptyVariant cannot be sent"),
             
             CompoundArg::Struct(fields) => {
 
-                buf.pad_to(8);
+                buf.insert_pad(8);
                 for val in fields {
                     serialize_arg(val, buf);
                 }
@@ -1415,7 +1434,7 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
                 // an "empty" variant which really shouldn't be allowed
                 // this variant doesn't even have a signature so we can't produce
                 // a default value here
-                Ok(Arg::EmptyVariant)
+                Ok(Arg::Compound(CompoundArg::EmptyVariant))
             }
            
             
@@ -1596,13 +1615,12 @@ pub enum ArgError {
 pub enum Arg {
     Simple(SimpleArg),
     Compound(CompoundArg),
-    EmptyVariant,
 }
 
 impl Arg {
 
     fn kinds(&self) -> Vec<ArgKind> {
-        let mut out = Vec::new(); // TODO: not use Vec since it can't be more then 5 entries anyways
+        let mut out = Vec::new(); // TODO: not use Vec but an iterator
         skind(self, &mut out);
         out
     }
@@ -1615,7 +1633,6 @@ impl Arg {
 
 fn skind(arg: &Arg, out: &mut Vec<ArgKind>) { // TODO: think about the relation of this and "ValidArg::kinds"
     match arg {
-        Arg::EmptyVariant => panic!("cannot serialize empty variant"),
         Arg::Simple(simple) => {
             let kind = match simple {
                 SimpleArg::Byte(..)   => ArgKind::Byte,
@@ -1649,6 +1666,7 @@ fn skind(arg: &Arg, out: &mut Vec<ArgKind>) { // TODO: think about the relation 
             CompoundArg::Variant(..) => {
                 out.push(ArgKind::Variant);
             }
+            CompoundArg::EmptyVariant => panic!("EmptyVariant cannot be sent"),
             CompoundArg::Struct(fields) => {
                 out.push(ArgKind::StructBegin);
                 for it in fields.iter() {
@@ -1670,7 +1688,7 @@ pub enum SimpleArg {
     U32(u32),
     I64(i64),
     U64(u64),
-    Double(PanicOnEq<f64>),
+    Double(OpsF64),
     String(String),
     ObjPath(String),
     Signature(Vec<ArgKind>),
@@ -1678,36 +1696,26 @@ pub enum SimpleArg {
 }
 
 #[derive(Debug)]
-struct PanicOnEq<T> {
-    pub inner: T
+pub struct OpsF64 {
+    pub inner: f64,
 }
 
-impl<T> PartialEq for PanicOnEq<T> {
+impl PartialEq for OpsF64 {
     fn eq(&self, _: &Self) -> bool {
-        let name = type_name::<T>();
-        panic!(
-            "the type {:?} cannot be compared in this case,
-             you can't use it in a PartialEq/Eq context",
-            name
-        );
+        panic!("cannot compare a SimpleArg::Double since floats do not implement PartialEq in rust");
     }
 }
 
-impl<T> Eq for PanicOnEq<T> {}
+impl Eq for OpsF64 {}
 
-impl<T> Hash for PanicOnEq<T> {
+impl Hash for OpsF64 {
     fn hash<H: Hasher>(&self, _: &mut H) {
-        let name = type_name::<T>();
-        panic!(
-            "the type {:?} cannot be hashed in this case,
-             you can't use it in a Hash context",
-            name
-        );
+        panic!("cannot hash a SimpleArg::Double since floats do not implement Hash in rust");
     }
 }
 
 #[derive(Debug)]
-struct OpsOwnedFd {
+pub struct OpsOwnedFd {
     pub inner: OwnedFd,
 }
 
@@ -1730,6 +1738,7 @@ pub enum CompoundArg {
     Array(Vec<ArgKind>, Vec<Arg>),
     Map(ArgKind , Vec<ArgKind>, HashMap<SimpleArg, Arg>),
     Variant(Box<Arg>),
+    EmptyVariant,
     Struct(Vec<Arg>),
 }
 
@@ -1783,7 +1792,7 @@ impl ValidArg for Signature {
 
 impl ValidArg for f64 {
     fn pack(self) -> Arg {
-        Arg::Simple(SimpleArg::Double(PanicOnEq { inner: self }))
+        Arg::Simple(SimpleArg::Double(OpsF64 { inner: self }))
     }
     fn unpack(arg: Arg) -> Option<Self> {
         if let Arg::Simple(SimpleArg::Double(val)) = arg { Some(val.inner) }
@@ -1875,7 +1884,7 @@ impl ValidArg for Variant {
     }
     fn unpack(arg: Arg) -> Option<Self> {
         if let Arg::Compound(CompoundArg::Variant(val)) = arg { Some(Self::new(*val)) }
-        else if let Arg::EmptyVariant = arg { Some(Self::new_empty()) }
+        else if let Arg::Compound(CompoundArg::EmptyVariant) = arg { Some(Self::new_empty()) }
         else { None }
     }
     fn kinds() -> Vec<ArgKind> {
@@ -2300,17 +2309,6 @@ impl Urgency {
             Self::Normal => 1,
             Self::Critical => 2,
         }
-    }
-}
-
-trait PadTo { // TODO: newtype instead of trait
-    fn pad_to(&mut self, padding: usize);
-}
-
-impl PadTo for Vec<u8> {
-    fn pad_to(&mut self, padding: usize) {
-        let needed = (padding - self.len() % padding) % padding;
-        self.resize(self.len() + needed, 0);
     }
 }
 
