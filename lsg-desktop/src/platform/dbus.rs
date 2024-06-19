@@ -1,17 +1,17 @@
 
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    convert::{identity, Infallible},
-    env, mem, iter,
     sync::Arc,
     time::Duration,
-    hash::{Hash, Hasher},
+    env, iter, mem,
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    convert::{identity, Infallible},
     io::{self, Read, Write},
     os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream},
 };
 
 use async_lock::Mutex as AsyncMutex;
-use futures_lite::{pin, FutureExt};
+use futures_lite::FutureExt;
 
 #[test]
 fn call() {
@@ -27,7 +27,7 @@ fn call() {
              "GetStats",
         );
         
-        let _resp = con.send(call).await.unwrap();
+        let _resp = con.method_call(call).await.unwrap();
           // ^^^^ parsing this is enough (maps, variants, etc. covered)
 
     })
@@ -36,12 +36,6 @@ fn call() {
 
 #[test]
 fn notifications() {
-
-    // let subscriber = tracing_subscriber::FmtSubscriber::builder()
-    //     .with_max_level(tracing::Level::TRACE)
-    //     .finish();
-
-    // tracing::subscriber::set_global_default(subscriber).unwrap();
 
     async_io::block_on(async {
 
@@ -56,9 +50,9 @@ fn notifications() {
             .action(Action::new("b", "selection B"));
         
         let id = proxy.send(notif).await.unwrap();
-        let action = proxy.invoked(id).await.unwrap();
+        // let action = proxy.invoked(id).await.unwrap();
 
-        println!("invoked action: {}", action.id);
+        // println!("invoked action: {}", action.id);
 
         proxy.close(id).await.unwrap();
         
@@ -80,17 +74,15 @@ fn service() {
         let con = Connection::new().unwrap();
 
         // let mut service = Service::new("org.freedesktop.StatusNotifierItem-X-X");
-        let mut service = Service::new("lsg.test");
 
-        let mut iface = Iface::new();
-        iface.property("foo", 10i32);
-        service.add(
-            "/StatusNotifierItem",
-            "org.kde.StatusNotifierItem",
-            iface
-        );
+        let mut listener = con.run_service("lsg.test").await.unwrap();
 
-        con.run(service).await.unwrap();
+        loop {
+            let msg = listener.next_call().await.unwrap();
+            println!("{:?}", msg);
+            let reply = MethodError::new(&msg, "lsg.happyfeet", "it worked!");
+            con.reply_with(Err(reply)).await.unwrap();
+        }
 
         // let pid = nix::unistd::getpid().as_raw();
         // let name = format!("org.freedesktop.StatusNotifierItem-{}-1", pid);
@@ -126,10 +118,8 @@ struct BusData {
     resps: HashMap<Id, async_channel::Sender<MethodReply>>,
     /// received signals to send back to the tasks
     signals: async_broadcast::Sender<Arc<SignalTrigger>>,
-    /// signals we are already listening on
-    listening: HashSet<Id>,
     /// registered services
-    services: HashMap<String, Service>,
+    services: HashMap<String, async_channel::Sender<MethodCall>>,
     /// current message buffer
     buf: Vec<u8>,
 }
@@ -137,7 +127,7 @@ struct BusData {
 impl Reactor {
 
     /// Run the reactor and process events. This future never completes.
-    pub async fn run(&self) -> DbusResult<Infallible> {
+    pub async fn run_forever(&self) -> RequestResult<Infallible> {
 
         let mut guard = self.locked.lock().await;                
 
@@ -154,7 +144,7 @@ impl Reactor {
             // loop here, since the fd is always gonna be writable.
 
             enum Either {
-                /// We should executre this request
+                /// We should execute this request
                 Request(ClientMessage),
                 /// We have read more data from the socket
                 MoreData,
@@ -169,7 +159,7 @@ impl Reactor {
 
             let readable = async {
 
-                let mut buf = [0; 1024];
+                let mut buf = [0; 1024]; // TODO: test mechanism by decreasing the buffer size to smth like [0; 24]
 
                 let bytes = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf) ) }.await?;
                 if bytes == 0 { return Err(io::Error::other("kicked by broker")) };
@@ -179,12 +169,6 @@ impl Reactor {
 
             };
 
-            // BUG: tested some time ago!!!, on load, the `readable` future never resolves even though the connection
-            // is readable. this seems to be a bug in async-io where a thread is incorrectly parked and never unparked or something
-            // this is my conclusion because as soon as another system thread interacts with our program, the future resolves.
-            // this bug also goes away if the `request` future is replaced by `pending().await`
-            // the bug also happens when you replace the channel recv with future::ready, so it just always happens when the other future resolves (first?)
-
             match readable.or(request).await? {
                 Either::Request(request) => process_request(&mut guard, request).await?,
                 Either::MoreData         => process_incoming(&mut guard)?,
@@ -193,10 +177,21 @@ impl Reactor {
         }
 
     }
+
+    pub async fn process_all_requests(&self) -> RequestResult<()> {
+
+        let mut guard = self.locked.lock().await;                
+        while let Ok(req) = guard.reqs.try_recv() {
+            process_request(&mut guard, req).await?;
+        }
+
+        Ok(())
+
+    }
     
 }
 
-fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> DbusResult<()> {
+fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestResult<()> {
 
     loop {
 
@@ -211,15 +206,17 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> DbusResu
 
                 match msg.kind {
 
-                    MessageKind::Invalid => unreachable!(),
+                    MessageKind::Invalid => todo!("got an invalid message"),
 
                     MessageKind::Error => {
-                        todo!("got an error reply");
+                        let err = MethodError::deserialize(msg);
+                        todo!("got an error reply: {:?}", err);
                     },
 
                     MessageKind::MethodReply => {
 
-                        let id = Id::Serial(msg.serial);
+                        let serial: u32 = msg.take_field(FieldCode::ReplySerial).expect("todo");
+                        let id = Id::Serial(serial);
                         let opt = guard.resps.remove(&id);
 
                         if let Some(sender) = opt {
@@ -232,31 +229,31 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> DbusResu
                     MessageKind::Signal => {
 
                         let signal = SignalTrigger::deserialize(msg).expect("todo: parse error 3");
-                        guard.signals.try_broadcast(Arc::new(signal)).unwrap(); // wait for other tasks if full
+                        guard.signals.try_broadcast(Arc::new(signal)).unwrap(); // replaces last message if full
 
                     }
 
                     MessageKind::MethodCall => {
 
-                        let serial = msg.serial;
-                        let sender = mem::take(&mut msg.sender); // sender is unused after this
+                        // let serial = msg.serial;
+                        // let sender: String = msg.take_field(FieldCode::Sender).expect("todo");
 
                         let call = MethodCall::deserialize(msg).expect("todo: parse error 2");
 
-                        if let Some(service) = guard.services.get_mut(&call.dest) {
-
-                            let result = service.handle(call);
-                            let mut msg = serialize_method_call_result(result);
-
-                            msg.serial = 1; // don't care about the serial
-
-                            msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)   ));
-                            msg.fields.push(header_field(FieldCode::Dest ,       SimpleArg::String(sender)));
-
-                            todo!("send reply");
-
+                        if let Some(sender) = guard.services.get_mut(&call.dest) {
+                            sender.try_send(call).expect("todo: cannot send, full");
                         }
         
+                            // let result = service.handle(call);
+                            // let mut msg = serialize_method_call_result(result);
+
+                            // msg.serial = u32::MAX; // don't care about the serial
+
+                            // msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)   ));
+                            // msg.fields.push(header_field(FieldCode::Dest ,       SimpleArg::String(sender)));
+
+                            // todo!("send reply");
+
                     },
 
                 }
@@ -274,14 +271,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> DbusResu
     
 }
 
-fn serialize_method_call_result(result: Result<MethodReply, MethodError>) -> GenericMessage {
-    match result {
-        Ok(reply) => reply.serialize(),
-        Err(err) => err.serialize(),
-    }
-}
-
-async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: ClientMessage) -> DbusResult<()> {
+async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: ClientMessage) -> RequestResult<()> {
 
     match request {
 
@@ -316,12 +306,9 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
             write!(stream, "\r\n")?;
             stream.flush()?;
 
-            unsafe { guard.bus.read_with_mut(|it| {
-                let mut buf = [0; 1024];
-                it.read(&mut buf)?;
-                if &buf[..2] == b"OK" { Ok(()) }
-                else { Err(io::Error::other("sasl authentication failed")) }
-            } ) }.await?;
+            let mut buf = [0; 128];
+            unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
+            if &buf[..2] != b"OK" { return Err(RequestError::Dbus(io::Error::other("sasl authentication failed"))) }
 
             // begin the session, no more sasl messages will be send after this
             
@@ -334,27 +321,13 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
             let hello = MethodCall::hello();
 
             let mut msg = hello.serialize();
-            msg.serial = 1; // any valid serial works here
+            msg.serial = u32::MAX; // any valid serial works here
             let data = msg.serialize();
 
             stream.write_all(&data)?;
             stream.flush()?;
 
-            // the reply will be discarded by the handler
-
-        },
-
-        ClientMessage::MethodCallVoid(call) => {
-
-            let serial = guard.serial;
-            guard.serial += 1;
-
-            let mut msg = call.serialize();
-            msg.serial = serial;
-            let data = msg.serialize();
-
-            let stream = unsafe { guard.bus.get_mut() };
-            stream.write_all(&data)?;
+            // the reply will just be discarded later
 
         },
 
@@ -373,49 +346,45 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
         },
 
-        ClientMessage::SignalMatch(signal) => {
+        ClientMessage::MethodCallVoid(call) => {
 
-            let hash = hash_signal(&signal.path, &signal.iface, &signal.member);
-            let id = Id::SignalHash(hash);
+            let mut msg = call.serialize();
+            msg.serial = u32::MAX;
+            let data = msg.serialize();
 
-            guard.listening.insert(id);
+            let stream = unsafe { guard.bus.get_mut() };
+            stream.write_all(&data)?;
 
-            todo!("add match on signal");
-    
         },
 
-        ClientMessage::AddService(mut service) => {
+        ClientMessage::MethodReply(val) => {
 
-            println!("adding service {}", &service.name);
+            let mut msg = val.serialize();
+            msg.serial = u32::MAX;
+            let data = msg.serialize();
 
-            todo!("AddService: request bus name");
+            let stream = unsafe { guard.bus.get_mut() };
+            stream.write_all(&data)?;
 
-            let mut paths = HashMap::new(); // unique paths
+        },
 
-            for (info, iface) in &mut service.ifaces {
+        ClientMessage::MethodError(val) => {
 
-                // only add paths once but add the slot to all interfaces
-                // with the same path
+            let mut msg = val.serialize();
+            msg.serial = u32::MAX;
+            let data = msg.serialize();
 
-                paths.entry(&info.path)
-                    .and_modify(|slot| {
+            let stream = unsafe { guard.bus.get_mut() };
+            stream.write_all(&data)?;
 
-                        // unsafe { sys::sd_bus_slot_ref(*slot) };
-                        // iface.slot = *slot;
+        },
 
-                    })
-                    .or_insert_with(|| {
-                        
-                        todo!("register object path and get slot");
+        ClientMessage::AddService(send, name) => {
 
-                        // iface.slot = slot; // don't need to ref it here
-                        // slot
+            // the name was already previously registered
+            // we just add the service to our list of active services here
 
-                    });
-
-            }
-
-            guard.services.insert(service.name.clone(), service);
+            guard.services.insert(name, send);
             
         },
 
@@ -451,8 +420,8 @@ impl Connection {
 
         let stream = UnixStream::connect(path)?;
 
-        let reqs = async_channel::bounded(8);
-        let mut signals = async_broadcast::broadcast(16);
+        let reqs = async_channel::bounded(4);
+        let mut signals = async_broadcast::broadcast(4);
         signals.0.set_overflow(true); // drop old signals if not consumed
 
         // authenticate and say hello, this is executed
@@ -465,7 +434,6 @@ impl Connection {
                 reqs: reqs.1,
                 resps: HashMap::new(),
                 signals: signals.0,
-                listening: HashSet::new(),
                 services: HashMap::new(),
                 serial: 1, // 0 is not allowed, so start at 1
                 buf: Vec::new(),
@@ -480,194 +448,178 @@ impl Connection {
         
     }
     
-    pub async fn send(&self, call: MethodCall) -> DbusResult<MethodReply> {
+    pub async fn method_call(&self, call: MethodCall) -> RequestResult<MethodReply> {
         
         let (send, recv) = async_channel::bounded(1);
         let req = ClientMessage::MethodCall(send, call);
         self.reqs.try_send(req).unwrap();
 
-        enum Either {
-            Resp(MethodReply),
-            Reactor(DbusResult<Infallible>),
-        }
-            
-        let next = async { Either::Resp(recv.recv().await.unwrap()) };
-        let reactor = async { Either::Reactor(self.reactor.run().await) };
+        let next = async { Ok(recv.recv().await.unwrap()) };
+        let reactor = async { Err(self.reactor.run_forever().await.unwrap_err()) };
 
-        match next.or(reactor).await {
-            Either::Resp(resp) => return Ok(resp),
-            Either::Reactor(result) => result?, // will be an error
-        };
-
-        unreachable!("reactor returned without error");
+        next.or(reactor).await
 
     }
 
-    pub async fn listen(&self, signal: SignalMatch) -> DbusResult<Listener> {
-
-        let hash = hash_signal(&signal.path, &signal.iface, &signal.member);
-        let id = Id::SignalHash(hash);
-
-        let req = ClientMessage::SignalMatch(signal);
+    pub async fn method_call_void(&self, call: MethodCall) -> RequestResult<()> {
+        
+        let req = ClientMessage::MethodCallVoid(call);
         self.reqs.try_send(req).unwrap();
 
-        Ok(Listener {
-            id,
+        self.reactor.process_all_requests().await
+
+    }
+
+    pub async fn reply_with(&self, result: Result<MethodReply, MethodError>) -> RequestResult<()> {
+        
+        match result {
+            Ok(val) => {
+                let req = ClientMessage::MethodReply(val);
+                self.reqs.try_send(req).unwrap();
+            },
+            Err(val) => {
+                let req = ClientMessage::MethodError(val);
+                self.reqs.try_send(req).unwrap();
+            }
+        }
+
+        self.reactor.process_all_requests().await
+
+    }
+
+    pub async fn listen_on(&self, matching: SignalMatch) -> RequestResult<SignalListener> {
+
+        let call = MethodCall::add_match(matching.rule.clone());
+        let req = ClientMessage::MethodCallVoid(call);
+        self.reqs.try_send(req).unwrap();
+
+        Ok(SignalListener {
+            matching,
             con: self.clone(),
             recv: self.signals.clone(),
+            reqs: self.reqs.clone(), // to remove the match on drop
+            ref_test: Arc::new(()),
         })
 
     }
 
     /// Run a service.
     /// Will never resolve.
-    pub async fn run(&self, service: Service) -> DbusResult<()> {
+    pub async fn run_service(&self, name: &str) -> RequestResult<ServiceListener> {
 
-        let req = ClientMessage::AddService(service);
+        let call = MethodCall::request_name(
+            name.to_string(),
+            0x4 /* don't queue */
+        );
+
+        let mut resp = self.method_call(call).await?;
+        let val: u32 = resp.arg(0);
+        if val >= 3 { todo!("already owned by someone") }
+
+        let (send, recv) = async_channel::bounded(4);
+        let req = ClientMessage::AddService(send, name.to_string());
         self.reqs.try_send(req).unwrap();
 
-        self.reactor.run().await?;
-
-        Ok(())
+        Ok(ServiceListener {
+            name: name.to_string(),
+            con: self.clone(),
+            recv,
+            reqs: self.reqs.clone(), // to remove the match on drop
+            ref_test: Arc::new(()),
+        })
         
     }
 
 }
 
+/// # Cloning
+/// When a signal arrives it will be broadcast to all currently alive `SignalListeners` that listen
+/// for it. This is why the the `SignalTrigger` is returned wrapped in an Arc.
 #[derive(Clone)]
-pub struct Listener {
-    id: Id,
+pub struct SignalListener {
+    matching: SignalMatch,
     con: Connection,
     recv: async_broadcast::Receiver<Arc<SignalTrigger>>,
+    reqs: async_channel::Sender<ClientMessage>,
+    /// used to test if this is the last listener of this kind on drop
+    ref_test: Arc<()>,
 }
 
-impl Listener {
-
-    pub async fn next(&mut self) -> DbusResult<Arc<SignalTrigger>> {
-
-        enum Either {
-            Resp(Arc<SignalTrigger>),
-            Reactor(DbusResult<Infallible>),
+impl Drop for SignalListener {
+    fn drop(&mut self) {
+        let arc = mem::take(&mut self.ref_test);
+        if Arc::into_inner(arc).is_some() {
+            // remove the match rule
+            let call = MethodCall::remove_match(self.matching.rule.clone());
+            let req = ClientMessage::MethodCallVoid(call);
+            self.reqs.try_send(req).unwrap();
         }
+    }
+}
+
+impl SignalListener {
+
+    pub async fn next_signal(&mut self) -> RequestResult<Arc<SignalTrigger>> {
 
         loop {
 
-            let next = async { Either::Resp(self.recv.recv_direct().await.unwrap()) };
-            let reactor = async { Either::Reactor(self.con.reactor.run().await) };
+            let next = async { Ok(self.recv.recv_direct().await.unwrap()) };
+            let reactor = async { Err(self.con.reactor.run_forever().await.unwrap_err()) };
 
-            match next.or(reactor).await {
-
-                Either::Resp(resp) => {
-                    let hash = hash_signal(&resp.path, &resp.iface, &resp.member);
-                    if self.id == Id::SignalHash(hash) {
-                        return Ok(resp)
-                    }
-                },
-
-                Either::Reactor(result) => {
-                    result?; // will return an error
-                },
-
-            };
-            
-        }
-
-    }
-
-}
-
-fn hash_signal<S: AsRef<[u8]>>(path: S, iface: S, member: S) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    path.as_ref().hash(&mut hasher);
-    iface.as_ref().hash(&mut hasher);
-    member.as_ref().hash(&mut hasher);
-    hasher.finish()
-}
-
-pub struct Service {
-    name: String,
-    ifaces: HashMap<IfaceInfo, Iface>,
-}
-
-impl Service {
-
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            ifaces: HashMap::new(),
-        }
-    }
-
-    pub fn add(&mut self, path: &str, iface: &str, value: Iface) {
-        self.ifaces.insert(
-            IfaceInfo { path: path.to_string(), name: iface.to_string()  },
-            value
-        );
-    }
-
-    fn handle(&mut self, req: MethodCall) -> MethodResult<MethodReply> {
-
-        dbg!(&req);
-
-        let info = IfaceInfo {
-            path: req.path.clone(), // TODO: not clone every time here
-            name: req.iface.clone(),
-        };
-
-        if req.member == "Introspect" {
-            
-        }
-        
-        else if let Some(iface) = self.ifaces.get_mut(&info) {
-            if let Some(exposed) = iface.exposed.get_mut(&req.member) {
-
-                
+            let resp = next.or(reactor).await?;
+            if self.matching.hash == resp.hash {
+                return Ok(resp)
             }
-        };
 
-        Err(MethodError::unimplemented("return reply to handeled method call"))
-        
+        }
+
     }
-    
+
 }
 
-enum Exposed {
-    Property(Arg),
-    Method(Box<dyn Fn(MethodCall) -> MethodReply>), // todo: arenas of dyn
-}
-
-#[derive(PartialEq, Eq, Hash)]
-pub struct IfaceInfo {
-    path: String,
+/// # Cloning
+/// A message will only be sent to one `ServiceListener`. Cloning will lead to work-strealing behaviour.
+#[derive(Clone)]
+pub struct ServiceListener {
     name: String,
+    con: Connection,
+    recv: async_channel::Receiver<MethodCall>,
+    reqs: async_channel::Sender<ClientMessage>,
+    /// used to test if this is the last listener of this kind on drop
+    ref_test: Arc<()>,
 }
 
-pub struct Iface {
-    exposed: HashMap<String, Exposed>,
-}
-
-impl Iface {
-
-    pub fn new() -> Self {
-        Self {
-            exposed: HashMap::new(),
+impl Drop for ServiceListener {
+    fn drop(&mut self) {
+        let arc = mem::take(&mut self.ref_test);
+        if Arc::into_inner(arc).is_some() {
+            // remove the match rule
+            let call = MethodCall::release_name(mem::take(&mut self.name));
+            let req = ClientMessage::MethodCallVoid(call);
+            self.reqs.try_send(req).unwrap();
         }
     }
+}
 
-    pub fn property<T: ValidArg>(&mut self, name: &str, val: T) {
-        self.exposed.insert(
-            name.to_string(),
-            Exposed::Property(val.pack())
-        );
+impl ServiceListener {
+
+    pub async fn next_call(&mut self) -> RequestResult<MethodCall> {
+
+        let next = async { Ok(self.recv.recv().await.unwrap()) };
+        let reactor = async { Err(self.con.reactor.run_forever().await.unwrap_err()) };
+
+        next.or(reactor).await
+
     }
 
-    pub fn member<F: Fn(MethodCall) -> MethodReply + 'static>(&mut self, name: &str, cb: F) {
-        self.exposed.insert(
-            name.to_string(),
-            Exposed::Method(Box::new(cb))
-        );
-    }
-    
+}
+
+fn hash_signal(path: &str, iface: &str, member: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    iface.hash(&mut hasher);
+    member.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Debug)] // TODO: derive debug for everything
@@ -679,6 +631,7 @@ pub struct MethodCall {
     pub no_reply: bool,
     pub allow_interactive_auth: bool,
     pub args: Vec<Arg>,
+    caller: Option<MethodCaller>,
 }
 
 impl MethodCall {
@@ -686,6 +639,7 @@ impl MethodCall {
     pub fn new(dest: &str, path: &str, iface: &str, member: &str) -> Self {
 
         Self {
+            caller: None, // this would be ourselves
             dest: dest.to_string(), // Todo: arena
             path: path.to_string(),
             iface: iface.to_string(),
@@ -720,6 +674,10 @@ impl MethodCall {
     fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
 
         Ok(Self {
+            caller: Some(MethodCaller {
+                name: msg.take_field(FieldCode::Sender).ok_or(ParseError::InvalidData)?,
+                serial: msg.serial,
+            }),
             dest: msg.take_field(FieldCode::Dest).ok_or(ParseError::InvalidData)?,
             path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
             iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
@@ -732,47 +690,104 @@ impl MethodCall {
     }
 
     pub fn hello() -> Self {
-        MethodCall::new(
+        Self::new(
              "org.freedesktop.DBus",
              "/org/freedesktop/DBus",
              "org.freedesktop.DBus",
              "Hello",
         )
     }
+
+    pub fn add_match(rule: String) -> Self {
+        let mut val = Self::new(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "AddMatch",
+        );
+        val.args.push(rule.pack());
+        val
+    }
+
+    pub fn remove_match(rule: String) -> Self {
+        let mut val = Self::new(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "RemoveMatch"
+        );
+        val.arg(rule);
+        val
+    }
+
+    pub fn request_name(name: String, flags: u32) -> Self {
+        let mut val = Self::new(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "RequestName"
+        );
+        val.arg(name);
+        val.arg(flags);
+        val
+    }
+    
+    pub fn release_name(name: String) -> Self {
+        let mut val = Self::new(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "ReleaseName"
+        );
+        val.arg(name);
+        val
+    }
     
 }
 
+#[derive(Debug, Clone)]
 pub struct SignalMatch {
-    path: String,
-    iface: String,
-    member: String,
+    rule: String,
+    hash: u64,
 }
 
 impl SignalMatch {
 
     pub fn new(path: &str, iface: &str, member: &str) -> Self {
-        Self {
-            path: path.to_string(), // TODO: arena
-            iface: iface.to_string(),
-            member: member.to_string(),
-        }
+
+        let rule = format!(
+            "path={},interface={},member={}",
+            path, iface, member,
+        );
+
+        let hash = hash_signal(path, iface, member);
+
+        Self { rule, hash } // TODO: arena
     }
 
+}
+
+#[derive(Debug, Clone)]
+struct MethodCaller {
+    name: String,
+    serial: u32,
 }
 
 #[derive(Debug)]
 pub struct MethodReply {
     args: Vec<Option<Arg>>,
+    caller: Option<MethodCaller>,
 }
 
 impl MethodReply {
 
-    pub fn new() -> Self {
+    pub fn new(to: &MethodCall) -> Self {
         Self {
-            args: Vec::new()
+            caller: to.caller.clone(),
+            args: Vec::new(),
         }
     }
-    
+
     pub fn push<A: ValidArg>(&mut self, input: A) {
         self.args.push(Some(input.pack()));
     }
@@ -789,7 +804,7 @@ impl MethodReply {
         let arg = self.args.get_mut(idx)
             .ok_or(ArgError::DoesntExist)?
             .take().ok_or(ArgError::Taken)?;
-        T::unpack(arg).ok_or(ArgError::InvalidType)
+        T::unpack(arg).ok_or(ArgError::WrongType)
     }
 
     pub(self) fn serialize(self) -> GenericMessage {
@@ -801,7 +816,12 @@ impl MethodReply {
             .filter_map(identity)
             .collect();
 
-        // dest etc. added later inside `process_incoming`
+        // add reply information
+
+        let caller = self.caller.unwrap();
+
+        msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(caller.serial)));
+        msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(caller.name)));
 
         msg
 
@@ -810,6 +830,7 @@ impl MethodReply {
     fn deserialize(msg: GenericMessage) -> Self {
 
         Self {
+            caller: None, // would be ourselves
             args: msg.args.into_iter().map(Some).collect()
         }
         
@@ -819,6 +840,7 @@ impl MethodReply {
 
 #[derive(Debug)]
 pub struct SignalTrigger {
+    hash: u64, // used to check if we listen to this signal
     path: String, // todo: arena
     iface: String,
     member: String,
@@ -830,6 +852,7 @@ impl SignalTrigger {
     pub fn new(path: &str, iface: &str, member: &str) -> Self {
 
         Self {
+            hash: hash_signal(path, iface, member),
             path: path.to_string(),
             iface: iface.to_string(),
             member: member.to_string(),
@@ -842,29 +865,36 @@ impl SignalTrigger {
         self.args.push(Some(input.pack()));
     }
 
+    /// In contrast to other `arg` methods, this clones the value.
     #[track_caller]
-    pub fn arg<T: ValidArg>(&mut self, idx: usize) -> T {
+    pub fn arg<T: ValidArg>(&self, idx: usize) -> T {
         match self.get(idx) {
             Ok(val) => val,
             Err(err) => panic!("cannot read arg #{idx}: {err:?}")
         }
     }
 
-    pub fn get<T: ValidArg>(&mut self, idx: usize) -> Result<T, ArgError> {
-        let arg = self.args.get_mut(idx)
+    /// In contrast to other `get` methods, this clones the value.
+    pub fn get<T: ValidArg>(&self, idx: usize) -> Result<T, ArgError> {
+        let arg = self.args.get(idx)
             .ok_or(ArgError::DoesntExist)?
-            .take().ok_or(ArgError::Taken)?;
-        T::unpack(arg).ok_or(ArgError::InvalidType)
+            .clone().ok_or(ArgError::Taken)?;
+        T::unpack(arg).ok_or(ArgError::WrongType)
     }
 
-fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
+    fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
 
-        Ok(Self {
+        let mut this = Self {
+            hash: 0,
             path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
             iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
             member: msg.take_field(FieldCode::Member).ok_or(ParseError::InvalidData)?,
             args: msg.args.into_iter().map(Some).collect()
-        })
+        };
+
+        this.hash = hash_signal(&this.path, &this.iface, &this.member);
+
+        Ok(this)
         
     }
     
@@ -875,8 +905,9 @@ enum ClientMessage {
     Authenticate,
     MethodCall(async_channel::Sender<MethodReply>, MethodCall),
     MethodCallVoid(MethodCall),
-    SignalMatch(SignalMatch),
-    AddService(Service),
+    MethodReply(MethodReply),
+    MethodError(MethodError),
+    AddService(async_channel::Sender<MethodCall>, String /* name */),
 }
 
 enum ServerMessage {
@@ -929,7 +960,6 @@ pub struct GenericMessage {
     pub allow_interactive_auth: bool,
     pub kind: MessageKind,
     pub fields: Vec<(u8, Variant)>, // header fields
-    pub sender: String,
     pub args: Vec<Arg>, // message body
 }
 
@@ -1029,9 +1059,6 @@ impl GenericMessage {
         let Signature(signature) = take_field(&mut header_fields, FieldCode::Signature)
             .unwrap_or_default();
         
-        let sender: String = take_field(&mut header_fields, FieldCode::Sender)
-            .unwrap_or_default();
-        
         buf.consume_pad(8);
 
         let before_body = buf.offset;
@@ -1052,7 +1079,6 @@ impl GenericMessage {
                 allow_interactive_auth,
                 kind,
                 fields: header_fields,
-                sender,
                 args,
             }
         ))
@@ -1365,8 +1391,6 @@ fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, P
             assert_eq!(key_kinds.len(), 1, "map key type was a container: {:?}", val_kinds);
             assert_eq!(iter.next(), None); // should only contain 2 complete types
 
-            // dbg!(&key_kinds, &val_kinds);
-
             let len: u32 = unpack_arg(buf)?;
 
             let mut map = HashMap::new(); // TODO: arena
@@ -1609,10 +1633,10 @@ impl ArgKind {
 pub enum ArgError {
     Taken,
     DoesntExist,
-    InvalidType,
+    WrongType,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
     Simple(SimpleArg),
     Compound(CompoundArg),
@@ -1679,7 +1703,7 @@ fn skind(arg: &Arg, out: &mut Vec<ArgKind>) { // TODO: think about the relation 
     };
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SimpleArg {
     Byte(u8),
     Bool(bool),
@@ -1696,7 +1720,7 @@ pub enum SimpleArg {
     Fd(OpsOwnedFd),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OpsF64 {
     pub inner: f64,
 }
@@ -1720,6 +1744,14 @@ pub struct OpsOwnedFd {
     pub inner: OwnedFd,
 }
 
+impl Clone for OpsOwnedFd {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.try_clone().unwrap(), // TODO: what happens here? hard error?
+        }
+    }
+}
+
 impl PartialEq for OpsOwnedFd {
     fn eq(&self, other: &Self) -> bool {
         self.inner.as_raw_fd() == other.inner.as_raw_fd()
@@ -1734,7 +1766,7 @@ impl Hash for OpsOwnedFd {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompoundArg {
     Array(Vec<ArgKind>, Vec<Arg>),
     Map(ArgKind , Vec<ArgKind>, HashMap<SimpleArg, Arg>),
@@ -1993,12 +2025,12 @@ pub enum ParseError {
 }
 
 #[derive(Debug)]
-pub enum DbusError {
+pub enum RequestError {
     Dbus(io::Error),
     Parse(()), // TODO: parse error type
 }
 
-impl DbusError {
+impl RequestError {
     fn invalid_arguments() -> Self {
         Self::Dbus(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2010,19 +2042,21 @@ impl DbusError {
 pub type MethodResult<T> = Result<T, MethodError>;
 
 /// An error reply.
+#[derive(Debug)]
 pub struct MethodError {
+    caller: Option<MethodCaller>,
     name: String,
     msg: String,
 }
 
 impl MethodError {
 
-    pub fn unimplemented(msg: &str) -> Self {
-        Self::new("lsg.unimplemented", msg)
-    }
-
-    pub fn new(name: &str, msg: &str) -> Self {
-        Self { name: name.to_string(), msg: msg.to_string() } // TODO: arena
+    pub fn new(to: &MethodCall, name: &str, msg: &str) -> Self {
+        Self {
+            caller: to.caller.clone(),
+            name: name.to_string(),
+            msg: msg.to_string(),
+        }
     }
 
     pub fn serialize(self) -> GenericMessage {
@@ -2030,20 +2064,34 @@ impl MethodError {
         let mut msg = GenericMessage::default();
 
         msg.kind = MessageKind::Error;
+
         msg.fields.push(header_field(FieldCode::ErrName, SimpleArg::String(self.name)));
         msg.args.push(Arg::Simple(SimpleArg::String(self.msg)));
 
-        // dest etc. added later
+        // add reply information
+
+        let caller = self.caller.unwrap();
+
+        msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(caller.serial)));
+        msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(caller.name)));
 
         msg
         
     }
 
+    pub fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
+        Ok(Self {
+            caller: None, // this would be ourselves
+            name: msg.take_field(FieldCode::ErrName).ok_or(ParseError::InvalidData)?,
+            msg: String::unpack(msg.args.remove(0)).ok_or(ParseError::InvalidData)?,
+        })
+    }
+
 }
 
-pub type DbusResult<T> = Result<T, DbusError>;
+pub type RequestResult<T> = Result<T, RequestError>;
 
-impl From<io::Error> for DbusError {
+impl From<io::Error> for RequestError {
     fn from(value: io::Error) -> Self {
         Self::Dbus(value)
     }
@@ -2067,7 +2115,7 @@ impl NotifyProxy {
         Self { con: con.clone() }
     }
 
-    pub async fn send(&self, notif: Notif<'_>) -> DbusResult<NotifId> {
+    pub async fn send(&self, notif: Notif<'_>) -> RequestResult<NotifId> {
 
         let mut call = MethodCall::new(
             "org.freedesktop.Notifications",
@@ -2105,7 +2153,7 @@ impl NotifyProxy {
             else { i32::try_from(dur.as_millis()).unwrap_or(i32::MAX) }
         ).unwrap_or(-1)); // expiration timeout
         
-        let mut resp = self.con.send(call).await?;
+        let mut resp = self.con.method_call(call).await?;
         let id: u32 = resp.arg(0);
 
         Ok(id)
@@ -2113,7 +2161,7 @@ impl NotifyProxy {
     }
 
     /// Forcefully close a notification.
-    pub async fn close(&self, id: NotifId) -> DbusResult<()> {
+    pub async fn close(&self, id: NotifId) -> RequestResult<()> {
 
         let mut call = MethodCall::new(
             "org.freedesktop.Notifications",
@@ -2124,14 +2172,14 @@ impl NotifyProxy {
 
         call.arg(id as u32);
 
-        self.con.send(call).await?;
+        self.con.method_call(call).await?;
 
         Ok(())
         
     }
 
     /// Wait until an action is invoked.
-    pub async fn invoked(&self, id: NotifId) -> DbusResult<InvokedAction> {
+    pub async fn invoked(&self, id: NotifId) -> RequestResult<InvokedAction> {
 
         let signal = SignalMatch::new(
             "/org/freedesktop/Notifications",
@@ -2139,17 +2187,14 @@ impl NotifyProxy {
             "ActionInvoked"
         );
 
-        let stream = self.con.listen(signal).await?;
-        pin!(stream);
-
+        let mut stream = self.con.listen_on(signal).await?;
         let mut key;
 
         loop {
-            let resp = stream.next().await?; // wait for a dbus signal to arrive
-            todo!(); // TODO: implement Clone for Arg and not use Arc but clone it for signals
-            // let event: u32 = resp.arg(0);
-            // key = resp.arg(1);
-            // if event == id { break };
+            let resp = stream.next_signal().await?; // wait for a dbus signal to arrive
+            let event: u32 = resp.arg(0);
+            key = resp.arg(1);
+            if event == id { break };
         }
 
         Ok(InvokedAction { id: key })

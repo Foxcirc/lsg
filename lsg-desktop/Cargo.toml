@@ -17,8 +17,9 @@ signals = ["async-signals"]
 [dependencies]
 
 # tracing
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", default-features = false, features = ["std", "fmt"] }
+# tracing = "0.1.40"
+# tracing-subscriber = { version = "0.3.18", default-features = false, features = ["std", "fmt"] }
+# TODO: use tracing or not?, async-io uses it anyways
 
 # egl
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
