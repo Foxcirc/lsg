@@ -80,7 +80,7 @@ fn service() {
         loop {
             let msg = listener.next_call().await.unwrap();
             println!("{:?}", msg);
-            let reply = MethodError::new(&msg, "lsg.happyfeet", "it worked!");
+            let reply = MethodError::other(&msg, "it worked!");
             con.reply_with(Err(reply)).await.unwrap();
         }
 
@@ -115,7 +115,7 @@ struct BusData {
     /// messages to send
     reqs: async_channel::Receiver<ClientMessage>,
     /// received responses to send back to the tasks
-    resps: HashMap<Id, async_channel::Sender<MethodReply>>,
+    resps: HashMap<Id, async_channel::Sender<Result<MethodReply, MethodError>>>,
     /// received signals to send back to the tasks
     signals: async_broadcast::Sender<Arc<SignalTrigger>>,
     /// registered services
@@ -209,8 +209,16 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestR
                     MessageKind::Invalid => todo!("got an invalid message"),
 
                     MessageKind::Error => {
-                        let err = MethodError::deserialize(msg);
-                        todo!("got an error reply: {:?}", err);
+
+                        let serial: u32 = msg.take_field(FieldCode::ReplySerial).expect("todo");
+                        let id = Id::Serial(serial);
+                        let opt = guard.resps.remove(&id);
+
+                        if let Some(sender) = opt {
+                            let err = MethodError::deserialize(msg).expect("todo");
+                            sender.try_send(Err(err)).unwrap();
+                        }
+
                     },
 
                     MessageKind::MethodReply => {
@@ -221,7 +229,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestR
 
                         if let Some(sender) = opt {
                             let reply = MethodReply::deserialize(msg);
-                            sender.try_send(reply).unwrap();
+                            sender.try_send(Ok(reply)).unwrap();
                         }
 
                     },
@@ -308,7 +316,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
             let mut buf = [0; 128];
             unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
-            if &buf[..2] != b"OK" { return Err(RequestError::Dbus(io::Error::other("sasl authentication failed"))) }
+            if &buf[..2] != b"OK" { return Err(RequestError::IO(io::Error::other("sasl authentication failed"))) }
 
             // begin the session, no more sasl messages will be send after this
             
@@ -454,7 +462,7 @@ impl Connection {
         let req = ClientMessage::MethodCall(send, call);
         self.reqs.try_send(req).unwrap();
 
-        let next = async { Ok(recv.recv().await.unwrap()) };
+        let next = async { recv.recv().await.unwrap().map_err(RequestError::Call) };
         let reactor = async { Err(self.reactor.run_forever().await.unwrap_err()) };
 
         next.or(reactor).await
@@ -903,7 +911,7 @@ impl SignalTrigger {
 enum ClientMessage {
     /// authenticate the client (send lazily on startup)
     Authenticate,
-    MethodCall(async_channel::Sender<MethodReply>, MethodCall),
+    MethodCall(async_channel::Sender<Result<MethodReply, MethodError>>, MethodCall),
     MethodCallVoid(MethodCall),
     MethodReply(MethodReply),
     MethodError(MethodError),
@@ -2026,17 +2034,9 @@ pub enum ParseError {
 
 #[derive(Debug)]
 pub enum RequestError {
-    Dbus(io::Error),
+    IO(io::Error),
     Parse(()), // TODO: parse error type
-}
-
-impl RequestError {
-    fn invalid_arguments() -> Self {
-        Self::Dbus(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid dbus parameter (eg. object path not starting with `/`)"
-        ))
-    }
+    Call(MethodError),
 }
 
 pub type MethodResult<T> = Result<T, MethodError>;
@@ -2055,6 +2055,14 @@ impl MethodError {
         Self {
             caller: to.caller.clone(),
             name: name.to_string(),
+            msg: msg.to_string(),
+        }
+    }
+
+    pub fn other(to: &MethodCall, msg: &str) -> Self {
+        Self {
+            caller: to.caller.clone(),
+            name: "error.other".to_string(),
             msg: msg.to_string(),
         }
     }
@@ -2093,7 +2101,7 @@ pub type RequestResult<T> = Result<T, RequestError>;
 
 impl From<io::Error> for RequestError {
     fn from(value: io::Error) -> Self {
-        Self::Dbus(value)
+        Self::IO(value)
     }
 }
 
