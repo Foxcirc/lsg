@@ -320,7 +320,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
             let mut buf = [0; 128];
             unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
-            if &buf[..2] != b"OK" { return Err(RequestError::IO(io::Error::other("sasl authentication failed"))) }
+            if &buf[..2] != b"OK" { return Err(RequestError::Io(io::Error::other("sasl authentication failed"))) }
 
             // begin the session, no more sasl messages will be send after this
             
@@ -466,7 +466,7 @@ impl Connection {
         let req = ClientMessage::MethodCall(send, call);
         self.reqs.try_send(req).unwrap();
 
-        let next = async { recv.recv().await.unwrap().map_err(RequestError::Call) };
+        let next = async { recv.recv().await.unwrap().map_err(RequestError::Bus) };
         let reactor = async { Err(self.reactor.run_forever().await.unwrap_err()) };
 
         next.or(reactor).await
@@ -526,7 +526,7 @@ impl Connection {
 
         let mut resp = self.method_call(call).await?;
         let val: u32 = resp.arg(0);
-        if val >= 3 { todo!("already owned by someone") }
+        if val >= 3 { return Err(RequestError::AlreadyOwned) }
 
         let (send, recv) = async_channel::bounded(4);
         let req = ClientMessage::AddService(send, name.to_string());
@@ -1138,7 +1138,7 @@ impl DeserializeBuf<'_> {
 
     fn consume_bytes(&mut self, len: usize) -> Option<&[u8]> {
         if len <= self.data.len() {
-            let (bytes, rest) = self.data.split_at(len); // TODO: replace with split_at_checked when it becomes stabilzed
+            let (bytes, rest) = self.data.split_at(len); // MAINTENANCE: replace with split_at_checked when it becomes stabilzed
             self.data = rest;
             self.offset += len;
             Some(bytes)
@@ -1484,8 +1484,6 @@ struct CompleteKind(pub Vec<ArgKind>);
 
 fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = CompleteKind> + 'd {
 
-    // TODO: unit test this, because it doesn't use nesting and really isn't robust
-
     let mut outer = contents.iter();
 
     iter::from_fn(move || {
@@ -1657,7 +1655,7 @@ pub enum Arg {
 impl Arg {
 
     fn kinds(&self) -> Vec<ArgKind> {
-        let mut out = Vec::new(); // TODO: not use Vec but an iterator
+        let mut out = Vec::new(); // TODO: not use Vec but an iterator or smth else
         skind(self, &mut out);
         out
     }
@@ -1747,7 +1745,7 @@ impl Eq for OpsF64 {}
 
 impl Hash for OpsF64 {
     fn hash<H: Hasher>(&self, _: &mut H) {
-        panic!("cannot hash a SimpleArg::Double since floats do not implement Hash in rust");
+        panic!("cannot hash a SimpleArg::Double since floats do not implement Hash");
     }
 }
 
@@ -1759,7 +1757,7 @@ pub struct OpsOwnedFd {
 impl Clone for OpsOwnedFd {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.try_clone().unwrap(), // TODO: what happens here? hard error?
+            inner: self.inner.try_clone().expect("failed to clone an OwnedFd when cloning SimpleArg::Fd"),
         }
     }
 }
@@ -2026,7 +2024,6 @@ fn as_simple_arg(arg: Arg) -> SimpleArg {
 
 #[derive(Debug)]
 pub enum ParseError {
-    // TODO: "Partial": this is an internal state
     /// this error will never appear in the public interface,
     /// it is used to signal that a message is incomplete right now
     Partial,
@@ -2038,9 +2035,10 @@ pub enum ParseError {
 
 #[derive(Debug)]
 pub enum RequestError {
-    IO(io::Error),
-    Parse(()), // TODO: parse error type
-    Call(MethodError),
+    Io(io::Error),
+    Bus(MethodError),
+    Parse(ParseError),
+    AlreadyOwned,
 }
 
 pub type MethodResult<T> = Result<T, MethodError>;
@@ -2113,7 +2111,7 @@ pub type RequestResult<T> = Result<T, RequestError>;
 
 impl From<io::Error> for RequestError {
     fn from(value: io::Error) -> Self {
-        Self::IO(value)
+        Self::Io(value)
     }
 }
 
