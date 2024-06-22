@@ -78,10 +78,14 @@ fn service() {
         let mut listener = con.run_service("lsg.test").await.unwrap();
 
         loop {
+
             let msg = listener.next_call().await.unwrap();
+
+
             println!("{:?}", msg);
-            let reply = MethodError::other(&msg, "it worked!");
+            let reply = MethodError::unimplemented(&msg);
             con.reply_with(Err(reply)).await.unwrap();
+
         }
 
         // let pid = nix::unistd::getpid().as_raw();
@@ -2062,8 +2066,16 @@ impl MethodError {
     pub fn other(to: &MethodCall, msg: &str) -> Self {
         Self {
             caller: to.caller.clone(),
-            name: "error.other".to_string(),
+            name: "lsg.other".to_string(),
             msg: msg.to_string(),
+        }
+    }
+
+    pub fn unimplemented(to: &MethodCall) -> Self {
+        Self {
+            caller: to.caller.clone(),
+            name: "lsg.unimplemented".to_string(),
+            msg: "this method is not implemented, as of now".to_string(),
         }
     }
 
