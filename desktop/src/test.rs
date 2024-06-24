@@ -2,7 +2,7 @@
 use std::io::{Write, Read};
 
 use futures_lite::future::block_on;
-use lsg_desktop::window::*;
+use desktop::window::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(app, "lsg-test")?
@@ -16,7 +16,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
     // we will be using the built-in gl functionality
     let egl = EglInstance::new(&mut evl)?;
 
-    lsg_gl::load_with(|name|
+    gl::load_with(|name|
         egl.get_proc_address(name).unwrap() as *const _
     );
     
@@ -85,7 +85,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                     },
                     WindowEvent::RedrawRequested => {
                         ctx.bind().unwrap();
-                        lsg_gl::clear(0.3, 0.1, 0.6, 0.0);
+                        gl::clear(0.3, 0.1, 0.6, 0.0);
                         let token = window.pre_present_notify();
                         ctx.swap_buffers(None, token).unwrap();
                         // window.request_redraw(token); // fuck. you.
@@ -95,7 +95,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                         // println!("resizing main surface!");
                         // TOOD: when popup is opened it messes up the whole resizing/configuring again :(
                         ctx.resize(size);
-                        lsg_gl::resize_viewport(size.width, size.height);
+                        gl::resize_viewport(size.width, size.height);
                     },
                     WindowEvent::Rescale { scale } => {
                         println!("scale factor: {scale}");
@@ -199,7 +199,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                     match event {
                         WindowEvent::RedrawRequested => {
                             popup_ctx2.bind().unwrap();
-                            lsg_gl::clear(0.2, 0.7, 0.1, 1.0);
+                            gl::clear(0.2, 0.7, 0.1, 1.0);
                             let token = popup_window2.pre_present_notify();
                             popup_ctx2.swap_buffers(None, token).unwrap();
                             popup_window2.request_redraw(token); // fuck. you.
@@ -208,7 +208,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                             println!("@popup resize");
                             popup_ctx2.bind().unwrap();
                             popup_ctx2.resize(size);
-                            lsg_gl::resize_viewport(size.width, size.height);
+                            gl::resize_viewport(size.width, size.height);
                         },
                         // WindowEvent::Rescale { scale } => {
                         //     println!("@popup rescale to {scale}");

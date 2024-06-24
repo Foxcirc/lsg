@@ -1,5 +1,5 @@
 [package]
-name = "lsg-desktop"
+name = "desktop"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -46,5 +46,5 @@ async-signals = { version = "0.4.0", optional = true }
 
 [dev-dependencies]
 
-# for testing the windowing portion of lsg-desktop
-lsg-gl = { path = "../lsg-gl" }
+# for testing the windowing portion of lsg/desktop
+gl = { path = "../gl" }

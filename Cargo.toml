@@ -4,23 +4,16 @@ name = "lsg"
 description = "light and small gui apps"
 
 [workspace]
-members = ["lsg-desktop"]
-# members = ["lsg-core","lsg-gl", "lsg-window", "lsg-winit"]
+members = ["desktop", "gl"]
 package.version = "0.1.0"
 package.edition = "2021"
 package.authors = ["foxcirc"]
 
-[[test]]
-name = "glutin"
-path = "src/test/glutin.rs"
-harness = false
-edition = "2021" # why is 2015 the default?
-
-[[test]]
-name = "app"
-path = "src/test/app.rs"
-harness = false
-edition = "2021"
+# [[test]]
+# name = "app"
+# path = "src/test/app.rs"
+# harness = false
+# edition = "2021" # the default seems to be 2015
 
 [dev-dependencies]
 async-executor = "1.8.0"
@@ -28,10 +21,5 @@ futures-lite = "2.2.0"
 env_logger = "0.11.2"
 
 [dependencies]
-lsg-winit = { path = "lsg-winit" }
-lsg-gl = { path = "lsg-gl" }
-glutin = "0.31.3"
-raw-window-handle = "0.5.0"
-lsg-desktop = { version = "0.1.0", path = "lsg-desktop" }
-# wgpu = { version = "0.19.1", default-features = false, features = ["wgsl"] }
-# raw-window-handle = "0.6.0"
+desktop = { version = "0.1.0", path = "desktop" }
+gl = { version = "0.1.0", path = "gl" }
