@@ -10,8 +10,9 @@ use std::{
     os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream},
 };
 
+use async_channel as channel;
 use async_lock::Mutex as AsyncMutex;
-use futures_lite::FutureExt;
+use futures_lite::{future, Future, FutureExt};
 
 #[test]
 fn call() {
@@ -20,15 +21,19 @@ fn call() {
     
         let con = Connection::new().unwrap();
 
-        let call = MethodCall::new(
-             "org.freedesktop.DBus",
-             "/org/freedesktop/DBus",
-             "org.freedesktop.DBus.Debug.Stats",
-             "GetStats",
-        );
+        con.with_reactor(async {
+
+            let call = MethodCall::new(
+                 "org.freedesktop.DBus",
+                 "/org/freedesktop/DBus",
+                 "org.freedesktop.DBus.Debug.Stats",
+                 "GetStats",
+            );
         
-        let _resp = con.method_call(call).await.unwrap();
-          // ^^^^ parsing this is enough (maps, variants, etc. covered)
+            let _resp = con.method_call(call).await.unwrap();
+              // ^^^^ parsing this is enough (maps, variants, etc. covered)
+            
+        }).await.unwrap();
 
     })
     
@@ -40,21 +45,26 @@ fn notifications() {
     async_io::block_on(async {
 
         let con = Connection::new().unwrap();
-        let proxy = NotifyProxy::new(&con);
 
-        let notif = Notif::new("lsg-test (dbus)", "show me the magic")
-            .body("some text in the body")
-            .urgency(Urgency::Critical)
-            .action(Action::default("default selection"))
-            .action(Action::new("a", "selection A"))
-            .action(Action::new("b", "selection B"));
+        con.with_reactor(async {
+            
+            let proxy = NotifyProxy::new(&con);
+
+            let notif = Notif::new("lsg-test (dbus)", "show me the magic")
+                .body("some text in the body")
+                .urgency(Urgency::Critical)
+                .action(Action::default("default selection"))
+                .action(Action::new("a", "selection A"))
+                .action(Action::new("b", "selection B"));
         
-        let id = proxy.send(notif).await.unwrap();
-        // let action = proxy.invoked(id).await.unwrap();
+            let id = proxy.send(notif).await.unwrap();
+            // let action = proxy.invoked(id).await.unwrap();
 
-        // println!("invoked action: {}", action.id);
+            // println!("invoked action: {}", action.id);
 
-        proxy.close(id).await.unwrap();
+            proxy.close(id).await.unwrap();
+        
+        }).await.unwrap();
         
     })
     
@@ -75,18 +85,21 @@ fn service() {
 
         // let mut service = Service::new("org.freedesktop.StatusNotifierItem-X-X");
 
-        let mut listener = con.run_service("lsg.test").await.unwrap();
+        con.with_reactor(async {
 
-        loop {
+            let mut listener = con.run_service("lsg.test").await.unwrap();
 
-            let msg = listener.next_call().await.unwrap();
+            loop {
 
+                let msg = listener.next_call().await;
 
-            println!("{:?}", msg);
-            let reply = MethodError::unimplemented(&msg);
-            con.reply_with(Err(reply)).await.unwrap();
+                println!("{:?}", msg);
+                let reply = MethodError::unimplemented(&msg);
+                con.reply_with(Err(reply));
 
-        }
+            }
+            
+        }).await.unwrap();
 
         // let pid = nix::unistd::getpid().as_raw();
         // let name = format!("org.freedesktop.StatusNotifierItem-{}-1", pid);
@@ -117,13 +130,13 @@ struct BusData {
     /// current serial
     serial: u32,
     /// messages to send
-    reqs: async_channel::Receiver<ClientMessage>,
+    actions: channel::Receiver<ClientMessage>,
     /// received responses to send back to the tasks
-    resps: HashMap<Id, async_channel::Sender<Result<MethodReply, MethodError>>>,
+    responses: HashMap<Id, channel::Sender<Result<MethodReply, MethodError>>>,
     /// received signals to send back to the tasks
     signals: async_broadcast::Sender<Arc<SignalTrigger>>,
     /// registered services
-    services: HashMap<String, async_channel::Sender<MethodCall>>,
+    services: HashMap<String, channel::Sender<MethodCall>>,
     /// current message buffer
     buf: Vec<u8>,
 }
@@ -131,7 +144,7 @@ struct BusData {
 impl Reactor {
 
     /// Run the reactor and process events. This future never completes.
-    pub async fn run_forever(&self) -> RequestResult<Infallible> {
+    pub async fn run_forever(&self) -> ReactorResult<Infallible> {
 
         let mut guard = self.locked.lock().await;                
 
@@ -154,7 +167,7 @@ impl Reactor {
                 MoreData,
             }
 
-            let reqs = guard.reqs.clone(); // we have to clone because we can't borrow guard in both `request` and `readable`
+            let reqs = guard.actions.clone(); // we have to clone because we can't borrow guard in both `request` and `readable`
 
             let request = async {
                 let val = reqs.recv().await.unwrap();
@@ -163,9 +176,9 @@ impl Reactor {
 
             let readable = async {
 
-                let mut buf = [0; 1024]; // TODO: test mechanism by decreasing the buffer size to smth like [0; 24]
+                let mut buf = [0; 1024];
 
-                let bytes = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf) ) }.await?;
+                let bytes = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
                 if bytes == 0 { return Err(io::Error::other("kicked by broker")) };
                 guard.buf.extend_from_slice(&buf[..bytes]);
 
@@ -182,20 +195,9 @@ impl Reactor {
 
     }
 
-    pub async fn process_all_requests(&self) -> RequestResult<()> {
-
-        let mut guard = self.locked.lock().await;                
-        while let Ok(req) = guard.reqs.try_recv() {
-            process_request(&mut guard, req).await?;
-        }
-
-        Ok(())
-
-    }
-    
 }
 
-fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestResult<()> {
+fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> ReactorResult<()> {
 
     loop {
 
@@ -216,7 +218,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestR
 
                         let serial: u32 = msg.take_field(FieldCode::ReplySerial).expect("todo");
                         let id = Id::Serial(serial);
-                        let opt = guard.resps.remove(&id);
+                        let opt = guard.responses.remove(&id);
 
                         if let Some(sender) = opt {
                             let err = MethodError::deserialize(msg).expect("todo");
@@ -229,7 +231,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestR
 
                         let serial: u32 = msg.take_field(FieldCode::ReplySerial).expect("todo");
                         let id = Id::Serial(serial);
-                        let opt = guard.resps.remove(&id);
+                        let opt = guard.responses.remove(&id);
 
                         if let Some(sender) = opt {
                             let reply = MethodReply::deserialize(msg);
@@ -247,25 +249,12 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestR
 
                     MessageKind::MethodCall => {
 
-                        // let serial = msg.serial;
-                        // let sender: String = msg.take_field(FieldCode::Sender).expect("todo");
-
                         let call = MethodCall::deserialize(msg).expect("todo: parse error 2");
 
                         if let Some(sender) = guard.services.get_mut(&call.dest) {
                             sender.try_send(call).expect("todo: cannot send, full");
                         }
         
-                            // let result = service.handle(call);
-                            // let mut msg = serialize_method_call_result(result);
-
-                            // msg.serial = u32::MAX; // don't care about the serial
-
-                            // msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)   ));
-                            // msg.fields.push(header_field(FieldCode::Dest ,       SimpleArg::String(sender)));
-
-                            // todo!("send reply");
-
                     },
 
                 }
@@ -283,7 +272,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> RequestR
     
 }
 
-async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: ClientMessage) -> RequestResult<()> {
+async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: ClientMessage) -> ReactorResult<()> {
 
     match request {
 
@@ -320,7 +309,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
             let mut buf = [0; 128];
             unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
-            if &buf[..2] != b"OK" { return Err(RequestError::Io(io::Error::other("sasl authentication failed"))) }
+            if &buf[..2] != b"OK" { return Err(ReactorError::Io(io::Error::other("sasl authentication failed"))) }
 
             // begin the session, no more sasl messages will be send after this
             
@@ -343,13 +332,13 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
         },
 
-        ClientMessage::MethodCall(send, call) => {
+        ClientMessage::MethodCall { notif, payload } => {
 
             let serial = guard.serial;
             guard.serial += 1;
-            guard.resps.insert(Id::Serial(serial), send);
+            guard.responses.insert(Id::Serial(serial), notif);
 
-            let mut msg = call.serialize();
+            let mut msg = payload.serialize();
             msg.serial = serial;
             let data = msg.serialize();
 
@@ -358,9 +347,9 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
         },
 
-        ClientMessage::MethodCallVoid(call) => {
+        ClientMessage::MethodCallVoid { payload } => {
 
-            let mut msg = call.serialize();
+            let mut msg = payload.serialize();
             msg.serial = u32::MAX;
             let data = msg.serialize();
 
@@ -369,9 +358,20 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
         },
 
-        ClientMessage::MethodReply(val) => {
+        ClientMessage::MethodReply {  payload } => {
 
-            let mut msg = val.serialize();
+            let mut msg = payload.serialize();
+            msg.serial = u32::MAX;
+            let data = msg.serialize();
+
+            let stream = unsafe { guard.bus.get_mut() };
+            stream.write_all(&data)?;
+            
+        },
+
+        ClientMessage::MethodError { payload } => {
+
+            let mut msg = payload.serialize();
             msg.serial = u32::MAX;
             let data = msg.serialize();
 
@@ -380,23 +380,12 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
         },
 
-        ClientMessage::MethodError(val) => {
-
-            let mut msg = val.serialize();
-            msg.serial = u32::MAX;
-            let data = msg.serialize();
-
-            let stream = unsafe { guard.bus.get_mut() };
-            stream.write_all(&data)?;
-
-        },
-
-        ClientMessage::AddService(send, name) => {
+        ClientMessage::AddService { notif, payload: name } => {
 
             // the name was already previously registered
             // we just add the service to our list of active services here
 
-            guard.services.insert(name, send);
+            guard.services.insert(name, notif);
             
         },
 
@@ -410,7 +399,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 pub struct Connection {
     reactor: Arc<Reactor>,
     /// handle to send requests
-    reqs: async_channel::Sender<ClientMessage>,
+    requests: channel::Sender<ClientMessage>,
     signals: async_broadcast::Receiver<Arc<SignalTrigger>>,
 }
 
@@ -432,19 +421,19 @@ impl Connection {
 
         let stream = UnixStream::connect(path)?;
 
-        let reqs = async_channel::bounded(4);
-        let mut signals = async_broadcast::broadcast(4);
-        signals.0.set_overflow(true); // drop old signals if not consumed
+        let actions = channel::bounded(4);
+        let signals = async_broadcast::broadcast(4);
+        // signals.0.set_overflow(true); // drop old signals if not consumed
 
         // authenticate and say hello, this is executed
         // when the reactor first runs
-        reqs.0.try_send(ClientMessage::Authenticate).unwrap();
+        actions.0.try_send(ClientMessage::Authenticate).unwrap();
 
         let reactor = Reactor {
             locked: AsyncMutex::new(BusData {
                 bus: async_io::Async::new(stream)?,
-                reqs: reqs.1,
-                resps: HashMap::new(),
+                actions: actions.1,
+                responses: HashMap::new(),
                 signals: signals.0,
                 services: HashMap::new(),
                 serial: 1, // 0 is not allowed, so start at 1
@@ -454,89 +443,95 @@ impl Connection {
 
         Ok(Self {
             reactor: Arc::new(reactor),
-            reqs: reqs.0,
+            requests: actions.0,
             signals: signals.1,
         })
         
     }
     
-    pub async fn method_call(&self, call: MethodCall) -> RequestResult<MethodReply> {
-        
-        let (send, recv) = async_channel::bounded(1);
-        let req = ClientMessage::MethodCall(send, call);
-        self.reqs.try_send(req).unwrap();
-
-        let next = async { recv.recv().await.unwrap().map_err(RequestError::Bus) };
+    async fn with_reactor<O>(&self, input: impl Future<Output = O>) -> ReactorResult<O> {
+        let future  = async { Ok(input.await) };
         let reactor = async { Err(self.reactor.run_forever().await.unwrap_err()) };
-
-        next.or(reactor).await
-
+        future.or(reactor).await
     }
 
-    pub async fn method_call_void(&self, call: MethodCall) -> RequestResult<()> {
+    async fn run_reactor(&self) -> ReactorResult<()> {
+        self.with_reactor(future::pending()).await
+    }
+
+    pub async fn method_call(&self, payload: MethodCall) -> MethodResult<MethodReply> {
         
-        let req = ClientMessage::MethodCallVoid(call);
-        self.reqs.try_send(req).unwrap();
+        let (notif, receive) = channel::bounded(1);
+        let req = ClientMessage::MethodCall { notif, payload };
+        self.requests.try_send(req).unwrap();
 
-        self.reactor.process_all_requests().await
+        receive.recv().await.unwrap()
 
     }
 
-    pub async fn reply_with(&self, result: Result<MethodReply, MethodError>) -> RequestResult<()> {
+    pub fn method_call_void(&self, payload: MethodCall) {
+
+        // TODO: we kinda need to know when a void call is sent, so implement something like this
+        
+        let req = ClientMessage::MethodCallVoid { payload };
+        self.requests.try_send(req).unwrap();
+
+    }
+
+    pub fn reply_with(&self, result: MethodResult<MethodReply>) {
         
         match result {
-            Ok(val) => {
-                let req = ClientMessage::MethodReply(val);
-                self.reqs.try_send(req).unwrap();
+            Ok(payload) => {
+                let req = ClientMessage::MethodReply { payload };
+                self.requests.try_send(req).unwrap();
             },
-            Err(val) => {
-                let req = ClientMessage::MethodError(val);
-                self.reqs.try_send(req).unwrap();
-            }
+            Err(payload) => {
+                let req = ClientMessage::MethodError { payload };
+                self.requests.try_send(req).unwrap();
+            },
         }
-
-        self.reactor.process_all_requests().await
 
     }
 
-    pub async fn listen_on(&self, matching: SignalMatch) -> RequestResult<SignalListener> {
+    pub fn listen_on(&self, matching: SignalMatch) -> SignalListener {
 
         let call = MethodCall::add_match(matching.rule.clone());
-        let req = ClientMessage::MethodCallVoid(call);
-        self.reqs.try_send(req).unwrap();
+        self.method_call_void(call);
 
-        Ok(SignalListener {
+        SignalListener {
             matching,
             con: self.clone(),
-            recv: self.signals.clone(),
-            reqs: self.reqs.clone(), // to remove the match on drop
+            incoming_signals: self.signals.clone(),
+            requests: self.requests.clone(), // to remove the match on drop
             ref_test: Arc::new(()),
-        })
+        }
 
     }
 
     /// Run a service.
     /// Will never resolve.
-    pub async fn run_service(&self, name: &str) -> RequestResult<ServiceListener> {
+    pub async fn run_service(&self, name: &str) -> RegisterResult<ServiceListener> {
 
         let call = MethodCall::request_name(
             name.to_string(),
             0x4 /* don't queue */
         );
 
-        let mut resp = self.method_call(call).await?;
-        let val: u32 = resp.arg(0);
-        if val >= 3 { return Err(RequestError::AlreadyOwned) }
+        let mut resp = self.method_call(call).await
+            .map_err(RegisterError::Other)?;
 
-        let (send, recv) = async_channel::bounded(4);
-        let req = ClientMessage::AddService(send, name.to_string());
-        self.reqs.try_send(req).unwrap();
+        let val: u32 = resp.arg(0);
+        if val >= 3 { return Err(RegisterError::AlreadyOwned) }
+
+        let (notif, incoming_calls) = channel::bounded(4);
+        let req = ClientMessage::AddService { notif, payload: name.to_string() };
+        self.requests.try_send(req).unwrap();
 
         Ok(ServiceListener {
             name: name.to_string(),
             con: self.clone(),
-            recv,
-            reqs: self.reqs.clone(), // to remove the match on drop
+            incoming_calls,
+            requests: self.requests.clone(), // to remove the match on drop
             ref_test: Arc::new(()),
         })
         
@@ -551,8 +546,8 @@ impl Connection {
 pub struct SignalListener {
     matching: SignalMatch,
     con: Connection,
-    recv: async_broadcast::Receiver<Arc<SignalTrigger>>,
-    reqs: async_channel::Sender<ClientMessage>,
+    incoming_signals: async_broadcast::Receiver<Arc<SignalTrigger>>,
+    requests: channel::Sender<ClientMessage>,
     /// used to test if this is the last listener of this kind on drop
     ref_test: Arc<()>,
 }
@@ -562,29 +557,23 @@ impl Drop for SignalListener {
         let arc = mem::take(&mut self.ref_test);
         if Arc::into_inner(arc).is_some() {
             // remove the match rule
-            let call = MethodCall::remove_match(self.matching.rule.clone());
-            let req = ClientMessage::MethodCallVoid(call);
-            self.reqs.try_send(req).unwrap();
+            let payload = MethodCall::remove_match(self.matching.rule.clone());
+            let req = ClientMessage::MethodCallVoid { payload };
+            self.requests.try_send(req).unwrap();
         }
     }
 }
 
 impl SignalListener {
 
-    pub async fn next_signal(&mut self) -> RequestResult<Arc<SignalTrigger>> {
-
+    pub async fn next_signal(&mut self) -> Arc<SignalTrigger> {
         loop {
-
-            let next = async { Ok(self.recv.recv_direct().await.unwrap()) };
-            let reactor = async { Err(self.con.reactor.run_forever().await.unwrap_err()) };
-
-            let resp = next.or(reactor).await?;
+            // loop until the signal we match on arrives
+            let resp = self.incoming_signals.recv_direct().await.unwrap();
             if self.matching.hash == resp.hash {
-                return Ok(resp)
+                return resp
             }
-
         }
-
     }
 
 }
@@ -595,8 +584,8 @@ impl SignalListener {
 pub struct ServiceListener {
     name: String,
     con: Connection,
-    recv: async_channel::Receiver<MethodCall>,
-    reqs: async_channel::Sender<ClientMessage>,
+    incoming_calls: channel::Receiver<MethodCall>,
+    requests: channel::Sender<ClientMessage>,
     /// used to test if this is the last listener of this kind on drop
     ref_test: Arc<()>,
 }
@@ -605,23 +594,18 @@ impl Drop for ServiceListener {
     fn drop(&mut self) {
         let arc = mem::take(&mut self.ref_test);
         if Arc::into_inner(arc).is_some() {
-            // remove the match rule
-            let call = MethodCall::release_name(mem::take(&mut self.name));
-            let req = ClientMessage::MethodCallVoid(call);
-            self.reqs.try_send(req).unwrap();
+            // release the name
+            let payload = MethodCall::release_name(mem::take(&mut self.name));
+            let req = ClientMessage::MethodCallVoid { payload };
+            self.requests.try_send(req).unwrap();
         }
     }
 }
 
 impl ServiceListener {
 
-    pub async fn next_call(&mut self) -> RequestResult<MethodCall> {
-
-        let next = async { Ok(self.recv.recv().await.unwrap()) };
-        let reactor = async { Err(self.con.reactor.run_forever().await.unwrap_err()) };
-
-        next.or(reactor).await
-
+    pub async fn next_call(&mut self) -> MethodCall {
+        self.incoming_calls.recv().await.unwrap()
     }
 
 }
@@ -915,11 +899,13 @@ impl SignalTrigger {
 enum ClientMessage {
     /// authenticate the client (send lazily on startup)
     Authenticate,
-    MethodCall(async_channel::Sender<Result<MethodReply, MethodError>>, MethodCall),
-    MethodCallVoid(MethodCall),
-    MethodReply(MethodReply),
-    MethodError(MethodError),
-    AddService(async_channel::Sender<MethodCall>, String /* name */),
+
+    MethodCall     { notif: channel::Sender<MethodResult<MethodReply>>, payload: MethodCall },
+    AddService     { notif: channel::Sender<MethodCall>,                payload: String /* name */ },
+
+    MethodCallVoid { payload: MethodCall },
+    MethodReply    { payload: MethodReply },
+    MethodError    { payload: MethodError },
 }
 
 enum ServerMessage {
@@ -2034,11 +2020,17 @@ pub enum ParseError {
 }
 
 #[derive(Debug)]
-pub enum RequestError {
+pub enum ReactorError {
     Io(io::Error),
-    Bus(MethodError),
     Parse(ParseError),
+}
+
+pub type RegisterResult<T> = Result<T, RegisterError>;
+
+#[derive(Debug)]
+pub enum RegisterError {
     AlreadyOwned,
+    Other(MethodError),
 }
 
 pub type MethodResult<T> = Result<T, MethodError>;
@@ -2107,9 +2099,9 @@ impl MethodError {
 
 }
 
-pub type RequestResult<T> = Result<T, RequestError>;
+pub type ReactorResult<T> = Result<T, ReactorError>;
 
-impl From<io::Error> for RequestError {
+impl From<io::Error> for ReactorError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
     }
@@ -2133,7 +2125,7 @@ impl NotifyProxy {
         Self { con: con.clone() }
     }
 
-    pub async fn send(&self, notif: Notif<'_>) -> RequestResult<NotifId> {
+    pub async fn send(&self, notif: Notif<'_>) -> MethodResult<NotifId> {
 
         let mut call = MethodCall::new(
             "org.freedesktop.Notifications",
@@ -2173,13 +2165,12 @@ impl NotifyProxy {
         
         let mut resp = self.con.method_call(call).await?;
         let id: u32 = resp.arg(0);
-
         Ok(id)
         
     }
 
     /// Forcefully close a notification.
-    pub async fn close(&self, id: NotifId) -> RequestResult<()> {
+    pub async fn close(&self, id: NotifId) -> MethodResult<()> {
 
         let mut call = MethodCall::new(
             "org.freedesktop.Notifications",
@@ -2191,13 +2182,12 @@ impl NotifyProxy {
         call.arg(id as u32);
 
         self.con.method_call(call).await?;
-
         Ok(())
         
     }
 
     /// Wait until an action is invoked.
-    pub async fn invoked(&self, id: NotifId) -> RequestResult<InvokedAction> {
+    pub async fn invoked(&self, id: NotifId) -> ReactorResult<InvokedAction> {
 
         let signal = SignalMatch::new(
             "/org/freedesktop/Notifications",
@@ -2205,11 +2195,11 @@ impl NotifyProxy {
             "ActionInvoked"
         );
 
-        let mut stream = self.con.listen_on(signal).await?;
+        let mut stream = self.con.listen_on(signal);
         let mut key;
 
         loop {
-            let resp = stream.next_signal().await?; // wait for a dbus signal to arrive
+            let resp = stream.next_signal().await; // wait for a dbus signal to arrive
             let event: u32 = resp.arg(0);
             key = resp.arg(1);
             if event == id { break };
