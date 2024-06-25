@@ -1,18 +1,11 @@
 
 use std::{
-    sync::Arc,
-    time::Duration,
-    env, iter, mem,
-    collections::HashMap,
-    hash::{DefaultHasher, Hash, Hasher},
-    convert::{identity, Infallible},
-    io::{self, Read, Write},
-    os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream},
+    collections::HashMap, convert::{identity, Infallible}, env, fmt, hash::{DefaultHasher, Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}, sync::Arc, time::Duration, error::Error as StdError,
 };
 
 use async_channel as channel;
 use async_lock::Mutex as AsyncMutex;
-use futures_lite::{future, Future, FutureExt};
+use futures_lite::{Future, FutureExt};
 
 #[test]
 fn call() {
@@ -59,7 +52,7 @@ fn notifications() {
         
             let id = proxy.send(notif).await.unwrap();
 
-            let action = proxy.invoked(id).await.unwrap();
+            let action = proxy.invoked(id).await;
             println!("invoked action: {}", action.id);
 
             proxy.close(id).await.unwrap();
@@ -126,14 +119,15 @@ struct Reactor {
 }
 
 struct BusData {
+    /// the bus connection
     bus: async_io::Async<UnixStream>,
-    /// current serial
+    /// current serial, counting up from 1
     serial: u32,
-    /// messages to send
+    ///  actions the reactor should do
     actions: channel::Receiver<ClientMessage>,
-    /// received responses to send back to the tasks
-    responses: HashMap<Id, channel::Sender<Result<MethodReply, MethodError>>>,
-    /// received signals to send back to the tasks
+    /// send replies back to the tasks
+    replies: HashMap<Id, channel::Sender<Result<MethodReply, MethodError>>>,
+    /// send signals back to the tasks
     signals: async_broadcast::Sender<Arc<SignalTrigger>>,
     /// registered services
     services: HashMap<String, channel::Sender<MethodCall>>,
@@ -143,8 +137,19 @@ struct BusData {
 
 impl Reactor {
 
-    /// Run the reactor and process events. This future never completes.
-    pub async fn run_forever(&self) -> ReactorResult<Infallible> {
+    /// Run the reactor and process events.
+    ///
+    /// # Errors
+    ///
+    /// This will never return unless an i/o error occurs or an invalid message is received.
+    /// In this case all currently in-flight method calls are terminated with a `MethodError`
+    /// of kind `Reactor`.
+    ///
+    /// After an error has occured you can try to run the reactor again, which may work depending on
+    /// the error state.
+    /// Rerunning the reactor will not reconnect to dbus so an invalid message state might persist.
+    /// Because of this you should give up after a couple of retries.
+    pub(self) async fn run_forever(&self) -> io::Result<Infallible> {
 
         let mut guard = self.locked.lock().await;                
 
@@ -155,10 +160,27 @@ impl Reactor {
         // is cancelled from outside interupption, the guard is dropped and
         // another task can pick up the event loop
 
-        loop {
+        let result = Self::run_inner(&mut guard).await;
 
-            // only wait for `writable` events when neceserry, otherwise we would infinitely
-            // loop here, since the fd is always gonna be writable.
+        // in case of error, cancel all currently active requests
+        for (.., val) in guard.replies.drain() {
+            val.try_send(Err(MethodError {
+                caller: MethodCaller::Ourselves,
+                kind: MethodErrorKind::Reactor,
+            })).unwrap()
+        }
+
+        // also reset the message buffer because we just deleted all
+        // active request anyways
+        guard.buf.clear();
+        
+        result
+
+    }
+
+    async fn run_inner(guard: &mut async_lock::MutexGuard<'_, BusData>) -> io::Result<Infallible> {
+
+        loop {
 
             enum Either {
                 /// We should execute this request
@@ -187,17 +209,17 @@ impl Reactor {
             };
 
             match readable.or(request).await? {
-                Either::Request(request) => process_request(&mut guard, request).await?,
-                Either::MoreData         => process_incoming(&mut guard)?,
+                Either::Request(request) => process_request(guard, request).await?,
+                Either::MoreData         => process_incoming(guard).map_err(io::Error::other)?,
             }
 
         }
-
+        
     }
 
 }
 
-fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> ReactorResult<()> {
+fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> Result<(), ParseError> {
 
     loop {
 
@@ -212,16 +234,18 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> ReactorR
 
                 match msg.kind {
 
-                    MessageKind::Invalid => todo!("got an invalid message kind"),
+                    MessageKind::Invalid => return Err(ParseError::Invalid),
 
                     MessageKind::Error => {
 
-                        let serial: u32 = msg.take_field(FieldCode::ReplySerial).expect("todo");
+                        let serial: u32 = msg.take_field(FieldCode::ReplySerial)
+                            .ok_or(ParseError::Invalid)?;
+
                         let id = Id::Serial(serial);
-                        let opt = guard.responses.remove(&id);
+                        let opt = guard.replies.remove(&id);
 
                         if let Some(sender) = opt {
-                            let err = MethodError::deserialize(msg).expect("todo");
+                            let err = MethodError::deserialize(msg)?;
                             sender.try_send(Err(err)).unwrap();
                         }
 
@@ -229,9 +253,11 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> ReactorR
 
                     MessageKind::MethodReply => {
 
-                        let serial: u32 = msg.take_field(FieldCode::ReplySerial).expect("todo");
+                        let serial: u32 = msg.take_field(FieldCode::ReplySerial)
+                            .ok_or(ParseError::Invalid)?;
+
                         let id = Id::Serial(serial);
-                        let opt = guard.responses.remove(&id);
+                        let opt = guard.replies.remove(&id);
 
                         if let Some(sender) = opt {
                             let reply = MethodReply::deserialize(msg);
@@ -242,17 +268,17 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> ReactorR
 
                     MessageKind::Signal => {
 
-                        let signal = SignalTrigger::deserialize(msg).expect("todo: parse error 3");
+                        let signal = SignalTrigger::deserialize(msg)?;
                         guard.signals.try_broadcast(Arc::new(signal)).unwrap(); // replaces last message if full
 
                     }
 
                     MessageKind::MethodCall => {
 
-                        let call = MethodCall::deserialize(msg).expect("todo: parse error 2");
+                        let call = MethodCall::deserialize(msg)?;
 
                         if let Some(sender) = guard.services.get_mut(&call.dest) {
-                            sender.try_send(call).expect("todo: cannot send, full");
+                            sender.try_send(call).unwrap();
                         }
         
                     },
@@ -272,7 +298,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> ReactorR
     
 }
 
-async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: ClientMessage) -> ReactorResult<()> {
+async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, request: ClientMessage) -> io::Result<()> {
 
     match request {
 
@@ -309,7 +335,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
             let mut buf = [0; 128];
             unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
-            if &buf[..2] != b"OK" { return Err(ReactorError::Io(io::Error::other("sasl authentication failed"))) }
+            if &buf[..2] != b"OK" { return Err(io::Error::other("sasl authentication failed")) }
 
             // begin the session, no more sasl messages will be send after this
             
@@ -336,7 +362,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
             let serial = guard.serial;
             guard.serial += 1;
-            guard.responses.insert(Id::Serial(serial), notif);
+            guard.replies.insert(Id::Serial(serial), notif);
 
             let mut msg = payload.serialize();
             msg.serial = serial;
@@ -433,7 +459,7 @@ impl Connection {
             locked: AsyncMutex::new(BusData {
                 bus: async_io::Async::new(stream)?,
                 actions: actions.1,
-                responses: HashMap::new(),
+                replies: HashMap::new(),
                 signals: signals.0,
                 services: HashMap::new(),
                 serial: 1, // 0 is not allowed, so start at 1
@@ -449,14 +475,14 @@ impl Connection {
         
     }
     
-    async fn with_reactor<O>(&self, input: impl Future<Output = O>) -> ReactorResult<O> {
-        let future  = async { Ok(input.await) };
-        let reactor = async { Err(self.reactor.run_forever().await.unwrap_err()) };
-        future.or(reactor).await
+    async fn run_reactor(&self) -> io::Result<Infallible> {
+        self.reactor.run_forever().await
     }
 
-    async fn run_reactor(&self) -> ReactorResult<()> {
-        self.with_reactor(future::pending()).await
+    async fn with_reactor<O>(&self, input: impl Future<Output = O>) -> io::Result<O> {
+        let future  = async { Ok(input.await) };
+        let reactor = async { Err(self.run_reactor().await.unwrap_err()) };
+        future.or(reactor).await
     }
 
     pub async fn method_call(&self, payload: MethodCall) -> MethodResult<MethodReply> {
@@ -628,7 +654,7 @@ pub struct MethodCall {
     pub no_reply: bool,
     pub allow_interactive_auth: bool,
     pub args: Vec<Arg>,
-    caller: Option<MethodCaller>,
+    caller: MethodCaller,
 }
 
 impl MethodCall {
@@ -636,7 +662,7 @@ impl MethodCall {
     pub fn new(dest: &str, path: &str, iface: &str, member: &str) -> Self {
 
         Self {
-            caller: None, // this would be ourselves
+            caller: MethodCaller::Ourselves,
             dest: dest.to_string(), // Todo: arena
             path: path.to_string(),
             iface: iface.to_string(),
@@ -671,14 +697,14 @@ impl MethodCall {
     fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
 
         Ok(Self {
-            caller: Some(MethodCaller {
-                name: msg.take_field(FieldCode::Sender).ok_or(ParseError::InvalidData)?,
+            caller: MethodCaller::Peer {
+                name: msg.take_field(FieldCode::Sender).ok_or(ParseError::Invalid)?,
                 serial: msg.serial,
-            }),
-            dest:   msg.take_field(FieldCode::Dest).ok_or(ParseError::InvalidData)?,
-            path:   msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
-            iface:  msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
-            member: msg.take_field(FieldCode::Member).ok_or(ParseError::InvalidData)?,
+            },
+            dest:   msg.take_field(FieldCode::Dest).ok_or(ParseError::Invalid)?,
+            path:   msg.take_field(FieldCode::ObjPath).ok_or(ParseError::Invalid)?,
+            iface:  msg.take_field(FieldCode::Iface).ok_or(ParseError::Invalid)?,
+            member: msg.take_field(FieldCode::Member).ok_or(ParseError::Invalid)?,
             no_reply: msg.no_reply,
             allow_interactive_auth: msg.allow_interactive_auth,
             args: msg.args
@@ -764,16 +790,10 @@ impl SignalMatch {
 
 }
 
-#[derive(Debug, Clone)]
-struct MethodCaller {
-    name: String,
-    serial: u32,
-}
-
 #[derive(Debug)]
 pub struct MethodReply {
     args: Vec<Option<Arg>>,
-    caller: Option<MethodCaller>,
+    caller: MethodCaller,
 }
 
 impl MethodReply {
@@ -815,10 +835,12 @@ impl MethodReply {
 
         // add reply information
 
-        let caller = self.caller.unwrap();
+        if let MethodCaller::Peer { name, serial } = self.caller {
+            
+            msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)));
+            msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(name)));
 
-        msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(caller.serial)));
-        msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(caller.name)));
+        }
 
         msg
 
@@ -827,7 +849,7 @@ impl MethodReply {
     fn deserialize(msg: GenericMessage) -> Self {
 
         Self {
-            caller: None, // would be ourselves
+            caller: MethodCaller::Ourselves,
             args: msg.args.into_iter().map(Some).collect()
         }
         
@@ -883,9 +905,9 @@ impl SignalTrigger {
 
         let mut this = Self {
             hash: 0,
-            path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
-            iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
-            member: msg.take_field(FieldCode::Member).ok_or(ParseError::InvalidData)?,
+            path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::Invalid)?,
+            iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::Invalid)?,
+            member: msg.take_field(FieldCode::Member).ok_or(ParseError::Invalid)?,
             args: msg.args.into_iter().map(Some).collect()
         };
 
@@ -1031,7 +1053,7 @@ impl GenericMessage {
         };
 
         let raw: u8 = unpack(&mut buf)?;
-        let endianess = char::from_u32(raw as u32).ok_or(ParseError::InvalidData)?;
+        let endianess = char::from_u32(raw as u32).ok_or(ParseError::Invalid)?;
         buf.endianess = endianess; // correct the endianess
 
         let raw: u8 = unpack(&mut buf)?;
@@ -1042,8 +1064,7 @@ impl GenericMessage {
         let allow_interactive_auth = raw & 0x4 == 1;
 
         let proto_version: u8 = unpack(&mut buf)?;
-        assert!(proto_version == 1);
-        if proto_version != 1 { return Err(ParseError::Protocol) };
+        if proto_version != 1 { return Err(ParseError::Invalid) };
 
         let body_len: u32 = unpack(&mut buf)?;
         let serial: u32 = unpack(&mut buf)?;
@@ -1235,7 +1256,7 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Comp
 }
 
 fn unpack<T: ValidArg>(buf: &mut DeserializeBuf) -> Result<T, ParseError> {
-    T::unpack(Arg::deserialize(buf, &T::kinds())?).ok_or(ParseError::InvalidData)
+    T::unpack(Arg::deserialize(buf, &T::kinds())?).ok_or(ParseError::Invalid)
 }
 
 
@@ -1427,7 +1448,12 @@ impl Arg {
 
                     // update the size
                     let size = buf.data.len() - orig;
-                    assert!(size < (2usize.pow(26)), "array length too long for dbus ({} bytes)", size);
+
+                    assert!(
+                        size < (2usize.pow(26)),
+                        "array length too long and disallowed by the spec ({} bytes)", size
+                    );
+
                     buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
 
                 },
@@ -1483,6 +1509,8 @@ impl Arg {
     }
 
     fn deserialize(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Self, ParseError> {
+
+        // TOOD: make this more robust, eg. don't panic on out-of-bounds index
     
         macro_rules! parse {
             ($buf:ident, $typ:ident) => {
@@ -1577,7 +1605,7 @@ impl Arg {
 
                 let len: u32 = unpack(buf)?;
 
-                let mut map = HashMap::new(); // TODO: arena
+                let mut map = HashMap::new(); // TODO: arena (not possible sadly, since HashMaps in rust aren't arena compatible and reallocate)
 
                 let start = buf.offset;
                 while buf.offset - start < len as usize {
@@ -2015,16 +2043,19 @@ pub enum ParseError {
     /// it is used to signal that a message is incomplete right now
     Partial,
     /// invalid data was received
-    InvalidData,
-    /// fatal protocol error, e.g. version mismatch
-    Protocol,
+    Invalid,
 }
 
-#[derive(Debug)]
-pub enum ReactorError {
-    Io(io::Error),
-    Parse(ParseError),
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Partial => unreachable!(),
+            Self::Invalid => write!(f, "received invalid data which can't be read as any message"),
+        }
+    }
 }
+
+impl StdError for ParseError {}
 
 pub type RegisterResult<T> = Result<T, RegisterError>;
 
@@ -2036,12 +2067,19 @@ pub enum RegisterError {
 
 pub type MethodResult<T> = Result<T, MethodError>;
 
-/// An error reply.
+/// TODO, describe it a bit
 #[derive(Debug)]
 pub struct MethodError {
-    caller: Option<MethodCaller>,
-    name: String,
-    msg: String,
+    caller: MethodCaller,
+    pub kind: MethodErrorKind,
+}
+
+#[derive(Debug)]
+pub enum MethodErrorKind {
+    /// this request was terminated because of a reactor i/o error
+    Reactor,
+    /// a serviec specific error
+    Service { name: String, msg: String },
 }
 
 impl MethodError {
@@ -2049,24 +2087,30 @@ impl MethodError {
     pub fn new(to: &MethodCall, name: &str, msg: &str) -> Self {
         Self {
             caller: to.caller.clone(),
-            name: name.to_string(),
-            msg: msg.to_string(),
+            kind: MethodErrorKind::Service {
+                name: name.to_string(),
+                msg: msg.to_string()
+            }
         }
     }
 
     pub fn other(to: &MethodCall, msg: &str) -> Self {
         Self {
             caller: to.caller.clone(),
-            name: "lsg.other".to_string(),
-            msg: msg.to_string(),
+            kind: MethodErrorKind::Service {
+                name: "lsg.other".to_string(),
+                msg: msg.to_string()
+            }
         }
     }
 
     pub fn unimplemented(to: &MethodCall) -> Self {
         Self {
             caller: to.caller.clone(),
-            name: "lsg.unimplemented".to_string(),
-            msg: "this method is not implemented, as of now".to_string(),
+            kind: MethodErrorKind::Service {
+                name: "lsg.unimplemented".to_string(),
+                msg: "this member is not implemented, as of now".to_string(),
+            }
         }
     }
 
@@ -2076,15 +2120,23 @@ impl MethodError {
 
         msg.kind = MessageKind::Error;
 
-        msg.fields.push(header_field(FieldCode::ErrName, SimpleArg::String(self.name)));
-        msg.args.push(Arg::Simple(SimpleArg::String(self.msg)));
+        if let MethodErrorKind::Service { name, msg: desc } = self.kind {
+
+            msg.fields.push(header_field(FieldCode::ErrName, SimpleArg::String(name)));
+            msg.args.push(Arg::Simple(SimpleArg::String(desc)));
+
+        } else {
+            panic!("cannot serialize non-service MethodError");
+        };
 
         // add reply information
 
-        let caller = self.caller.unwrap();
+        if let MethodCaller::Peer { name, serial } = self.caller {
+            
+            msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)));
+            msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(name)));
 
-        msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(caller.serial)));
-        msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(caller.name)));
+        }
 
         msg
         
@@ -2092,27 +2144,24 @@ impl MethodError {
 
     pub fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
         Ok(Self {
-            caller: None, // this would be ourselves
-            name: msg.take_field(FieldCode::ErrName).ok_or(ParseError::InvalidData)?,
-            msg: String::unpack(msg.args.remove(0)).ok_or(ParseError::InvalidData)?,
+            caller: MethodCaller::Ourselves,
+            kind: MethodErrorKind::Service {
+                name: msg.take_field(FieldCode::ErrName).ok_or(ParseError::Invalid)?,
+                msg: String::unpack(msg.args.remove(0)).ok_or(ParseError::Invalid)?,
+            }
         })
     }
 
 }
 
-pub type ReactorResult<T> = Result<T, ReactorError>;
-
-impl From<io::Error> for ReactorError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
+#[derive(Debug, Clone)]
+enum MethodCaller {
+    Ourselves,
+    Peer {
+        name: String,
+        serial: u32,
     }
 }
-
-// impl From<ParseError> for DbusError {
-//     fn from(value: ParseError) -> Self {
-//         Self::Parse(value)
-//     }
-// }
 
 // ####### actual desktop-env interface implementation #######
 
@@ -2188,7 +2237,7 @@ impl NotifyProxy {
     }
 
     /// Wait until an action is invoked.
-    pub async fn invoked(&self, id: NotifId) -> ReactorResult<InvokedAction> {
+    pub async fn invoked(&self, id: NotifId) -> InvokedAction {
 
         let signal = SignalMatch::new(
             "/org/freedesktop/Notifications",
@@ -2206,7 +2255,7 @@ impl NotifyProxy {
             if event == id { break };
         }
 
-        Ok(InvokedAction { id: key })
+        InvokedAction { id: key }
         
     }
 
