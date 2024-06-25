@@ -58,9 +58,9 @@ fn notifications() {
                 .action(Action::new("b", "selection B"));
         
             let id = proxy.send(notif).await.unwrap();
-            // let action = proxy.invoked(id).await.unwrap();
 
-            // println!("invoked action: {}", action.id);
+            let action = proxy.invoked(id).await.unwrap();
+            println!("invoked action: {}", action.id);
 
             proxy.close(id).await.unwrap();
         
@@ -91,7 +91,7 @@ fn service() {
 
             loop {
 
-                let msg = listener.next_call().await;
+                let msg = listener.next().await;
 
                 println!("{:?}", msg);
                 let reply = MethodError::unimplemented(&msg);
@@ -212,7 +212,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> ReactorR
 
                 match msg.kind {
 
-                    MessageKind::Invalid => todo!("got an invalid message"),
+                    MessageKind::Invalid => todo!("got an invalid message kind"),
 
                     MessageKind::Error => {
 
@@ -566,7 +566,7 @@ impl Drop for SignalListener {
 
 impl SignalListener {
 
-    pub async fn next_signal(&mut self) -> Arc<SignalTrigger> {
+    pub async fn next(&mut self) -> Arc<SignalTrigger> {
         loop {
             // loop until the signal we match on arrives
             let resp = self.incoming_signals.recv_direct().await.unwrap();
@@ -579,7 +579,8 @@ impl SignalListener {
 }
 
 /// # Cloning
-/// A message will only be sent to one `ServiceListener`. Cloning will lead to work-strealing behaviour.
+/// A message will only be sent to one `ServiceListener`.
+///  Cloning will lead to work-strealing behaviour.
 #[derive(Clone)]
 pub struct ServiceListener {
     name: String,
@@ -604,7 +605,7 @@ impl Drop for ServiceListener {
 
 impl ServiceListener {
 
-    pub async fn next_call(&mut self) -> MethodCall {
+    pub async fn next(&mut self) -> MethodCall {
         self.incoming_calls.recv().await.unwrap()
     }
 
@@ -674,9 +675,9 @@ impl MethodCall {
                 name: msg.take_field(FieldCode::Sender).ok_or(ParseError::InvalidData)?,
                 serial: msg.serial,
             }),
-            dest: msg.take_field(FieldCode::Dest).ok_or(ParseError::InvalidData)?,
-            path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
-            iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
+            dest:   msg.take_field(FieldCode::Dest).ok_or(ParseError::InvalidData)?,
+            path:   msg.take_field(FieldCode::ObjPath).ok_or(ParseError::InvalidData)?,
+            iface:  msg.take_field(FieldCode::Iface).ok_or(ParseError::InvalidData)?,
             member: msg.take_field(FieldCode::Member).ok_or(ParseError::InvalidData)?,
             no_reply: msg.no_reply,
             allow_interactive_auth: msg.allow_interactive_auth,
@@ -973,23 +974,23 @@ impl GenericMessage {
         
         // endianess
         let endianess = if cfg!(target_endian = "big") { 'B' } else { 'l' };
-        serialize_arg((endianess as u8).pack(), &mut buf);
+        Arg::serialize((endianess as u8).pack(), &mut buf);
 
         // message kind
-        serialize_arg((self.kind as u8).pack(), &mut buf);
+        Arg::serialize((self.kind as u8).pack(), &mut buf);
 
         // flags, interactive authorization is enabled
-        serialize_arg((0x4u8).pack(), &mut buf);
+        Arg::serialize((0x4u8).pack(), &mut buf);
 
         // version 1
-        serialize_arg(1u8.pack(), &mut buf);
+        Arg::serialize(1u8.pack(), &mut buf);
 
         // body length, filled in later
         let idx = buf.data.len();
-        serialize_arg(0u32.pack(), &mut buf);
+        Arg::serialize(0u32.pack(), &mut buf);
 
         // unique serial
-        serialize_arg(self.serial.pack(), &mut buf);
+        Arg::serialize(self.serial.pack(), &mut buf);
 
         // construct message signature
 
@@ -1001,7 +1002,7 @@ impl GenericMessage {
         // TODO: impl unix fds (also need to add a special header field!!!)
 
         // serialize header fields
-        serialize_arg(self.fields.pack(), &mut buf);
+        Arg::serialize(self.fields.pack(), &mut buf);
 
         // ### body ###
 
@@ -1010,7 +1011,7 @@ impl GenericMessage {
         let orig = buf.data.len();
 
         for arg in self.args {
-            serialize_arg(arg, &mut buf);
+            Arg::serialize(arg, &mut buf);
         }
 
         // update the body len
@@ -1029,30 +1030,30 @@ impl GenericMessage {
             endianess: 'l', // is overwritten with the first byte read
         };
 
-        let raw: u8 = unpack_arg(&mut buf)?;
+        let raw: u8 = unpack(&mut buf)?;
         let endianess = char::from_u32(raw as u32).ok_or(ParseError::InvalidData)?;
         buf.endianess = endianess; // correct the endianess
 
-        let raw: u8 = unpack_arg(&mut buf)?;
+        let raw: u8 = unpack(&mut buf)?;
         let kind = MessageKind::from_raw(raw).ok_or(ParseError::Partial)?;
 
-        let raw: u8 = unpack_arg(&mut buf)?;
+        let raw: u8 = unpack(&mut buf)?;
         let no_reply = raw & 0x1 == 1;
         let allow_interactive_auth = raw & 0x4 == 1;
 
-        let proto_version: u8 = unpack_arg(&mut buf)?;
+        let proto_version: u8 = unpack(&mut buf)?;
         assert!(proto_version == 1);
         if proto_version != 1 { return Err(ParseError::Protocol) };
 
-        let body_len: u32 = unpack_arg(&mut buf)?;
-        let serial: u32 = unpack_arg(&mut buf)?;
+        let body_len: u32 = unpack(&mut buf)?;
+        let serial: u32 = unpack(&mut buf)?;
 
         if buf.data.len() - buf.offset < body_len as usize {
             // no need to do more parsing, we haven't got enough data anyways
             return Err(ParseError::Partial);
         }
         
-        let mut header_fields: Vec<(u8, Variant)> = unpack_arg(&mut buf)?;
+        let mut header_fields: Vec<(u8, Variant)> = unpack(&mut buf)?;
 
         let Signature(signature) = take_field(&mut header_fields, FieldCode::Signature)
             .unwrap_or_default();
@@ -1062,7 +1063,7 @@ impl GenericMessage {
         let before_body = buf.offset;
         let mut args = Vec::with_capacity(2);
         for CompleteKind(kinds) in iter_complete_types(&signature) {
-            let arg = deserialize_arg(&mut buf, &kinds)?;
+            let arg = Arg::deserialize(&mut buf, &kinds)?;
             args.push(arg);
         }
 
@@ -1163,307 +1164,7 @@ fn header_field(code: FieldCode, arg: SimpleArg) -> (u8, Variant) {
     (code as u8, Variant::new(Arg::Simple(arg)))
 }
 
-// #### type system ####
-
-fn serialize_arg(arg: Arg, buf: &mut SerializeBuf) {
-
-    match arg {
-
-        // basic kind
-
-        Arg::Simple(simple) => {
-
-            match simple {
-
-                // numbers
-                SimpleArg::Byte(val)   => { buf.insert_pad(1); buf.data.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::I16(val)    => { buf.insert_pad(2); buf.data.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::U16(val)    => { buf.insert_pad(2); buf.data.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::I32(val)    => { buf.insert_pad(4); buf.data.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::U32(val)    => { buf.insert_pad(4); buf.data.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::I64(val)    => { buf.insert_pad(8); buf.data.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::U64(val)    => { buf.insert_pad(8); buf.data.extend_from_slice(&val.to_ne_bytes()) },
-                SimpleArg::Double(val) => { buf.insert_pad(8); buf.data.extend_from_slice(&val.inner.to_ne_bytes()) },
-
-                // other
-                SimpleArg::Bool(val) => { buf.insert_pad(4); buf.data.extend_from_slice(&(val as i32).to_ne_bytes()) },
-                SimpleArg::Fd(val) => {
-                    buf.insert_pad(4);
-                    buf.data.extend_from_slice(&val.inner.as_raw_fd().to_ne_bytes());
-                    mem::forget(val); // don't `drop` the OwnedFd since we transfer ownership here
-                },
-
-                SimpleArg::String(val) | SimpleArg::ObjPath(val) => {
-                    // the length of the string, in bytes (u32)
-                    buf.insert_pad(4);
-                    buf.data.extend_from_slice(&(val.len() as u32).to_ne_bytes());
-                    // the data
-                    buf.data.extend_from_slice(val.as_bytes());
-                    buf.data.extend_from_slice(&[0]); // zero-terminated
-                },
-
-                SimpleArg::Signature(val) => {
-                    // the length of the string, in bytes (u8)
-                    buf.data.extend_from_slice(&(val.len() as u8).to_ne_bytes());
-                    // the data
-                    buf.data.extend(val.iter().map(|it| *it as u8));
-                    buf.data.extend_from_slice(&[0]); // zero-terminated
-                }
-
-            };
-
-        },
-
-        // container kinds
-
-        Arg::Compound(compound) => match compound {
-
-            CompoundArg::Array(t, items) => {
-
-                // the length of the array, in bytes (u32)
-                // this is a dummy value which is replaced later
-                buf.insert_pad(4);
-                let idx = buf.data.len();
-                buf.data.extend_from_slice(&0u32.to_ne_bytes());
-
-                // the items
-
-                buf.insert_pad(align_from_signature(t)); // pad even if empty
-
-                let orig = buf.data.len();
-                for arg in items {
-                    serialize_arg(arg, buf);
-                }
-
-                // update the size
-                let size = buf.data.len() - orig;
-                assert!(size < (2usize.pow(26)), "array length too long for dbus ({} bytes)", size);
-                buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
-
-            },
-
-            CompoundArg::Map(.., map) => {
-
-               // the length of the map, in bytes (u32)
-                buf.insert_pad(4);
-                let idx = buf.data.len();
-                buf.data.extend_from_slice(&(map.len() as u32).to_ne_bytes());
-
-                buf.insert_pad(8); // pad even if the map is empty
-                let orig = buf.data.len();
-
-                // the items
-                for (key, val) in map {
-                    buf.insert_pad(8);
-                    serialize_arg(Arg::Simple(key), buf);
-                    serialize_arg(val, buf);
-                }
-                
-                let size = buf.data.len() - orig;
-                assert!(size < 2^26);
-                buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
-
-            },
-
-            CompoundArg::Variant(val) => {
-
-                // the signature string
-                let signature = val.kinds();
-                serialize_arg(Arg::Simple(SimpleArg::Signature(signature)), buf);
-
-                // the argument
-                serialize_arg(*val, buf);
-
-            }
-
-            CompoundArg::EmptyVariant => panic!("EmptyVariant cannot be sent"),
-            
-            CompoundArg::Struct(fields) => {
-
-                buf.insert_pad(8);
-                for val in fields {
-                    serialize_arg(val, buf);
-                }
-
-            }
-            
-        }
-    };
-
-}
-
-fn align_from_signature(t: Vec<ArgKind>) -> usize {
-    t[0].align()
-}
-
-macro_rules! deserialize_int {
-    ($buf:ident, $typ:ident) => {
-        {
-            let size = mem::size_of::<$typ>();
-            let bytes = $buf.consume_bytes(size).ok_or(ParseError::Partial)?.try_into().unwrap();
-            if $buf.endianess == 'l' {
-                $typ::from_le_bytes(bytes)
-            } else if $buf.endianess == 'B' {
-                $typ::from_be_bytes(bytes)
-            } else {
-                unreachable!("invalid endianess {:?}", $buf.endianess)
-            }
-        }
-    };
-}
-
-fn deserialize_arg(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Arg, ParseError> {
-    
-    match kinds {
-
-        [ArgKind::Byte] => {
-            buf.consume_pad(1);
-            let val = deserialize_int!(buf, u8);
-            Ok(Arg::Simple(SimpleArg::Byte(val)))
-        },
-        
-        [ArgKind::Bool] => {
-            buf.consume_pad(4);
-            let val = deserialize_int!(buf, u32);
-            Ok(Arg::Simple(SimpleArg::Bool(val == 1)))
-        },
-        
-        [ArgKind::I16] => {
-            buf.consume_pad(2);
-            let val = deserialize_int!(buf, i16);
-            Ok(Arg::Simple(SimpleArg::I16(val)))
-        },
-        
-        [ArgKind::U16] => {
-            buf.consume_pad(2);
-            let val = deserialize_int!(buf, u16);
-            Ok(Arg::Simple(SimpleArg::U16(val)))
-        },
-        
-        [ArgKind::I32] => {
-            buf.consume_pad(4);
-            let val = deserialize_int!(buf, i32);
-            Ok(Arg::Simple(SimpleArg::I32(val)))
-        },
-        
-        [ArgKind::U32] => {
-            buf.consume_pad(4);
-            let val = deserialize_int!(buf, u32);
-            Ok(Arg::Simple(SimpleArg::U32(val)))
-        },
-        
-        [ArgKind::I64] => {
-            buf.consume_pad(8);
-            let val = deserialize_int!(buf, i64);
-            Ok(Arg::Simple(SimpleArg::I64(val)))
-        },
-        
-        [ArgKind::U64] => {
-            buf.consume_pad(8);
-            let val = deserialize_int!(buf, u64);
-            Ok(Arg::Simple(SimpleArg::U64(val)))
-        },
-
-        [ArgKind::String | ArgKind::ObjPath] => {
-            let len = unpack_arg::<u32>(buf)? as usize;
-            let raw = buf.consume_bytes(len + 1).ok_or(ParseError::Partial)?; // +1 for the \0
-            let val = String::from_utf8(raw[..len].to_vec()).expect("verify utf8");
-            Ok(Arg::Simple(SimpleArg::String(val)))
-        },
-
-        [ArgKind::Signature] => {
-            let len = unpack_arg::<u8>(buf)? as usize;
-            let raw = buf.consume_bytes(len + 1).ok_or(ParseError::Partial)?; // +1 for the \0
-            let val = raw[..len].into_iter()
-                .map(|it| ArgKind::deserialize(*it).expect("verify signature"))
-                .collect();
-            Ok(Arg::Simple(SimpleArg::Signature(val)))
-        },
-
-        [ArgKind::Array, ArgKind::PairBegin, contents @ .., ArgKind::PairEnd] => {
-
-            let mut iter = iter_complete_types(contents);
-
-            let CompleteKind(key_kinds) = iter.next().expect("get first element of dict entry");
-            let CompleteKind(val_kinds) = iter.next().expect("get second element of dict entry");
-            assert_eq!(key_kinds.len(), 1, "map key type was a container: {:?}", val_kinds);
-            assert_eq!(iter.next(), None); // should only contain 2 complete types
-
-            let len: u32 = unpack_arg(buf)?;
-
-            let mut map = HashMap::new(); // TODO: arena
-
-            let start = buf.offset;
-            while buf.offset - start < len as usize {
-
-                buf.consume_pad(8); // dict entries are always 8-byte padded
-
-                let key = deserialize_arg(buf, &key_kinds)?;
-                let val = deserialize_arg(buf, &val_kinds)?;
-
-                let Arg::Simple(skey) = key else { panic!("a map key must not be a container") };
-
-                map.insert(skey, val);
-
-            }
-
-            Ok(Arg::Compound(CompoundArg::Map(key_kinds[0], val_kinds, map)))
-            
-        },
-
-        [ArgKind::Array, contents @ ..] => {
-
-            let len: u32 = unpack_arg(buf)?;
-
-            let mut args = Vec::new();
-            let start = buf.offset;
-            while buf.offset - start < len as usize {
-                let arg = deserialize_arg(buf, contents)?;
-                args.push(arg);
-            }
-
-            Ok(Arg::Compound(CompoundArg::Array(contents.to_vec(), args))) // TODO: arena
-            
-        },
-
-        [ArgKind::StructBegin,
-         contents @ ..,
-         ArgKind::StructEnd] => {
-
-            buf.consume_pad(8);
-
-            let mut args = Vec::new();
-            for CompleteKind(kinds) in iter_complete_types(contents) {
-                let arg = deserialize_arg(buf, &kinds)?;
-                args.push(arg);
-            }
-
-            Ok(Arg::Compound(CompoundArg::Struct(args)))
-            
-        },
-
-        [ArgKind::Variant] => {
-
-            let Signature(kinds) = unpack_arg(buf)?;
-
-            if kinds.len() > 0 {
-                let arg = deserialize_arg(buf, &kinds)?; // read the actual value
-                Ok(Arg::Compound(CompoundArg::Variant(Box::new(arg))))
-            } else {
-                // an "empty" variant which really shouldn't be allowed
-                // this variant doesn't even have a signature so we can't produce
-                // a default value here
-                Ok(Arg::Compound(CompoundArg::EmptyVariant))
-            }
-           
-            
-        },
-        
-        other => panic!("cannot deserialize signature {:?}", other),
-        
-    }
-    
-}
+// #### type util ####
 
 #[derive(Debug, PartialEq, Eq)]
 struct CompleteKind(pub Vec<ArgKind>);
@@ -1533,8 +1234,8 @@ fn iter_complete_types<'d>(contents: &'d [ArgKind]) -> impl Iterator<Item = Comp
 
 }
 
-fn unpack_arg<T: ValidArg>(buf: &mut DeserializeBuf) -> Result<T, ParseError> {
-    T::unpack(deserialize_arg(buf, &T::kinds())?).ok_or(ParseError::InvalidData)
+fn unpack<T: ValidArg>(buf: &mut DeserializeBuf) -> Result<T, ParseError> {
+    T::unpack(Arg::deserialize(buf, &T::kinds())?).ok_or(ParseError::InvalidData)
 }
 
 
@@ -1650,6 +1351,306 @@ impl Arg {
         self.kinds()[0].align() // TODO: not use vec in `kinds` so this is efficient
     }
 
+    fn serialize(self, buf: &mut SerializeBuf) {
+
+        fn align_from_signature(t: Vec<ArgKind>) -> usize {
+            t[0].align()
+        }
+
+        match self {
+
+            // basic kind
+
+            Arg::Simple(simple) => {
+
+                match simple {
+
+                    // numbers
+                    SimpleArg::Byte(val)   => { buf.insert_pad(1); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                    SimpleArg::I16(val)    => { buf.insert_pad(2); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                    SimpleArg::U16(val)    => { buf.insert_pad(2); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                    SimpleArg::I32(val)    => { buf.insert_pad(4); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                    SimpleArg::U32(val)    => { buf.insert_pad(4); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                    SimpleArg::I64(val)    => { buf.insert_pad(8); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                    SimpleArg::U64(val)    => { buf.insert_pad(8); buf.data.extend_from_slice(&val.to_ne_bytes()) },
+                    SimpleArg::Double(val) => { buf.insert_pad(8); buf.data.extend_from_slice(&val.inner.to_ne_bytes()) },
+
+                    // other
+                    SimpleArg::Bool(val) => { buf.insert_pad(4); buf.data.extend_from_slice(&(val as i32).to_ne_bytes()) },
+                    SimpleArg::Fd(val) => {
+                        buf.insert_pad(4);
+                        buf.data.extend_from_slice(&val.inner.as_raw_fd().to_ne_bytes());
+                        mem::forget(val); // don't `drop` the OwnedFd since we transfer ownership here
+                    },
+
+                    SimpleArg::String(val) | SimpleArg::ObjPath(val) => {
+                        // the length of the string, in bytes (u32)
+                        buf.insert_pad(4);
+                        buf.data.extend_from_slice(&(val.len() as u32).to_ne_bytes());
+                        // the data
+                        buf.data.extend_from_slice(val.as_bytes());
+                        buf.data.extend_from_slice(&[0]); // zero-terminated
+                    },
+
+                    SimpleArg::Signature(val) => {
+                        // the length of the string, in bytes (u8)
+                        buf.data.extend_from_slice(&(val.len() as u8).to_ne_bytes());
+                        // the data
+                        buf.data.extend(val.iter().map(|it| *it as u8));
+                        buf.data.extend_from_slice(&[0]); // zero-terminated
+                    }
+
+                };
+
+            },
+
+            // container kinds
+
+            Arg::Compound(compound) => match compound {
+
+                CompoundArg::Array(t, items) => {
+
+                    // the length of the array, in bytes (u32)
+                    // this is a dummy value which is replaced later
+                    buf.insert_pad(4);
+                    let idx = buf.data.len();
+                    buf.data.extend_from_slice(&0u32.to_ne_bytes());
+
+                    // the items
+
+                    buf.insert_pad(align_from_signature(t)); // pad even if empty
+
+                    let orig = buf.data.len();
+                    for arg in items {
+                        Arg::serialize(arg, buf);
+                    }
+
+                    // update the size
+                    let size = buf.data.len() - orig;
+                    assert!(size < (2usize.pow(26)), "array length too long for dbus ({} bytes)", size);
+                    buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
+
+                },
+
+                CompoundArg::Map(.., map) => {
+
+                   // the length of the map, in bytes (u32)
+                    buf.insert_pad(4);
+                    let idx = buf.data.len();
+                    buf.data.extend_from_slice(&(map.len() as u32).to_ne_bytes());
+
+                    buf.insert_pad(8); // pad even if the map is empty
+                    let orig = buf.data.len();
+
+                    // the items
+                    for (key, val) in map {
+                        buf.insert_pad(8);
+                        Arg::serialize(Arg::Simple(key), buf);
+                        Arg::serialize(val, buf);
+                    }
+                
+                    let size = buf.data.len() - orig;
+                    assert!(size < 2^26);
+                    buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
+
+                },
+
+                CompoundArg::Variant(val) => {
+
+                    // the signature string
+                    let signature = val.kinds();
+                    Arg::serialize(Arg::Simple(SimpleArg::Signature(signature)), buf);
+
+                    // the argument
+                    Arg::serialize(*val, buf);
+
+                }
+
+                CompoundArg::EmptyVariant => panic!("EmptyVariant cannot be sent"),
+            
+                CompoundArg::Struct(fields) => {
+
+                    buf.insert_pad(8);
+                    for val in fields {
+                        Arg::serialize(val, buf);
+                    }
+
+                }
+            
+            }
+        }
+
+    }
+
+    fn deserialize(buf: &mut DeserializeBuf, kinds: &[ArgKind]) -> Result<Self, ParseError> {
+    
+        macro_rules! parse {
+            ($buf:ident, $typ:ident) => {
+                {
+                    let size = mem::size_of::<$typ>();
+                    let bytes = $buf.consume_bytes(size).ok_or(ParseError::Partial)?.try_into().unwrap();
+                    if $buf.endianess == 'l' {
+                        $typ::from_le_bytes(bytes)
+                    } else if $buf.endianess == 'B' {
+                        $typ::from_be_bytes(bytes)
+                    } else {
+                        unreachable!("invalid endianess {:?}", $buf.endianess)
+                    }
+                }
+            };
+        }
+
+        match kinds {
+
+            [ArgKind::Byte] => {
+                buf.consume_pad(1);
+                let val = parse!(buf, u8);
+                Ok(Arg::Simple(SimpleArg::Byte(val)))
+            },
+        
+            [ArgKind::Bool] => {
+                buf.consume_pad(4);
+                let val = parse!(buf, u32);
+                Ok(Arg::Simple(SimpleArg::Bool(val == 1)))
+            },
+        
+            [ArgKind::I16] => {
+                buf.consume_pad(2);
+                let val = parse!(buf, i16);
+                Ok(Arg::Simple(SimpleArg::I16(val)))
+            },
+        
+            [ArgKind::U16] => {
+                buf.consume_pad(2);
+                let val = parse!(buf, u16);
+                Ok(Arg::Simple(SimpleArg::U16(val)))
+            },
+        
+            [ArgKind::I32] => {
+                buf.consume_pad(4);
+                let val = parse!(buf, i32);
+                Ok(Arg::Simple(SimpleArg::I32(val)))
+            },
+        
+            [ArgKind::U32] => {
+                buf.consume_pad(4);
+                let val = parse!(buf, u32);
+                Ok(Arg::Simple(SimpleArg::U32(val)))
+            },
+        
+            [ArgKind::I64] => {
+                buf.consume_pad(8);
+                let val = parse!(buf, i64);
+                Ok(Arg::Simple(SimpleArg::I64(val)))
+            },
+        
+            [ArgKind::U64] => {
+                buf.consume_pad(8);
+                let val = parse!(buf, u64);
+                Ok(Arg::Simple(SimpleArg::U64(val)))
+            },
+
+            [ArgKind::String | ArgKind::ObjPath] => {
+                let len = unpack::<u32>(buf)? as usize;
+                let raw = buf.consume_bytes(len + 1).ok_or(ParseError::Partial)?; // +1 for the \0
+                let val = String::from_utf8(raw[..len].to_vec()).expect("verify utf8");
+                Ok(Arg::Simple(SimpleArg::String(val)))
+            },
+
+            [ArgKind::Signature] => {
+                let len = unpack::<u8>(buf)? as usize;
+                let raw = buf.consume_bytes(len + 1).ok_or(ParseError::Partial)?; // +1 for the \0
+                let val = raw[..len].into_iter()
+                    .map(|it| ArgKind::deserialize(*it).expect("verify signature"))
+                    .collect();
+                Ok(Arg::Simple(SimpleArg::Signature(val)))
+            },
+
+            [ArgKind::Array, ArgKind::PairBegin, contents @ .., ArgKind::PairEnd] => {
+
+                let mut iter = iter_complete_types(contents);
+
+                let CompleteKind(key_kinds) = iter.next().expect("get first element of dict entry");
+                let CompleteKind(val_kinds) = iter.next().expect("get second element of dict entry");
+                assert_eq!(key_kinds.len(), 1, "map key type was a container: {:?}", val_kinds);
+                assert_eq!(iter.next(), None); // should only contain 2 complete types
+
+                let len: u32 = unpack(buf)?;
+
+                let mut map = HashMap::new(); // TODO: arena
+
+                let start = buf.offset;
+                while buf.offset - start < len as usize {
+
+                    buf.consume_pad(8); // dict entries are always 8-byte padded
+
+                    let key = Self::deserialize(buf, &key_kinds)?;
+                    let val = Self::deserialize(buf, &val_kinds)?;
+
+                    let Arg::Simple(skey) = key else { panic!("a map key must not be a container") };
+
+                    map.insert(skey, val);
+
+                }
+
+                Ok(Arg::Compound(CompoundArg::Map(key_kinds[0], val_kinds, map)))
+            
+            },
+
+            [ArgKind::Array, contents @ ..] => {
+
+                let len: u32 = unpack(buf)?;
+
+                let mut args = Vec::new();
+                let start = buf.offset;
+                while buf.offset - start < len as usize {
+                    let arg = Self::deserialize(buf, contents)?;
+                    args.push(arg);
+                }
+
+                Ok(Arg::Compound(CompoundArg::Array(contents.to_vec(), args))) // TODO: arena
+            
+            },
+
+            [ArgKind::StructBegin,
+             contents @ ..,
+             ArgKind::StructEnd] => {
+
+                buf.consume_pad(8);
+
+                let mut args = Vec::new();
+                for CompleteKind(kinds) in iter_complete_types(contents) {
+                    let arg = Self::deserialize(buf, &kinds)?;
+                    args.push(arg);
+                }
+
+                Ok(Arg::Compound(CompoundArg::Struct(args)))
+            
+            },
+
+            [ArgKind::Variant] => {
+
+                let Signature(kinds) = unpack(buf)?;
+
+                if kinds.len() > 0 {
+                    let arg = Self::deserialize(buf, &kinds)?; // read the actual value
+                    Ok(Arg::Compound(CompoundArg::Variant(Box::new(arg))))
+                } else {
+                    // an "empty" variant which really shouldn't be allowed
+                    // this variant doesn't even have a signature so we can't produce
+                    // a default value here
+                    Ok(Arg::Compound(CompoundArg::EmptyVariant))
+                }
+           
+            
+            },
+        
+            other => panic!("cannot deserialize signature {:?}", other),
+        
+        }
+    
+    }
+
 }
 
 fn skind(arg: &Arg, out: &mut Vec<ArgKind>) { // TODO: think about the relation of this and "ValidArg::kinds"
@@ -1668,7 +1669,7 @@ fn skind(arg: &Arg, out: &mut Vec<ArgKind>) { // TODO: think about the relation 
                 SimpleArg::Fd(..)     => ArgKind::UnixFd,
                 SimpleArg::String(..)    => ArgKind::String,
                 SimpleArg::Signature(..) => ArgKind::Signature,
-                SimpleArg::ObjPath(..)      => ArgKind::ObjPath,
+                SimpleArg::ObjPath(..)   => ArgKind::ObjPath,
             };
             out.push(kind);
         },
@@ -2199,7 +2200,7 @@ impl NotifyProxy {
         let mut key;
 
         loop {
-            let resp = stream.next_signal().await; // wait for a dbus signal to arrive
+            let resp = stream.next().await; // wait for a dbus signal to arrive
             let event: u32 = resp.arg(0);
             key = resp.arg(1);
             if event == id { break };
