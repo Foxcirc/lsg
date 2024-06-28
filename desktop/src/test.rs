@@ -2,7 +2,7 @@
 use std::io::{Write, Read};
 
 use futures_lite::future::block_on;
-use desktop::window::*;
+use desktop::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(app, "lsg-test")?

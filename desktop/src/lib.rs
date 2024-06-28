@@ -1,5 +1,8 @@
 
-pub(crate) mod platform;
+pub mod shared;
+pub use shared::*;
 
-pub mod window;
-pub mod env;
+#[cfg(target_os = "linux")] pub mod wayland;
+#[cfg(target_os = "linux")] pub use wayland::*;
+
+// #[cfg(target_os = "windows")] pub mod wayland;

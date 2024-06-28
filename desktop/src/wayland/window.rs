@@ -58,7 +58,7 @@ use nix::sys::signal::Signal;
 
 use async_io::{Async, Timer};
 use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
-use futures_lite::{future::block_on, FutureExt};
+use futures_lite::FutureExt;
 
 use std::{
     mem, fmt, env, ops, fs,
@@ -71,12 +71,8 @@ use std::{
     collections::{HashSet, HashMap},
 };
 
-use crate::window::{
-    self,
-    Event, WindowEvent, DndEvent,
-    SendError,
-    CursorStyle, CursorShape,
-    IoMode, InputMode, QuitReason, Urgency, IconFormat, WindowLayer, WindowAnchor, KbInteractivity, Rect, Size, Key, DataSourceEvent, DataKinds, ConfigureFlags, MouseButton, ScrollAxis, PresentToken
+use crate::shared::{
+    ConfigureFlags, CursorShape, CursorStyle, DataKinds, DataSourceEvent, DndEvent, Event, IconFormat, InputMode, IoMode, KbInteractivity, Key, MonitorInfo, MouseButton, PresentToken, QuitReason, Rect, ScrollAxis, Size, Urgency, WindowAnchor, WindowEvent, WindowLayer
 };
 
 // ### base event loop ###
@@ -224,6 +220,24 @@ impl<T> EventProxy<T> {
     }
 
 }
+
+pub struct SendError<T> {
+    pub inner: T
+}
+
+impl<T> fmt::Debug for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SendError: EventLoop dead")
+    }
+}
+
+impl<T> fmt::Display for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl<T: fmt::Debug> StdError for SendError<T> {}
 
 // ### public async event loop ###
 
@@ -506,12 +520,12 @@ fn get_monitor_id(output: &WlOutput) -> MonitorId {
 
 pub struct Monitor {
     /// Information about the monitor.
-    info: window::MonitorInfo,
+    info: MonitorInfo,
     wl_output: WlOutput,
 }
 
 impl Monitor {
-    pub fn info(&self) -> &window::MonitorInfo {
+    pub fn info(&self) -> &MonitorInfo {
         &self.info
     }
 }
@@ -647,14 +661,14 @@ impl Drop for WindowShared {
 // ### window ###
 
 pub struct Window<T: 'static + Send> {
-    base: window::BaseWindow<T>,
+    base: BaseWindow<T>,
     xdg_surface: XdgSurface,
     xdg_toplevel: XdgToplevel,
     xdg_decoration: Option<ZxdgToplevelDecorationV1>,
 }
 
 impl<T: 'static + Send> ops::Deref for Window<T> {
-    type Target = window::BaseWindow<T>;
+    type Target = BaseWindow<T>;
     fn deref(&self) -> &Self::Target {
         &self.base
     }
@@ -690,7 +704,7 @@ impl<T: 'static + Send> Window<T> {
         base.wl_surface.commit();
 
         Self {
-            base: window::BaseWindow { platform: base },
+            base,
             xdg_surface,
             xdg_toplevel,
             xdg_decoration,
@@ -701,7 +715,7 @@ impl<T: 'static + Send> Window<T> {
     pub fn destroy(self) {}
 
     pub fn set_input_mode(&self, evl: &mut EventLoop<T>, mode: InputMode) {
-        evl.base.keyboard_data.input_modes.insert(self.base.platform.id, mode);
+        evl.base.keyboard_data.input_modes.insert(self.base.id, mode);
     }
 
     pub fn set_decorations(&mut self, value: bool) {
@@ -719,7 +733,7 @@ impl<T: 'static + Send> Window<T> {
         } else {
             self.xdg_toplevel.unset_maximized();
         };
-        self.base.platform.wl_surface.commit();
+        self.base.wl_surface.commit();
     }
 
     pub fn set_fullscreen(&self, value: bool, monitor: Option<&Monitor>) {
@@ -734,20 +748,20 @@ impl<T: 'static + Send> Window<T> {
     pub fn min_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
-        self.base.platform.wl_surface.commit();
+        self.base.wl_surface.commit();
     }
 
     pub fn max_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
-        self.base.platform.wl_surface.commit();
+        self.base.wl_surface.commit();
     }
 
     pub fn force_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
-        self.base.platform.wl_surface.commit();
+        self.base.wl_surface.commit();
     }
 
     pub fn request_user_attention(&self, evl: &mut EventLoop<T>, urgency: Urgency) {
@@ -762,7 +776,7 @@ impl<T: 'static + Send> Window<T> {
 
         if let Some(ref activation_mgr) = evb.wl.activation_mgr {
 
-            let token = activation_mgr.get_activation_token(&evb.qh, self.base.platform.wl_surface.clone());
+            let token = activation_mgr.get_activation_token(&evb.qh, self.base.wl_surface.clone());
 
             token.set_app_id(evb.appid.clone());
             token.set_serial(evb.last_serial, &evb.wl.seat);
@@ -786,7 +800,7 @@ impl<T: 'static + Send> Window<T> {
 
         evb.wl.data_device.start_drag(
             Some(&ds.wl_data_source),
-            &self.base.platform.wl_surface,
+            &self.base.wl_surface,
             Some(&icon.wl_surface),
             evb.last_serial
         );
@@ -801,16 +815,16 @@ impl<T: 'static + Send> Window<T> {
         let evb = &mut evl.base;
 
         // note: the CustomIcon will also be kept alive by the styles as long as needed
-        evb.cursor_data.styles.insert(self.base.platform.id, style);
+        evb.cursor_data.styles.insert(self.base.id, style);
 
         // immediatly apply the style
-        process_new_cursor_style(evb, self.base.platform.id);
+        process_new_cursor_style(evb, self.base.id);
 
     }
 
 }
 
-impl window::CursorShape {
+impl CursorShape {
     pub(crate) fn to_wl(&self) -> WlCursorShape {
         match self {
             Self::Default => WlCursorShape::Default,
@@ -1143,7 +1157,7 @@ impl<T: 'static + Send> PopupWindow<T> {
         let xdg_surface = evb.wl.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
         let xdg_positioner = evb.wl.wm.create_positioner(&evb.qh, ());
 
-        let parent_guard = parent.platform.shared.lock().unwrap();
+        let parent_guard = parent.shared.lock().unwrap();
         xdg_positioner.set_size(size.width as i32, size.height as i32);
         xdg_positioner.set_anchor_rect(0, 0, parent_guard.new_width as i32, parent_guard.new_height as i32);
         drop(parent_guard);
@@ -1417,7 +1431,7 @@ pub struct EglContext {
 impl EglContext {
 
     /// Create a new egl context that will draw onto the given window.
-    pub fn new<T: 'static + Send>(instance: &Arc<EglInstance>, window: &window::BaseWindow<T>, size: Size) -> Result<Self, EvlError> {
+    pub fn new<T: 'static + Send>(instance: &Arc<EglInstance>, window: &BaseWindow<T>, size: Size) -> Result<Self, EvlError> {
 
         let config = {
             let attribs = [
@@ -1434,7 +1448,7 @@ impl EglContext {
         };
 
         let wl_egl_surface = wayland_egl::WlEglSurface::new(
-            window.platform.wl_surface.id(),
+            window.wl_surface.id(),
             size.width as i32,
             size.height as i32
         )?;
@@ -1457,7 +1471,7 @@ impl EglContext {
 
         Ok(Self {
             inner,
-            id: window.platform.id,
+            id: window.id,
             wl_egl_surface,
         })
         
@@ -1782,18 +1796,18 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents>
 }
 
 fn process_new_output<T: 'static + Send>(monitor_list: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<BaseLoop<T>>) {
-    let info = window::MonitorInfo::default();
+    let info = MonitorInfo::default();
     let output = registry.bind(name, 2, qh, Mutex::new(info)); // first time in my life using Mutex without an Arc
     let id = get_monitor_id(&output);
     monitor_list.insert(id);
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<window::MonitorInfo>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for BaseLoop<T> {
     fn event(
         evl: &mut Self,
         wl_output: &WlOutput,
         event: WlOutputEvent,
-        data: &Mutex<window::MonitorInfo>,
+        data: &Mutex<MonitorInfo>,
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
@@ -1818,12 +1832,12 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<window::Monitor
             },
             WlOutputEvent::Done => {
                 let id = get_monitor_id(wl_output);
-                let platform = Monitor {
+                let state = Monitor {
                     info: guard.clone(),
                     wl_output: wl_output.clone(),
                 };
                 evl.events.push(Event::MonitorUpdate {
-                    id, state: window::Monitor { platform }
+                    id, state,
                 });
             },
             _ => (),
@@ -1871,7 +1885,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
             evl.offer_data.x = x;
             evl.offer_data.y = y;
 
-            let platform = DndHandle {
+            let handle = DndHandle {
                 last_serial: evl.last_serial,
                 wl_data_offer,
             };
@@ -1879,7 +1893,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
             evl.events.push(Event::Window {
                 id,
                 event: WindowEvent::Dnd {
-                    event: DndEvent::Motion { x, y, handle: window::DndHandle { platform } },
+                    event: DndEvent::Motion { x, y, handle },
                     sameapp
                 }
             });
@@ -1891,7 +1905,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
             evl.offer_data.x = x;
             evl.offer_data.y = y;
 
-            let platform = DndHandle {
+            let handle = DndHandle {
                 last_serial: evl.last_serial,
                 wl_data_offer: evl.offer_data.current_offer.clone(),
             };
@@ -1902,7 +1916,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
             evl.events.push(Event::Window {
                 id: get_window_id(surface),
                 event: WindowEvent::Dnd {
-                    event: DndEvent::Motion { x, y, handle: window::DndHandle { platform } },
+                    event: DndEvent::Motion { x, y, handle },
                     sameapp
                 }
             });
@@ -1919,7 +1933,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
                 let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
                 let kinds = data.lock().unwrap().clone();
 
-                let platform = DataOffer {
+                let offer = DataOffer {
                     wl_data_offer,
                     con: evl.con.get_ref().clone(),
                     kinds,
@@ -1932,7 +1946,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
                 evl.events.push(Event::Window {
                     id: get_window_id(surface),
                     event: WindowEvent::Dnd {
-                        event: DndEvent::Drop { x, y, offer: window::DataOffer { platform } },
+                        event: DndEvent::Drop { x, y, offer },
                         sameapp
                     },
                 });
@@ -2011,10 +2025,10 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for BaseL
             fcntl::fcntl(fd.as_raw_fd(), fcntl::FcntlArg::F_SETFL(new_flags)).expect("handle error");
 
             let kind = DataKinds::from_mime_type(&mime_type).unwrap();
-            let platform = DataWriter { writer: fs::File::from(fd) };
+            let writer = DataWriter { writer: fs::File::from(fd) };
 
             evl.events.push(Event::DataSource {
-                id, event: DataSourceEvent::Send { kind, writer: window::DataWriter { platform } }
+                id, event: DataSourceEvent::Send { kind, writer }
             });
 
         }
@@ -2704,7 +2718,7 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut BaseLoop<T>, id: Window
             },
             CursorStyle::Custom { icon, hotspot } => {
                 wl_pointer.set_cursor(
-                    serial, Some(&icon.platform.wl_surface),
+                    serial, Some(&icon.wl_surface),
                     hotspot.x as i32, hotspot.y as i32
                 )
             },
