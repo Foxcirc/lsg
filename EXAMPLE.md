@@ -1,4 +1,6 @@
 
+```rust
+
 fn main() {
 
     lsg::run(main2)
@@ -63,3 +65,5 @@ fn main2(app: App) {
     })
     
 }
+
+```

@@ -2,7 +2,7 @@
 pub mod client {
 
     use std::{
-        collections::HashMap, convert::{identity, Infallible}, env, fmt, hash::{DefaultHasher, Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}, sync::Arc, error::Error as StdError,
+        borrow::Cow, collections::HashMap, convert::{identity, Infallible}, env, error::Error as StdError, fmt, hash::{DefaultHasher, Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}, sync::Arc
     };
 
     use async_channel as channel;
@@ -246,7 +246,7 @@ pub mod client {
 
                             let call = MethodCall::deserialize(msg)?;
 
-                            if let Some(sender) = guard.services.get_mut(&call.dest) {
+                            if let Some(sender) = guard.services.get_mut(&*call.dest) {
                                 sender.try_send(call).unwrap();
                             }
         
@@ -609,10 +609,10 @@ pub mod client {
 
     #[derive(Debug)]
     pub struct MethodCall {
-        pub dest: String,
-        pub path: String,
-        pub iface: String,
-        pub member: String,
+        pub dest: Cow<'static, str>,
+        pub path: Cow<'static, str>,
+        pub iface: Cow<'static, str>,
+        pub member: Cow<'static, str>,
         pub no_reply: bool,
         pub allow_interactive_auth: bool,
         pub args: Vec<Arg>,
@@ -622,10 +622,10 @@ pub mod client {
     impl MethodCall {
 
         pub fn new<S1, S2, S3, S4>(dest: S1, path: S2, iface: S3, member: S4) -> Self
-            where S1: Into<String>,
-                  S2: Into<String>,
-                  S3: Into<String>,
-                  S4: Into<String> {
+            where S1: Into<Cow<'static, str>>,
+                  S2: Into<Cow<'static, str>>,
+                  S3: Into<Cow<'static, str>>,
+                  S4: Into<Cow<'static, str>> {
 
             Self {
                 caller: MethodCaller::Ourselves,
@@ -664,13 +664,13 @@ pub mod client {
 
             Ok(Self {
                 caller: MethodCaller::Peer {
-                    name: msg.take_field(FieldCode::Sender).ok_or(ParseError::Invalid)?,
+                    name: Cow::Owned(msg.take_field(FieldCode::Sender).ok_or(ParseError::Invalid)?),
                     serial: msg.serial,
                 },
-                dest:   msg.take_field(FieldCode::Dest).ok_or(ParseError::Invalid)?,
-                path:   msg.take_field(FieldCode::ObjPath).ok_or(ParseError::Invalid)?,
-                iface:  msg.take_field(FieldCode::Iface).ok_or(ParseError::Invalid)?,
-                member: msg.take_field(FieldCode::Member).ok_or(ParseError::Invalid)?,
+                dest:   Cow::Owned(msg.take_field(FieldCode::Dest)   .ok_or(ParseError::Invalid)?),
+                path:   Cow::Owned(msg.take_field(FieldCode::ObjPath).ok_or(ParseError::Invalid)?),
+                iface:  Cow::Owned(msg.take_field(FieldCode::Iface)  .ok_or(ParseError::Invalid)?),
+                member: Cow::Owned(msg.take_field(FieldCode::Member) .ok_or(ParseError::Invalid)?),
                 no_reply: msg.no_reply,
                 allow_interactive_auth: msg.allow_interactive_auth,
                 args: msg.args
@@ -1560,7 +1560,7 @@ pub mod client {
                     let len = unpack::<u32>(buf)? as usize;
                     let raw = buf.consume_bytes(len + 1).ok_or(ParseError::Partial)?; // +1 for the \0
                     let val = String::from_utf8(raw[..len].to_vec()).expect("verify utf8");
-                    Ok(Arg::Simple(SimpleArg::String(val)))
+                    Ok(Arg::Simple(SimpleArg::String(Cow::Owned(val))))
                 },
 
                 [ArgKind::Signature] => {
@@ -1717,8 +1717,8 @@ pub mod client {
         I64(i64),
         U64(u64),
         Double(OpsF64),
-        String(String),
-        ObjPath(String),
+        String(Cow<'static, str>),
+        ObjPath(Cow<'static, str>),
         Signature(Vec<ArgKind>),
         Fd(OpsOwnedFd),
     }
@@ -1783,10 +1783,10 @@ pub mod client {
         fn unpack(arg: Arg) -> Option<Self> where Self: Sized;
         fn kinds() -> Vec<ArgKind>;
     }
-
-    impl<'a> ValidArg for &'a str {
+    
+    impl ValidArg for &'static str {
         fn pack(self) -> Arg {
-            Arg::Simple(SimpleArg::String(self.into()))
+            Arg::Simple(SimpleArg::String(Cow::Borrowed(self)))
         }
         fn unpack(_arg: Arg) -> Option<Self> {
             unimplemented!();
@@ -1798,10 +1798,10 @@ pub mod client {
 
     impl ValidArg for String {
         fn pack(self) -> Arg {
-            Arg::Simple(SimpleArg::String(self))
+            Arg::Simple(SimpleArg::String(Cow::Owned(self)))
         }
         fn unpack(arg: Arg) -> Option<Self> {
-            if let Arg::Simple(SimpleArg::String(val)) = arg { Some(val) }
+            if let Arg::Simple(SimpleArg::String(val)) = arg { Some(val.into_owned()) }
             else { None }
         }
         fn kinds() -> Vec<ArgKind> {
@@ -2057,15 +2057,15 @@ pub mod client {
     pub enum MethodErrorKind {
         /// this request was terminated because of a reactor i/o error
         Reactor,
-        /// a serviec specific error
-        Service { name: String, msg: String },
+        /// a object specific error
+        Service { name: Cow<'static, str>, msg: Cow<'static, str> },
     }
 
     impl MethodError {
 
         pub fn new<S1, S2>(to: &MethodCall, name: S1, msg: S2) -> Self
-            where S1: Into<String>,
-                  S2: Into<String> {
+            where S1: Into<Cow<'static, str>>,
+                  S2: Into<Cow<'static, str>> {
             Self {
                 caller: to.caller.clone(),
                 kind: MethodErrorKind::Service {
@@ -2076,7 +2076,7 @@ pub mod client {
         }
 
         pub fn other<S1>(to: &MethodCall, msg: S1) -> Self
-            where S1: Into<String> {
+            where S1: Into<Cow<'static, str>> {
             Self {
                 caller: to.caller.clone(),
                 kind: MethodErrorKind::Service {
@@ -2128,8 +2128,8 @@ pub mod client {
             Ok(Self {
                 caller: MethodCaller::Ourselves,
                 kind: MethodErrorKind::Service {
-                    name: msg.take_field(FieldCode::ErrName).ok_or(ParseError::Invalid)?,
-                    msg: String::unpack(msg.args.remove(0)).ok_or(ParseError::Invalid)?,
+                    name: Cow::Owned(msg.take_field(FieldCode::ErrName).ok_or(ParseError::Invalid)?),
+                    msg: Cow::Owned(String::unpack(msg.args.remove(0)).ok_or(ParseError::Invalid)?),
                 }
             })
         }
@@ -2140,7 +2140,7 @@ pub mod client {
     enum MethodCaller {
         Ourselves,
         Peer {
-            name: String,
+            name: Cow<'static, str>,
             serial: u32,
         }
     }
@@ -2203,15 +2203,15 @@ impl NotifyProxy {
             "Notify",
         );
 
-        call.arg(notif.app); // app name
+        call.arg(notif.app.to_string()); // app name
         call.arg(notif.replaces.unwrap_or(0) as u32); // replaces id
         call.arg(notif.icon.map(Icon::name).unwrap_or("")); // icon
-        call.arg(notif.summary); // summary
-        call.arg(notif.body.unwrap_or("")); // body
+        call.arg(notif.summary.to_string()); // summary
+        call.arg(notif.body.unwrap_or("").to_string()); // body
 
-        let actions: Vec<&str> = notif.actions
+        let actions: Vec<String> = notif.actions
             .into_iter()
-            .map(|it| [it.id, it.name])
+            .map(|it| [it.id.to_string(), it.name.to_string()])
             .flatten()
             .collect();
 
@@ -2347,7 +2347,7 @@ pub enum Icon {
 
 impl Icon {
     fn name(self) -> &'static str {
-        todo!()
+        todo!("icon name")
     }
 }
 
