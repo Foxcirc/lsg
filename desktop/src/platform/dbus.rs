@@ -198,7 +198,7 @@ impl Reactor {
 
             let readable = async {
 
-                let mut buf = [0; 1024];
+                let mut buf = [0; 256];
 
                 let bytes = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
                 if bytes == 0 { return Err(io::Error::other("kicked by broker")) };
@@ -1363,13 +1363,13 @@ pub enum Arg {
 impl Arg {
 
     fn kinds(&self) -> Vec<ArgKind> {
-        let mut out = Vec::new(); // TODO: not use Vec but an iterator or smth else
+        let mut out = Vec::with_capacity(1);
         skind(self, &mut out);
         out
     }
 
     fn align(&self) -> usize {
-        self.kinds()[0].align() // TODO: not use vec in `kinds` so this is efficient
+        self.kinds()[0].align()
     }
 
     fn serialize(self, buf: &mut SerializeBuf) {
