@@ -219,7 +219,7 @@ pub struct EventProxy<T> {
 impl<T> EventProxy<T> {
 
     pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
-        block_on(self.sender.send(event))
+        self.sender.send_blocking(event)
             .map_err(|err| SendError { inner: err.into_inner() })
     }
 
@@ -302,8 +302,6 @@ impl<T: 'static + Send> EventLoop<T> {
             if let Some(event) = self.base.events.pop() {
                 return Ok(event)
             }
-
-            // let timeout = if self.events.is_empty() { PollTimeout::NONE } else { PollTimeout::ZERO }; // maybe cb generated events TOOD: <-----
 
             enum Either<T: 'static + Send> {
                 Readable,
