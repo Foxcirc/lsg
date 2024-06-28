@@ -647,7 +647,7 @@ fn hash_signal(path: &str, iface: &str, member: &str) -> u64 {
 
 #[derive(Debug)] // TODO: derive debug for everything
 pub struct MethodCall {
-    pub dest: String, // todo: arena :(
+    pub dest: String,
     pub path: String,
     pub iface: String,
     pub member: String,
@@ -659,14 +659,18 @@ pub struct MethodCall {
 
 impl MethodCall {
 
-    pub fn new(dest: &str, path: &str, iface: &str, member: &str) -> Self {
+    pub fn new<S1, S2, S3, S4>(dest: S1, path: S2, iface: S3, member: S4) -> Self
+        where S1: Into<String>,
+              S2: Into<String>,
+              S3: Into<String>,
+              S4: Into<String> {
 
         Self {
             caller: MethodCaller::Ourselves,
-            dest: dest.to_string(), // Todo: arena
-            path: path.to_string(),
-            iface: iface.to_string(),
-            member: member.to_string(),
+            dest:   dest.into(),
+            path:   path.into(),
+            iface:  iface.into(),
+            member: member.into(),
             no_reply: false,
             allow_interactive_auth: true,
             args: Vec::new(),
@@ -776,16 +780,19 @@ pub struct SignalMatch {
 
 impl SignalMatch {
 
-    pub fn new(path: &str, iface: &str, member: &str) -> Self {
+    pub fn new<S1, S2, S3>(path: S1, iface: S2, member: S3) -> Self
+        where S1: AsRef<str>,
+              S2: AsRef<str>,
+              S3: AsRef<str> {
 
         let rule = format!(
             "path={},interface={},member={}",
-            path, iface, member,
+            path.as_ref(), iface.as_ref(), member.as_ref()
         );
 
-        let hash = hash_signal(path, iface, member);
+        let hash = hash_signal(path.as_ref(), iface.as_ref(), member.as_ref());
 
-        Self { rule, hash } // TODO: arena
+        Self { rule, hash }
     }
 
 }
@@ -860,21 +867,26 @@ impl MethodReply {
 #[derive(Debug)]
 pub struct SignalTrigger {
     hash: u64, // used to check if we listen to this signal
-    path: String, // todo: arena
-    iface: String,
-    member: String,
+    pub path: String,
+    pub iface: String,
+    pub member: String,
     args: Vec<Option<Arg>>,
 }
 
 impl SignalTrigger {
 
-    pub fn new(path: &str, iface: &str, member: &str) -> Self {
+    pub fn new<S1, S2, S3>(path: S1, iface: S2, member: S3) -> Self
+        where S1: Into<String>,
+              S2: Into<String>,
+              S3: Into<String> {
+
+        let path   = path.into();
+        let iface  = iface.into();
+        let member = member.into();
 
         Self {
-            hash: hash_signal(path, iface, member),
-            path: path.to_string(),
-            iface: iface.to_string(),
-            member: member.to_string(),
+            hash: hash_signal(&path, &iface, &member),
+            path, iface, member,
             args: Vec::new(),
         }
 
@@ -1605,7 +1617,7 @@ impl Arg {
 
                 let len: u32 = unpack(buf)?;
 
-                let mut map = HashMap::new(); // TODO: arena (not possible sadly, since HashMaps in rust aren't arena compatible and reallocate)
+                let mut map = HashMap::new();
 
                 let start = buf.offset;
                 while buf.offset - start < len as usize {
@@ -1636,7 +1648,7 @@ impl Arg {
                     args.push(arg);
                 }
 
-                Ok(Arg::Compound(CompoundArg::Array(contents.to_vec(), args))) // TODO: arena
+                Ok(Arg::Compound(CompoundArg::Array(contents.to_vec(), args)))
             
             },
 
@@ -1794,7 +1806,7 @@ impl Hash for OpsOwnedFd {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompoundArg {
     Array(Vec<ArgKind>, Vec<Arg>),
-    Map(ArgKind , Vec<ArgKind>, HashMap<SimpleArg, Arg>),
+    Map(ArgKind, Vec<ArgKind>, HashMap<SimpleArg, Arg>),
     Variant(Box<Arg>),
     EmptyVariant,
     Struct(Vec<Arg>),
@@ -1938,7 +1950,7 @@ impl Variant {
 impl ValidArg for Variant {
     fn pack(self) -> Arg {
         let val = self.get().expect("cannot serialize empty variant");
-        Arg::Compound(CompoundArg::Variant(Box::new(val))) // TODO: arenaaaaa
+        Arg::Compound(CompoundArg::Variant(Box::new(val)))
     }
     fn unpack(arg: Arg) -> Option<Self> {
         if let Arg::Compound(CompoundArg::Variant(val)) = arg { Some(Self::new(*val)) }
@@ -1964,7 +1976,7 @@ impl<T: ValidArg> ValidArg for Vec<T> {
         }
         else { None }
     }
-    fn kinds() -> Vec<ArgKind> { // TODO: SmallVec or Arena
+    fn kinds() -> Vec<ArgKind> {
         let mut result = Vec::with_capacity(4);
         result.push(ArgKind::Array);
         result.extend(T::kinds());
@@ -1976,21 +1988,23 @@ impl<K: ValidArg + Eq + Hash, V: ValidArg> ValidArg for HashMap<K, V> {
     fn pack(self) -> Arg {
         let tkey = K::kinds()[0];
         let tval = V::kinds();
-        let map = self.into_iter().map(|(k, v)| (as_simple_arg(k.pack()), v.pack())).collect();
+        let map = self.into_iter().map(|(k, v)|
+            (as_simple_arg(k.pack()), v.pack())
+        ).collect();
         Arg::Compound(CompoundArg::Map(tkey, tval, map))
     }
-    fn unpack(_arg: Arg) -> Option<Self> {
-        // if let Arg::Compound(CompoundArg::Map(.., map)) = arg {
-        //     let mut out = HashMap::new();
-        //     for (key, it) in map.iter() {
-        //         out.insert(K::unpack(key)?, V::unpack(it)?);
-        //     }
-        //     Some(out)
-        // }
-        // else { None }
-        todo!("fuck fuck fuck hashmap fuck");
-
-// TODO: seperate SimpleArg and CompoundArg traits.... this is kinda important
+    fn unpack(arg: Arg) -> Option<Self> {
+        if let Arg::Compound(CompoundArg::Map(.., items)) = arg {
+            let mut out = HashMap::with_capacity(items.len());
+            for (rkey, rval) in items {
+                let key = K::unpack(Arg::Simple(rkey))?;
+                let val = V::unpack(rval)?;
+                out.insert(key, val);
+            }
+            Some(out)
+        } else {
+            None
+        }
     }
     fn kinds() -> Vec<ArgKind> {
         vec![ArgKind::Array]
@@ -2316,7 +2330,6 @@ impl<'a> Notif<'a> {
         self.urgency = Some(urgency);
         self
     }
-    #[cfg(target_os = "linux")]
     pub fn category(mut self, category: Category) -> Self {
         self.category = Some(category);
         self
@@ -2349,6 +2362,12 @@ impl<'a> Action<'a> {
 
 pub struct InvokedAction {
     pub id: String,
+}
+
+impl InvokedAction {
+    pub fn default(&self) -> bool {
+        self.id == "default"
+    }
 }
 
 pub enum Category {
