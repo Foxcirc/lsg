@@ -290,7 +290,7 @@ fn process_incoming(guard: &mut async_lock::MutexGuard<'_, BusData>) -> Result<(
             }
 
             Err(ParseError::Partial) => break Ok(()), // do nothing and wait for more data
-            Err(other) => todo!("parse error: {other:?}"),
+            Err(other) => break Err(other),
 
         }
 
@@ -384,7 +384,7 @@ async fn process_request(guard: &mut async_lock::MutexGuard<'_, BusData>, reques
 
         },
 
-        ClientMessage::MethodReply {  payload } => {
+        ClientMessage::MethodReply { payload } => {
 
             let mut msg = payload.serialize();
             msg.serial = u32::MAX;
@@ -526,7 +526,6 @@ impl Connection {
 
         SignalListener {
             matching,
-            con: self.clone(),
             incoming_signals: self.signals.clone(),
             requests: self.requests.clone(), // to remove the match on drop
             ref_test: Arc::new(()),
@@ -536,10 +535,13 @@ impl Connection {
 
     /// Run a service.
     /// Will never resolve.
-    pub async fn run_service(&self, name: &str) -> RegisterResult<ServiceListener> {
+    pub async fn run_service<S1>(&self, name: S1) -> RegisterResult<ServiceListener>
+        where S1: Into<String> {
+
+        let name = name.into();
 
         let call = MethodCall::request_name(
-            name.to_string(),
+            name.clone(),
             0x4 /* don't queue */
         );
 
@@ -550,12 +552,11 @@ impl Connection {
         if val >= 3 { return Err(RegisterError::AlreadyOwned) }
 
         let (notif, incoming_calls) = channel::bounded(4);
-        let req = ClientMessage::AddService { notif, payload: name.to_string() };
+        let req = ClientMessage::AddService { notif, payload: name.clone() };
         self.requests.try_send(req).unwrap();
 
         Ok(ServiceListener {
-            name: name.to_string(),
-            con: self.clone(),
+            name,
             incoming_calls,
             requests: self.requests.clone(), // to remove the match on drop
             ref_test: Arc::new(()),
@@ -571,7 +572,6 @@ impl Connection {
 #[derive(Clone)]
 pub struct SignalListener {
     matching: SignalMatch,
-    con: Connection,
     incoming_signals: async_broadcast::Receiver<Arc<SignalTrigger>>,
     requests: channel::Sender<ClientMessage>,
     /// used to test if this is the last listener of this kind on drop
@@ -610,7 +610,6 @@ impl SignalListener {
 #[derive(Clone)]
 pub struct ServiceListener {
     name: String,
-    con: Connection,
     incoming_calls: channel::Receiver<MethodCall>,
     requests: channel::Sender<ClientMessage>,
     /// used to test if this is the last listener of this kind on drop
@@ -645,7 +644,7 @@ fn hash_signal(path: &str, iface: &str, member: &str) -> u64 {
     hasher.finish()
 }
 
-#[derive(Debug)] // TODO: derive debug for everything
+#[derive(Debug)]
 pub struct MethodCall {
     pub dest: String,
     pub path: String,
@@ -780,17 +779,14 @@ pub struct SignalMatch {
 
 impl SignalMatch {
 
-    pub fn new<S1, S2, S3>(path: S1, iface: S2, member: S3) -> Self
-        where S1: AsRef<str>,
-              S2: AsRef<str>,
-              S3: AsRef<str> {
+    pub fn new(path: &str, iface: &str, member: &str) -> Self {
 
         let rule = format!(
             "path={},interface={},member={}",
-            path.as_ref(), iface.as_ref(), member.as_ref()
+            path, iface, member
         );
 
-        let hash = hash_signal(path.as_ref(), iface.as_ref(), member.as_ref());
+        let hash = hash_signal(path, iface, member);
 
         Self { rule, hash }
     }
@@ -1693,7 +1689,7 @@ impl Arg {
 
 }
 
-fn skind(arg: &Arg, out: &mut Vec<ArgKind>) { // TODO: think about the relation of this and "ValidArg::kinds"
+fn skind(arg: &Arg, out: &mut Vec<ArgKind>) {
     match arg {
         Arg::Simple(simple) => {
             let kind = match simple {
@@ -1820,7 +1816,7 @@ pub trait ValidArg {
 
 impl<'a> ValidArg for &'a str {
     fn pack(self) -> Arg {
-        Arg::Simple(SimpleArg::String(self.to_string()))
+        Arg::Simple(SimpleArg::String(self.into()))
     }
     fn unpack(_arg: Arg) -> Option<Self> {
         unimplemented!();
@@ -2081,7 +2077,6 @@ pub enum RegisterError {
 
 pub type MethodResult<T> = Result<T, MethodError>;
 
-/// TODO, describe it a bit
 #[derive(Debug)]
 pub struct MethodError {
     caller: MethodCaller,
@@ -2098,22 +2093,25 @@ pub enum MethodErrorKind {
 
 impl MethodError {
 
-    pub fn new(to: &MethodCall, name: &str, msg: &str) -> Self {
+    pub fn new<S1, S2>(to: &MethodCall, name: S1, msg: S2) -> Self
+        where S1: Into<String>,
+              S2: Into<String> {
         Self {
             caller: to.caller.clone(),
             kind: MethodErrorKind::Service {
-                name: name.to_string(),
-                msg: msg.to_string()
+                name: name.into(),
+                msg: msg.into()
             }
         }
     }
 
-    pub fn other(to: &MethodCall, msg: &str) -> Self {
+    pub fn other<S1>(to: &MethodCall, msg: S1) -> Self
+        where S1: Into<String> {
         Self {
             caller: to.caller.clone(),
             kind: MethodErrorKind::Service {
-                name: "lsg.other".to_string(),
-                msg: msg.to_string()
+                name: "lsg.other".into(),
+                msg: msg.into()
             }
         }
     }
@@ -2122,8 +2120,8 @@ impl MethodError {
         Self {
             caller: to.caller.clone(),
             kind: MethodErrorKind::Service {
-                name: "lsg.unimplemented".to_string(),
-                msg: "this member is not implemented, as of now".to_string(),
+                name: "lsg.unimplemented".into(),
+                msg: "this member is not implemented, as of now".into(),
             }
         }
     }
@@ -2217,7 +2215,7 @@ impl NotifyProxy {
             hints.insert("urgency", Variant::new(Arg::Simple(SimpleArg::Byte(urgency.num()))));
         }
         if let Some(category) = notif.category {
-            hints.insert("category", Variant::new(Arg::Simple(SimpleArg::String(category.name().to_string()))));
+            hints.insert("category", Variant::new(Arg::Simple(SimpleArg::String(category.name().into()))));
         }
 
         call.arg(hints); // hints
