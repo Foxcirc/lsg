@@ -2108,7 +2108,7 @@ pub mod client {
                 msg.args.push(Arg::Simple(SimpleArg::String(desc)));
 
             } else {
-                panic!("cannot serialize non-service MethodError");
+                panic!("cannot serialize \"custom\" MethodError");
             };
 
             // add reply information
@@ -2183,6 +2183,7 @@ fn notifications() {
 }
 
 use client::*;
+use futures_lite::FutureExt;
 
 pub struct NotifyProxy {
     con: Connection,
@@ -2238,7 +2239,9 @@ impl NotifyProxy {
         
     }
 
-    /// Forcefully close a notification.
+    /// Close a notification.
+    /// Should be invoked in all cases, eg. also when the user selected an action,
+    /// since not all notification daemons dismiss a notificaition in that case.
     pub async fn close(&self, id: NotifId) -> MethodResult<()> {
 
         let mut call = MethodCall::new(
@@ -2256,21 +2259,35 @@ impl NotifyProxy {
     }
 
     /// Wait until an action is invoked.
+    /// If the notification is closed, a synthetic "close" action will be
+    /// generated.
     pub async fn invoked(&self, id: NotifId) -> InvokedAction {
 
-        let signal = SignalMatch::new(
-            "/org/freedesktop/Notifications",
-            "org.freedesktop.Notifications",
-            "ActionInvoked"
-        );
+        let mut invoked = {
+            let rule = SignalMatch::new(
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "ActionInvoked"
+            );
+            self.con.listen_on(rule)
+        };
 
-        let mut stream = self.con.listen_on(signal);
+        let mut closed = {
+            let rule = SignalMatch::new(
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "NotificationClosed"
+            );
+            self.con.listen_on(rule)
+        };
+
         let mut key;
 
         loop {
-            let resp = stream.next().await; // wait for a dbus signal to arrive
+            // wait for a dbus signal to arrive
+            let resp = invoked.next().or(closed.next()).await;
             let event: u32 = resp.arg(0);
-            key = resp.arg(1);
+            key = resp.get(1).unwrap_or("closed".into());
             if event == id { break };
         }
 
@@ -2370,8 +2387,11 @@ pub struct InvokedAction {
 }
 
 impl InvokedAction {
-    pub fn default(&self) -> bool {
+    pub fn is_default(&self) -> bool {
         self.id == "default"
+    }
+    pub fn is_closed(&self) -> bool {
+        self.id == "closed"
     }
 }
 
