@@ -71,8 +71,9 @@ use std::{
     collections::{HashSet, HashMap},
 };
 
-use crate::shared::{
-    ConfigureFlags, CursorShape, CursorStyle, DataKinds, DataSourceEvent, DndEvent, Event, IconFormat, InputMode, IoMode, KbInteractivity, Key, MonitorInfo, MouseButton, PresentToken, QuitReason, Rect, ScrollAxis, Size, Urgency, WindowAnchor, WindowEvent, WindowLayer
+use crate::{
+    dbus,
+    shared::{ConfigureFlags, CursorShape, CursorStyle, DataKinds, NotifEvent, DataSourceEvent, DndEvent, Event, IconFormat, InputMode, IoMode, KbInteractivity, Key, MonitorInfo, MouseButton, PresentToken, QuitReason, Rect, ScrollAxis, Size, Urgency, WindowAnchor, WindowEvent, WindowLayer}
 };
 
 // ### base event loop ###
@@ -93,6 +94,12 @@ struct BaseLoop<T: 'static + Send = ()> {
     cursor_data: CursorData,
     monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
     last_serial: u32,
+    // -- dbus connection --
+    dbus_data: DbusData,
+}
+
+struct DbusData {
+    notif_proxy: dbus::NotifyProxy,
 }
 
 struct ProxyData<T: 'static + Send> {
@@ -177,23 +184,21 @@ impl PressedKeys {
         let min = keymap.min_keycode();
         let max = keymap.max_keycode();
         let len = max.raw() - min.raw();
+        let mut keys = bv::BitVec::new();
+        keys.resize(len as u64, false);
         Self {
             min: min.raw(),
-            keys: bv::bit_vec![false; len as u64],
+            keys,
         }
     }
 
-    pub fn key_down(&mut self, key: xkb::Keycode) {
+    pub fn event(&mut self, key: xkb::Keycode, state: KeyState) {
+        let pressed = state == KeyState::Pressed;
         let idx = key.raw() - self.min;
-        self.keys.set(idx as u64, true);
+        self.keys.set(idx as u64, pressed);
     }
 
-    pub fn key_up(&mut self, key: xkb::Keycode) {
-        let idx = key.raw() - self.min;
-        self.keys.set(idx as u64, false);
-    }
-
-    pub fn keys_down(&self) -> Vec<xkb::Keycode> {
+    pub fn current(&self) -> Vec<xkb::Keycode> {
         let mut down = Vec::new(); // we can't return anything that borrows self
         for idx in 0..self.keys.len() {
             if self.keys.get(idx) == true {
@@ -269,6 +274,14 @@ impl<T: 'static + Send> EventLoop<T> {
         let mut events = Vec::with_capacity(4);
         events.push(Event::Resume);
 
+        let dbus_data = {
+            let con = dbus::client::Connection::new()?;
+            DbusData {
+                notif_proxy: dbus::NotifyProxy::new(&con), // will keep a reference to the con
+                // notifs
+            }
+        };
+
         let base = BaseLoop {
             appid: application.to_string(),
             con, qh, wl,
@@ -282,6 +295,7 @@ impl<T: 'static + Send> EventLoop<T> {
             cursor_data: CursorData::default(),
             monitor_list,
             last_serial: 0, // we don't use an option here since an invalid serial may be a common case and is not treated as an error
+            dbus_data,
         };
 
         Ok(Self {
@@ -293,34 +307,37 @@ impl<T: 'static + Send> EventLoop<T> {
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
 
+        // TODO: make this more efficient and reduce cancellation
+
         loop {
             
-            self.base.con.get_ref().flush()?; // nah, I forgot this and had to debug 10+ hours... fuckkk me
-
+            // process all events that we've stored
             let guard = loop {
-
-                self.queue.dispatch_pending(&mut self.base).unwrap();
-
+                self.queue.dispatch_pending(&mut self.base).expect("todo");
                 match self.queue.prepare_read() {
                     Some(val) => break val,
                     None => continue,
                 };
-
             };
 
             if let Some(error) = self.base.keyboard_data.keymap_error.take() {
                 return Err(error)
             };
 
-            // process all new events
             if let Some(event) = self.base.events.pop() {
                 return Ok(event)
             }
 
+            // flush all outgoing requests
+            // i forgot this and had to debug 10+ hours... fuckkk me
+            self.base.con.get_ref().flush()?; 
+
+            // wait for new events
             enum Either<T: 'static + Send> {
                 Readable,
                 Timer,
                 Channel(Event<T>),
+                NotifAction(dbus::NotifId, dbus::InvokedNotifAction),
                 #[cfg(feature = "signals")] Signal(i32),
             }
 
@@ -339,6 +356,11 @@ impl<T: 'static + Send> EventLoop<T> {
                 Ok(Either::Channel(event))
             };
 
+            let notif = async {
+                let (id, action) = self.base.dbus_data.notif_proxy.action().await;
+                Ok(Either::NotifAction(id, action))
+            };
+
             #[cfg(feature = "signals")]
             let signals = async {
                 use futures_lite::StreamExt;
@@ -348,9 +370,9 @@ impl<T: 'static + Send> EventLoop<T> {
             };
 
             #[cfg(feature = "signals")]
-            let future = readable.or(timer).or(channel).or(signals);
+            let future = readable.or(timer).or(channel).or(notif).or(signals);
             #[cfg(not(feature = "signals"))]
-            let future = readable.or(timer).or(channel);
+            let future = readable.or(timer).or(channel).or(notif);
 
             match future.await {
                 Ok(Either::Readable) => {
@@ -363,8 +385,11 @@ impl<T: 'static + Send> EventLoop<T> {
                     process_key_event(&mut self.base, key, Direction::Down, Source::KeyRepeat);
                 },
                 Ok(Either::Channel(event)) => {
-                    // just return the event
-                    return Ok(event)
+                    self.base.events.push(event)
+                },
+                Ok(Either::NotifAction(id, action)) => {
+                    let event = NotifEvent::ActionInvoked { action };
+                    self.base.events.push(Event::Notif { id, event });
                 },
                 #[cfg(feature = "signals")]
                 Ok(Either::Signal(signal)) => {
@@ -427,6 +452,12 @@ impl<T: 'static + Send> EventLoop<T> {
             self.base.last_serial
         );
 
+    }
+
+    pub async fn send_notification(&mut self, notif: dbus::Notif<'_>) -> dbus::client::MethodResult<dbus::NotifId> {
+        let id = self.base.dbus_data.notif_proxy.send(notif).await?;
+        // self.base.dbus.notifs.push(id);
+        Ok(id)
     }
 
 }
@@ -2422,7 +2453,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for BaseLoop<T>
                     evl.events.push(Event::Window { id, event: WindowEvent::Leave });
 
                     // emit a synthetic key-up event for all keys that are still pressed
-                    for key in keymap_specific.pressed_keys.keys_down() {
+                    for key in keymap_specific.pressed_keys.current() {
                         process_key_event(evl, key.raw(), Direction::Up, Source::Event);
                     }
 
@@ -2559,7 +2590,8 @@ fn process_key_event<T: 'static + Send>(evl: &mut BaseLoop<T>, raw_key: u32, dir
                 );
                 
                 // update the key state
-                keymap_specific.pressed_keys.key_down(xkb_key);
+                keymap_specific.pressed_keys.event(xkb_key, KeyState::Pressed);
+
             }
         }
 
@@ -2569,7 +2601,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut BaseLoop<T>, raw_key: u32, dir
         evl.keyboard_data.repeat_timer.set_after(Duration::MAX);
 
         // update the key state
-        keymap_specific.pressed_keys.key_up(xkb_key);
+       keymap_specific.pressed_keys.event(xkb_key, KeyState::Released);
 
         if let InputMode::SingleKey = input_mode {
             let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
@@ -2703,6 +2735,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for BaseLoop<T> 
     }
 }
 
+/// there are different wayland protocols used to set different kinds of
+/// cursor styles
 fn process_new_cursor_style<T: 'static + Send>(evl: &mut BaseLoop<T>, id: WindowId) {
 
     let style = evl.cursor_data.styles.get(&id)

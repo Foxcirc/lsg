@@ -59,7 +59,7 @@ pub mod client {
 
                     println!("{:?}", msg);
                     let reply = MethodError::unimplemented(&msg);
-                    con.reply_with(Err(reply));
+                    con.reply_with(Err(reply)).await;
 
                 }
             
@@ -160,10 +160,11 @@ pub mod client {
                     MoreData,
                 }
 
-                let reqs = guard.actions.clone(); // we have to clone because we can't borrow guard in both `request` and `readable`
+                // extract it, because we need disjoint borrowing here
+                let bd: &mut BusData = &mut *guard;
 
                 let request = async {
-                    let val = reqs.recv().await.unwrap();
+                    let val = bd.actions.recv().await.unwrap();
                     io::Result::Ok(Either::Request(val))
                 };
 
@@ -171,9 +172,9 @@ pub mod client {
 
                     let mut buf = [0; 256];
 
-                    let bytes = unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
+                    let bytes = unsafe { bd.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
                     if bytes == 0 { return Err(io::Error::other("kicked by broker")) };
-                    guard.buf.extend_from_slice(&buf[..bytes]);
+                    bd.buf.extend_from_slice(&buf[..bytes]);
 
                     Ok(Either::MoreData)
 
@@ -187,6 +188,71 @@ pub mod client {
             }
         
         }
+
+        // pub(self) async fn flush_outgoing(&self) -> io::Result<()> {
+            
+        //     let mut guard = self.locked.try_lock().expect("reactor is already running, so flushing isn't necesarry");
+
+        //     while let Ok(request) = guard.actions.try_recv() {
+        //         process_request(&mut guard, request).await?;
+        //     }
+
+        //     Ok(())
+
+        // }
+
+    }
+
+    async fn initial_auth(stream: &mut async_io::Async<UnixStream>) -> io::Result<()> {
+
+        let inner = unsafe { stream.get_mut() };
+
+        write!(inner, "\0")?;
+        write!(inner, "AUTH EXTERNAL ")?;
+
+        // write the current uid in a hex ascii representation
+
+        let uid = nix::unistd::Uid::current();
+
+        let num = uid.as_raw();
+        let mut divisor = 1;
+
+        while num / divisor >= 10 {
+            divisor *= 10;
+        }
+
+        while divisor > 0 {
+            let digit = (num / divisor) % 10;
+            write!(inner, "{:02x}", digit + b'0' as u32)?;
+            divisor /= 10;
+        }
+
+        write!(inner, "\r\n")?;
+        inner.flush()?;
+
+        let mut buf = [0; 128];
+        unsafe { stream.read_with_mut(|it| it.read(&mut buf)) }.await?;
+        if &buf[..2] != b"OK" { return Err(io::Error::other("sasl authentication failed")) }
+
+        // begin the session, no more sasl messages will be send after this
+    
+        let inner = unsafe { stream.get_mut() };
+        write!(inner, "BEGIN\r\n")?;
+
+        // send the `Hello` message
+
+        let hello = MethodCall::hello();
+
+        let mut msg = hello.serialize();
+        msg.serial = u32::MAX; // any valid serial works here
+        let data = msg.serialize();
+
+        inner.write_all(&data)?;
+        inner.flush()?;
+
+        // the reply will just be discarded later
+
+        Ok(())
 
     }
 
@@ -271,61 +337,10 @@ pub mod client {
 
         match request {
 
-            ClientMessage::Authenticate => {
-
-                // this will block the reactor until we've authenticated
-
-                // sasl authentication
-
-                let stream = unsafe { guard.bus.get_mut() };
-
-                write!(stream, "\0")?;
-                write!(stream, "AUTH EXTERNAL ")?;
-
-                // write the current uid in a hex ascii representation
-
-                let uid = nix::unistd::Uid::current();
-
-                let num = uid.as_raw();
-                let mut divisor = 1;
-
-                while num / divisor >= 10 {
-                    divisor *= 10;
-                }
-
-                while divisor > 0 {
-                    let digit = (num / divisor) % 10;
-                    write!(stream, "{:02x}", digit + b'0' as u32)?;
-                    divisor /= 10;
-                }
-
-                write!(stream, "\r\n")?;
-                stream.flush()?;
-
-                let mut buf = [0; 128];
-                unsafe { guard.bus.read_with_mut(|it| it.read(&mut buf)) }.await?;
-                if &buf[..2] != b"OK" { return Err(io::Error::other("sasl authentication failed")) }
-
-                // begin the session, no more sasl messages will be send after this
-            
-                let stream = unsafe { guard.bus.get_mut() };
-                write!(stream, "BEGIN\r\n")?;
-                stream.flush()?;
-
-                // send the `Hello` message
-
-                let hello = MethodCall::hello();
-
-                let mut msg = hello.serialize();
-                msg.serial = u32::MAX; // any valid serial works here
-                let data = msg.serialize();
-
-                stream.write_all(&data)?;
-                stream.flush()?;
-
-                // the reply will just be discarded later
-
-            },
+            ClientMessage::InitialAuth => {
+                // lazily perform the auth
+                initial_auth(&mut guard.bus).await?;
+            }
 
             ClientMessage::MethodCall { notif, payload } => {
 
@@ -342,7 +357,7 @@ pub mod client {
 
             },
 
-            ClientMessage::MethodCallVoid { payload } => {
+            ClientMessage::MethodCallVoid { notif, payload } => {
 
                 let mut msg = payload.serialize();
                 msg.serial = u32::MAX;
@@ -351,9 +366,13 @@ pub mod client {
                 let stream = unsafe { guard.bus.get_mut() };
                 stream.write_all(&data)?;
 
+                if let Some(val) = notif {
+                    val.try_send(()).unwrap();
+                }
+
             },
 
-            ClientMessage::MethodReply { payload } => {
+            ClientMessage::MethodReply { notif, payload } => {
 
                 let mut msg = payload.serialize();
                 msg.serial = u32::MAX;
@@ -362,9 +381,13 @@ pub mod client {
                 let stream = unsafe { guard.bus.get_mut() };
                 stream.write_all(&data)?;
             
+                if let Some(val) = notif {
+                    val.try_send(()).unwrap();
+                }
+
             },
 
-            ClientMessage::MethodError { payload } => {
+            ClientMessage::MethodError { notif, payload } => {
 
                 let mut msg = payload.serialize();
                 msg.serial = u32::MAX;
@@ -372,6 +395,10 @@ pub mod client {
 
                 let stream = unsafe { guard.bus.get_mut() };
                 stream.write_all(&data)?;
+
+                if let Some(val) = notif {
+                    val.try_send(()).unwrap();
+                }
 
             },
 
@@ -408,19 +435,20 @@ pub mod client {
             let path = addr.strip_prefix("unix:path=")
                 .ok_or(io::Error::other("invalid bus address format"))?;
 
-            let stream = UnixStream::connect(path)?;
+            let stream = async_io::Async::new(
+                UnixStream::connect(path)?
+            )?;
 
             let actions = channel::bounded(4);
             let signals = async_broadcast::broadcast(4);
             // signals.0.set_overflow(true); // drop old signals if not consumed
 
-            // authenticate and say hello, this is executed
-            // when the reactor first runs
-            actions.0.try_send(ClientMessage::Authenticate).unwrap();
+            // authenticate and send the hello message
+            actions.0.try_send(ClientMessage::InitialAuth).unwrap();
 
             let reactor = Reactor {
                 locked: AsyncMutex::new(BusData {
-                    bus: async_io::Async::new(stream)?,
+                    bus: stream,
                     actions: actions.1,
                     replies: HashMap::new(),
                     signals: signals.0,
@@ -448,6 +476,10 @@ pub mod client {
             future.or(reactor).await
         }
 
+        // pub async fn flush_outgoing(&self) -> io::Result<()> {
+        //     self.reactor.flush_outgoing().await
+        // }
+
         pub async fn method_call(&self, payload: MethodCall) -> MethodResult<MethodReply> {
         
             let (notif, receive) = channel::bounded(1);
@@ -458,34 +490,49 @@ pub mod client {
 
         }
 
-        pub fn method_call_void(&self, payload: MethodCall) {
-
-            // TODO: we kinda need to know when a void call is sent, so implement something like this
+        pub async fn method_call_void(&self, payload: MethodCall) {
         
-            let req = ClientMessage::MethodCallVoid { payload };
+            let (notif, receive) = channel::bounded(1);
+            let req = ClientMessage::MethodCallVoid { notif: Some(notif), payload };
+            self.requests.try_send(req).unwrap();
+
+            receive.recv().await.unwrap()
+
+        }
+
+        /// Like `method_call_void` but doesn't wait 'till sent.
+        pub fn method_call_floating(&self, payload: MethodCall) {
+        
+            let req = ClientMessage::MethodCallVoid { notif: None, payload };
             self.requests.try_send(req).unwrap();
 
         }
 
-        pub fn reply_with(&self, result: MethodResult<MethodReply>) {
+        pub async fn reply_with(&self, result: MethodResult<MethodReply>) {
         
+            let (notif, receive) = channel::bounded(1);
+
             match result {
                 Ok(payload) => {
-                    let req = ClientMessage::MethodReply { payload };
+                    let req = ClientMessage::MethodReply { notif: Some(notif), payload };
                     self.requests.try_send(req).unwrap();
                 },
                 Err(payload) => {
-                    let req = ClientMessage::MethodError { payload };
+                    let req = ClientMessage::MethodError { notif: Some(notif), payload };
                     self.requests.try_send(req).unwrap();
                 },
             }
 
+            receive.recv().await.unwrap()
+
         }
 
+        /// This clones some stuff, so keep the listener around instead of
+        /// calling this again every time.
         pub fn listen_on(&self, matching: SignalMatch) -> SignalListener {
 
             let call = MethodCall::add_match(matching.rule.clone());
-            self.method_call_void(call);
+            self.method_call_floating(call); // will be processed when waiting for the signal with `next`
 
             SignalListener {
                 matching,
@@ -547,8 +594,9 @@ pub mod client {
             if Arc::into_inner(arc).is_some() {
                 // remove the match rule
                 let payload = MethodCall::remove_match(self.matching.rule.clone());
-                let req = ClientMessage::MethodCallVoid { payload };
-                self.requests.try_send(req).unwrap();
+                let req = ClientMessage::MethodCallVoid { notif: None, payload };
+                let _ = self.requests.try_send(req);
+                // if this didn't work, we are probably done anyways
             }
         }
     }
@@ -559,7 +607,13 @@ pub mod client {
             loop {
                 // loop until the signal we match on arrives
                 let resp = self.incoming_signals.recv_direct().await.unwrap();
-                if self.matching.hash == resp.hash {
+
+                let hash = match self.matching.kind {
+                    MatchKind::Specific => hash_signal(&resp.path, &resp.iface, &resp.member),
+                    MatchKind::Originating => hash_signal_origin(&resp.path, &resp.iface),
+                };
+
+                if self.matching.hash == hash {
                     return resp
                 }
             }
@@ -585,8 +639,9 @@ pub mod client {
             if Arc::into_inner(arc).is_some() {
                 // release the name
                 let payload = MethodCall::release_name(mem::take(&mut self.name));
-                let req = ClientMessage::MethodCallVoid { payload };
-                self.requests.try_send(req).unwrap();
+                let req = ClientMessage::MethodCallVoid { notif: None, payload };
+                let _ = self.requests.try_send(req);
+                // if this didn't work, we are probably done anyways
             }
         }
     }
@@ -605,6 +660,10 @@ pub mod client {
         iface.hash(&mut hasher);
         member.hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn hash_signal_origin(path: &str, iface: &str) -> u64 {
+        hash_signal(path, iface, "")
     }
 
     #[derive(Debug)]
@@ -735,14 +794,21 @@ pub mod client {
     }
 
     #[derive(Debug, Clone)]
+    pub enum MatchKind {
+        Specific,
+        Originating,
+    }
+
+    #[derive(Debug, Clone)]
     pub struct SignalMatch {
+        kind: MatchKind,
         rule: String,
         hash: u64,
     }
 
     impl SignalMatch {
 
-        pub fn new(path: &str, iface: &str, member: &str) -> Self {
+        pub fn specific(path: &str, iface: &str, member: &str) -> Self {
 
             let rule = format!(
                 "path={},interface={},member={}",
@@ -751,7 +817,28 @@ pub mod client {
 
             let hash = hash_signal(path, iface, member);
 
-            Self { rule, hash }
+            Self {
+                kind: MatchKind::Specific,
+                rule,
+                hash
+            }
+        }
+
+        pub fn originating(path: &str, iface: &str) -> Self {
+
+            let rule = format!(
+                "path={},interface={}",
+                path, iface
+            );
+
+            let hash = hash_signal_origin(path, iface);
+
+            Self {
+                kind: MatchKind::Originating,
+                rule,
+                hash
+            }
+
         }
 
     }
@@ -825,7 +912,6 @@ pub mod client {
 
     #[derive(Debug)]
     pub struct SignalTrigger {
-        hash: u64, // used to check if we listen to this signal
         pub path: String,
         pub iface: String,
         pub member: String,
@@ -839,13 +925,10 @@ pub mod client {
                   S2: Into<String>,
                   S3: Into<String> {
 
-            let path   = path.into();
-            let iface  = iface.into();
-            let member = member.into();
-
             Self {
-                hash: hash_signal(&path, &iface, &member),
-                path, iface, member,
+                path: path.into(),
+                iface: iface.into(),
+                member: member.into(),
                 args: Vec::new(),
             }
 
@@ -874,32 +957,27 @@ pub mod client {
 
         fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
 
-            let mut this = Self {
-                hash: 0,
+            Ok(Self {
                 path: msg.take_field(FieldCode::ObjPath).ok_or(ParseError::Invalid)?,
                 iface: msg.take_field(FieldCode::Iface).ok_or(ParseError::Invalid)?,
                 member: msg.take_field(FieldCode::Member).ok_or(ParseError::Invalid)?,
                 args: msg.args.into_iter().map(Some).collect()
-            };
-
-            this.hash = hash_signal(&this.path, &this.iface, &this.member);
-
-            Ok(this)
+            })
         
         }
     
     }
 
     enum ClientMessage {
-        /// authenticate the client (send lazily on startup)
-        Authenticate,
-
+        // sasl auth + hello
+        InitialAuth,
+        // notif when answer was received
         MethodCall     { notif: channel::Sender<MethodResult<MethodReply>>, payload: MethodCall },
         AddService     { notif: channel::Sender<MethodCall>,                payload: String /* name */ },
-
-        MethodCallVoid { payload: MethodCall },
-        MethodReply    { payload: MethodReply },
-        MethodError    { payload: MethodError },
+        // notif when sent successfully
+        MethodCallVoid { notif: Option<channel::Sender<()>>, payload: MethodCall },
+        MethodReply    { notif: Option<channel::Sender<()>>, payload: MethodReply },
+        MethodError    { notif: Option<channel::Sender<()>>, payload: MethodError },
     }
 
     #[derive(Debug, Default)]
@@ -2152,7 +2230,7 @@ pub mod client {
 use std::{collections::HashMap, time::Duration};
 
 #[test]
-fn notifications() {
+fn notifs() {
 
     async_io::block_on(async {
 
@@ -2160,21 +2238,21 @@ fn notifications() {
 
         con.with_reactor(async {
     
-            let proxy = NotifyProxy::new(&con);
+            let mut proxy = NotifyProxy::new(&con);
 
             let notif = Notif::new("lsg-test (dbus)", "show me the magic")
                 .body("some text in the body")
-                .urgency(Urgency::Critical)
-                .action(Action::default("default selection"))
-                .action(Action::new("a", "selection A"))
-                .action(Action::new("b", "selection B"));
+                .urgency(NotifUrgency::Critical)
+                .action(NotifAction::default("default selection"))
+                .action(NotifAction::new("a", "selection A"))
+                .action(NotifAction::new("b", "selection B"));
 
-            let id = proxy.send(notif).await.unwrap();
+            proxy.send(notif).await.unwrap();
 
-            let action = proxy.invoked(id).await;
-            println!("invoked action: {}", action.id);
+            let (id, action) = proxy.action().await;
+            println!("invoked action: {}", action.name);
 
-            proxy.close(id).await.unwrap();
+            proxy.close(id).await;
 
         }).await.unwrap();
 
@@ -2183,16 +2261,28 @@ fn notifications() {
 }
 
 use client::*;
-use futures_lite::FutureExt;
 
+// #[derive(Debug, Clone)] TODO: derive debug for all these (Connection, SingalListener, etc.)
 pub struct NotifyProxy {
     con: Connection,
+    listener: SignalListener,
 }
 
 impl NotifyProxy {
 
     pub fn new(con: &Connection) -> Self {
-        Self { con: con.clone() }
+
+        let rule = SignalMatch::originating(
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+        );
+        let listener = con.listen_on(rule);
+
+        Self {
+            con: con.clone(),
+            listener,
+        }
+
     }
 
     pub async fn send(&self, notif: Notif<'_>) -> MethodResult<NotifId> {
@@ -2206,13 +2296,14 @@ impl NotifyProxy {
 
         call.arg(notif.app.to_string()); // app name
         call.arg(notif.replaces.unwrap_or(0) as u32); // replaces id
-        call.arg(notif.icon.map(Icon::name).unwrap_or("")); // icon
+        // call.arg(notif.icon.map(Icon::name).unwrap_or("")); // icon
+        call.arg(""); // icon, TODO: implement icons using the ones from wayland.rs
         call.arg(notif.summary.to_string()); // summary
         call.arg(notif.body.unwrap_or("").to_string()); // body
 
         let actions: Vec<String> = notif.actions
             .into_iter()
-            .map(|it| [it.id.to_string(), it.name.to_string()])
+            .map(|it| [it.name.to_string(), it.display.to_string()])
             .flatten()
             .collect();
 
@@ -2242,7 +2333,7 @@ impl NotifyProxy {
     /// Close a notification.
     /// Should be invoked in all cases, eg. also when the user selected an action,
     /// since not all notification daemons dismiss a notificaition in that case.
-    pub async fn close(&self, id: NotifId) -> MethodResult<()> {
+    pub async fn close(&self, id: NotifId) {
 
         let mut call = MethodCall::new(
             "org.freedesktop.Notifications",
@@ -2253,45 +2344,24 @@ impl NotifyProxy {
 
         call.arg(id as u32);
 
-        self.con.method_call(call).await?;
-        Ok(())
+        self.con.method_call_void(call).await;
         
     }
 
     /// Wait until an action is invoked.
     /// If the notification is closed, a synthetic "close" action will be
     /// generated.
-    pub async fn invoked(&self, id: NotifId) -> InvokedAction {
+    pub async fn action(&mut self) -> (NotifId, InvokedNotifAction) {
 
-        let mut invoked = {
-            let rule = SignalMatch::new(
-                "/org/freedesktop/Notifications",
-                "org.freedesktop.Notifications",
-                "ActionInvoked"
-            );
-            self.con.listen_on(rule)
-        };
+        // wait for a signal to arrive
+        let resp = self.listener.next().await;
+        let id: u32 = resp.arg(0);
+        let key = resp.get(1).unwrap_or("closed".into());
 
-        let mut closed = {
-            let rule = SignalMatch::new(
-                "/org/freedesktop/Notifications",
-                "org.freedesktop.Notifications",
-                "NotificationClosed"
-            );
-            self.con.listen_on(rule)
-        };
-
-        let mut key;
-
-        loop {
-            // wait for a dbus signal to arrive
-            let resp = invoked.next().or(closed.next()).await;
-            let event: u32 = resp.arg(0);
-            key = resp.get(1).unwrap_or("closed".into());
-            if event == id { break };
-        }
-
-        InvokedAction { id: key }
+        (
+            id,
+            InvokedNotifAction { name: key }
+        )
         
     }
 
@@ -2306,11 +2376,11 @@ pub struct Notif<'a> {
     // optional
     body: Option<&'a str>,
     replaces: Option<usize>,
-    icon: Option<Icon>, // TODO: add support for custom Icons (the same as used in the wayland code)
-    actions: Vec<Action<'a>>,
+    // icon: Option<Icon>, // TODO: add support for custom Icons (the same as used in the wayland code)
+    actions: Vec<NotifAction<'a>>,
     timeout: Option<Duration>,
     // hints
-    urgency: Option<Urgency>,
+    urgency: Option<NotifUrgency>,
     category: Option<Category>,
 }
 
@@ -2321,7 +2391,7 @@ impl<'a> Notif<'a> {
             summary,
             body: None,
             replaces: None,
-            icon: None,
+            // icon: None,
             actions: Vec::new(),
             timeout: None,
             urgency: None,
@@ -2332,15 +2402,15 @@ impl<'a> Notif<'a> {
         self.replaces = Some(id);
         self
     }
-    pub fn icon(mut self, icon: Icon) -> Self {
-        self.icon = Some(icon);
-        self
-    }
+    // pub fn icon(mut self, icon: Icon) -> Self {
+    //     self.icon = Some(icon);
+    //     self
+    // }
     pub fn body(mut self, text: &'a str) -> Self {
         self.body = Some(text);
         self
     }
-    pub fn action(mut self, action: Action<'a>) -> Self {
+    pub fn action(mut self, action: NotifAction<'a>) -> Self {
         self.actions.push(action);
         self
     }
@@ -2348,7 +2418,7 @@ impl<'a> Notif<'a> {
         self.timeout = Some(timeout);
         self
     }
-    pub fn urgency(mut self, urgency: Urgency) -> Self {
+    pub fn urgency(mut self, urgency: NotifUrgency) -> Self {
         self.urgency = Some(urgency);
         self
     }
@@ -2358,40 +2428,37 @@ impl<'a> Notif<'a> {
     }
 }
 
-pub enum Icon {
-    
-}
-
-impl Icon {
-    fn name(self) -> &'static str {
-        todo!("icon name")
-    }
-}
-
-pub struct Action<'a> {
-    pub id: &'a str,
+#[derive(Debug)]
+pub struct NotifAction<'a> {
     pub name: &'a str,
+    pub display: &'a str,
 }
 
-impl<'a> Action<'a> {
-    pub fn default(name: &'a str) -> Self {
-        Self { id: "default", name }
+impl<'a> NotifAction<'a> {
+    pub fn default(display: &'a str) -> Self {
+        Self { name: "default", display }
     }
-    pub fn new(id: &'a str, name: &'a str) -> Self {
-        Self { id, name }
+    pub fn new(name: &'a str, display: &'a str) -> Self {
+        Self { name, display }
     }
 }
 
-pub struct InvokedAction {
-    pub id: String,
+/// An action that was invoked.
+///
+/// The default action will have the id "default".
+/// If the user closed/dismissed the notification, the id will be "closed".
+/// You can check for these special values using the respective methods.
+#[derive(Debug)]
+pub struct InvokedNotifAction {
+    pub name: String,
 }
 
-impl InvokedAction {
+impl InvokedNotifAction {
     pub fn is_default(&self) -> bool {
-        self.id == "default"
+        self.name == "default"
     }
     pub fn is_closed(&self) -> bool {
-        self.id == "closed"
+        self.name == "closed"
     }
 }
 
@@ -2445,12 +2512,12 @@ impl Category {
     }
 }
 
-pub enum Urgency {
+pub enum NotifUrgency {
     Low,
     Normal,
     Critical
 }
-impl Urgency {
+impl NotifUrgency {
     fn num(&self) -> u8 {
         match self {
             Self::Low => 0,

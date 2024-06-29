@@ -153,7 +153,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                                 let mut stream = offer.receive(DataKinds::TEXT, IoMode::Blocking).unwrap();
                                 let mut buf = String::new();
                                 let _res = stream.read_to_string(&mut buf);
-                                println!("{}", buf);
+                                println!("clipboard: {}", buf);
                             }
                         }
                         else if !key.modifier() {
