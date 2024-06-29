@@ -454,15 +454,15 @@ impl<T: 'static + Send> EventLoop<T> {
 
     }
 
-    pub async fn send_notif(&mut self, notif: dbus::Notif<'_>) -> dbus::client::MethodResult<dbus::NotifId> {
-        let id = self.base.dbus_data.notif_proxy
-            .send(notif).await?;
-        Ok(id)
-    }
+    // pub fn send_notif(&mut self, notif: dbus::Notif<'_>) -> dbus::client::MethodResult<dbus::NotifId> {
+    //     let id = self.base.dbus_data.notif_proxy
+    //         .send(notif).await?;
+    //     Ok(id)
+    // }
 
-    pub async fn close_notif(&mut self, id: dbus::NotifId) {
-        self.base.dbus_data.notif_proxy.close(id).await
-    }
+    // pub fn close_notif(&mut self, id: dbus::NotifId) {
+    //     self.base.dbus_data.notif_proxy.close(id).await
+    // }
 
 }
 

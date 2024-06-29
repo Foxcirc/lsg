@@ -1,7 +1,7 @@
 
 use crate::InvokedNotifAction;
 
-use super::{CustomIcon, DataOffer, DataWriter, DndHandle, Monitor, WindowId, MonitorId, DataSourceId, NotifId, NotifAction};
+use super::{CustomIcon, DataOffer, DataWriter, DndHandle, Monitor, WindowId, MonitorId, DataSourceId, NotifId};
 
 use bitflags::bitflags;
 
