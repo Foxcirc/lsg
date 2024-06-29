@@ -70,7 +70,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                         // drop(window);
                         // std::thread::sleep_ms(1000);
                         // std::process::exit(0);
-                        evl.request_quit();
+                        evl.quit();
                     },
                     WindowEvent::Enter => {
                         // println!("focused");

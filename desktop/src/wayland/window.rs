@@ -454,10 +454,14 @@ impl<T: 'static + Send> EventLoop<T> {
 
     }
 
-    pub async fn send_notification(&mut self, notif: dbus::Notif<'_>) -> dbus::client::MethodResult<dbus::NotifId> {
-        let id = self.base.dbus_data.notif_proxy.send(notif).await?;
-        // self.base.dbus.notifs.push(id);
+    pub async fn send_notif(&mut self, notif: dbus::Notif<'_>) -> dbus::client::MethodResult<dbus::NotifId> {
+        let id = self.base.dbus_data.notif_proxy
+            .send(notif).await?;
         Ok(id)
+    }
+
+    pub async fn close_notif(&mut self, id: dbus::NotifId) {
+        self.base.dbus_data.notif_proxy.close(id).await
     }
 
 }
@@ -640,7 +644,6 @@ impl<T: 'static + Send> BaseWindow<T> {
         guard.redraw_requested = true;
     }
 
-    /// You must always redraw if asked to.
     pub fn pre_present_notify(&self) -> PresentToken {
         // note: it seems you have request the frame callback before swapping buffers
         //       otherwise the callback will never fire because the compositor thinks the content didn't change
@@ -665,6 +668,9 @@ impl<T: 'static + Send> BaseWindow<T> {
             self.wl_surface.commit();
         }
     }
+
+    /// This simply drops the window.
+    pub fn close(self) {} // TODO: add close helper fns to everything to make closing things more explicit...
     
 }
 
