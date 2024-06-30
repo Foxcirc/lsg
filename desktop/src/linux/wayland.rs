@@ -82,7 +82,6 @@ pub(crate) struct BaseLoop<T: 'static + Send = ()> {
     qh: QueueHandle<Self>,
     wl: WaylandState,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
-    proxy_data: ProxyData<T>,
     // -- windowing state --
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
@@ -96,18 +95,6 @@ pub(crate) struct BaseLoop<T: 'static + Send = ()> {
 
 struct DbusData {
     con: dbus::client::Connection,
-}
-
-struct ProxyData<T: 'static + Send> {
-    sender: AsyncSender<Event<T>>,
-    receiver: AsyncReceiver<Event<T>>
-}
-
-impl<T: 'static + Send> ProxyData<T> {
-    fn new() -> Self {
-        let (sender, receiver) = async_channel::unbounded();
-        Self { sender, receiver }
-    }
 }
 
 #[derive(Default)]
@@ -207,40 +194,7 @@ impl PressedKeys {
 
 }
 
-// ### event proxy ###
-
-pub struct EventProxy<T> {
-    sender: AsyncSender<Event<T>>,
-}
-
-impl<T> EventProxy<T> {
-
-    pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
-        self.sender.send_blocking(event)
-            .map_err(|err| SendError { inner: err.into_inner() })
-    }
-
-}
-
-pub struct SendError<T> {
-    pub inner: T
-}
-
-impl<T> fmt::Debug for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SendError: EventLoop dead")
-    }
-}
-
-impl<T> fmt::Display for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl<T: fmt::Debug> StdError for SendError<T> {}
-
-// ### public async event loop ###
+// ### public async event loop ### TODO: rework these comments
 
 pub(crate) struct EventLoop<T: 'static + Send> {
     pub(crate) base: BaseLoop<T>,
@@ -283,7 +237,6 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
             #[cfg(feature = "signals")]
             signals,
             events,
-            proxy_data: ProxyData::new(),
             mouse_data: MouseData::default(),
             keyboard_data: KeyboardData::new()?,
             offer_data: OfferData::default(),
@@ -328,10 +281,10 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
             self.base.con.get_ref().flush()?; 
 
             // wait for new events
-            enum Either<T: 'static + Send> {
+            enum Either {
                 Readable,
                 Timer,
-                Channel(Event<T>),
+                // Channel(Event<T>),
                 Dbus(dbus::client::Incoming),
                 #[cfg(feature = "signals")] Signal(i32),
             }
@@ -346,10 +299,10 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
                 Ok(Either::Timer)
             };
 
-            let channel = async {
-                let event = self.base.proxy_data.receiver.recv().await.unwrap();
-                Ok(Either::Channel(event))
-            };
+            // let channel = async {
+            //     let event = self.base.proxy_data.receiver.recv().await.unwrap();
+            //     Ok(Either::Channel(event))
+            // };
 
             let dbus = async {
                 let msg = self.base.dbus_data.con.next().await?;
@@ -365,9 +318,9 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
             };
 
             #[cfg(feature = "signals")]
-            let future = readable.or(timer).or(channel).or(dbus).or(signals);
+            let future = readable.or(timer).or(dbus).or(signals);
             #[cfg(not(feature = "signals"))]
-            let future = readable.or(timer).or(channel).or(dbus);
+            let future = readable.or(timer).or(dbus);
 
             match future.await {
                 Ok(Either::Readable) => {
@@ -379,9 +332,9 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
                     let key = self.base.keyboard_data.repeat_key;
                     process_key_event(&mut self.base, key, Direction::Down, Source::KeyRepeat);
                 },
-                Ok(Either::Channel(event)) => {
-                    self.base.events.push(event)
-                },
+                // Ok(Either::Channel(event)) => {
+                //     self.base.events.push(event)
+                // },
                 Ok(Either::Dbus(msg)) => {
                     dispatch_dbus_msg(self, msg);
                 },
@@ -398,28 +351,6 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
 
         }
         
-    }
-
-    pub fn on_main_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
-        func()
-    }
-
-    pub fn new_proxy(&mut self) -> EventProxy<T> {
-        EventProxy {
-            sender: self.base.proxy_data.sender.clone()
-        }
-    }
-
-    pub fn suspend(&mut self) {
-        self.base.events.push(Event::Resume);
-    }
-
-    pub fn resume(&mut self) {
-        self.base.events.push(Event::Resume);
-    }
-
-    pub fn quit(&mut self) {
-        self.base.events.push(Event::Quit { reason: QuitReason::User });
     }
 
     #[track_caller]
