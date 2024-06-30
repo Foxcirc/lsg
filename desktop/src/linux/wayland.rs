@@ -61,8 +61,7 @@ use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
 use futures_lite::FutureExt;
 
 use std::{
-    mem, fmt, env, ops, fs,
-    ffi::c_void as void,
+    fmt, env, ops, fs,
     error::Error as StdError,
     sync::{Arc, Mutex, MutexGuard},
     io::{self, Write},
@@ -71,16 +70,13 @@ use std::{
     collections::{HashSet, HashMap},
 };
 
-use crate::{
-    dbus,
-    shared::{ConfigureFlags, CursorShape, CursorStyle, DataKinds, NotifEvent, DataSourceEvent, DndEvent, Event, IconFormat, InputMode, IoMode, KbInteractivity, Key, MonitorInfo, MouseButton, PresentToken, QuitReason, Rect, ScrollAxis, Size, Urgency, WindowAnchor, WindowEvent, WindowLayer}
-};
+use crate::*;
 
 // ### base event loop ###
 
-struct BaseLoop<T: 'static + Send = ()> {
+pub(crate) struct BaseLoop<T: 'static + Send = ()> {
     appid: String,
-    con: Async<wayland_client::Connection>,
+    pub(crate) con: Async<wayland_client::Connection>,
     #[cfg(feature = "signals")]
     signals: async_signals::Signals, // listens to sigterm and emits a quit event
     qh: QueueHandle<Self>,
@@ -99,7 +95,7 @@ struct BaseLoop<T: 'static + Send = ()> {
 }
 
 struct DbusData {
-    notif_proxy: dbus::NotifyProxy,
+    con: dbus::client::Connection,
 }
 
 struct ProxyData<T: 'static + Send> {
@@ -246,12 +242,12 @@ impl<T: fmt::Debug> StdError for SendError<T> {}
 
 // ### public async event loop ###
 
-pub struct EventLoop<T: 'static + Send> {
-    base: BaseLoop<T>,
+pub(crate) struct EventLoop<T: 'static + Send> {
+    pub(crate) base: BaseLoop<T>,
     queue: EventQueue<BaseLoop<T>>,
 }
 
-impl<T: 'static + Send> EventLoop<T> {
+impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
 
     pub fn new(application: &str) -> Result<Self, EvlError> {
 
@@ -277,8 +273,7 @@ impl<T: 'static + Send> EventLoop<T> {
         let dbus_data = {
             let con = dbus::client::Connection::new()?;
             DbusData {
-                notif_proxy: dbus::NotifyProxy::new(&con), // will keep a reference to the con
-                // notifs
+                con,
             }
         };
 
@@ -307,7 +302,7 @@ impl<T: 'static + Send> EventLoop<T> {
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
 
-        // TODO: make this more efficient and reduce cancellation
+        // TODO: make this more efficient and reduce cancellation (make this into a stream)
 
         loop {
             
@@ -337,7 +332,7 @@ impl<T: 'static + Send> EventLoop<T> {
                 Readable,
                 Timer,
                 Channel(Event<T>),
-                NotifAction(dbus::NotifId, dbus::InvokedNotifAction),
+                Dbus(dbus::client::Incoming),
                 #[cfg(feature = "signals")] Signal(i32),
             }
 
@@ -356,9 +351,9 @@ impl<T: 'static + Send> EventLoop<T> {
                 Ok(Either::Channel(event))
             };
 
-            let notif = async {
-                let (id, action) = self.base.dbus_data.notif_proxy.action().await;
-                Ok(Either::NotifAction(id, action))
+            let dbus = async {
+                let msg = self.base.dbus_data.con.next().await?;
+                Ok(Either::Dbus(msg))
             };
 
             #[cfg(feature = "signals")]
@@ -370,9 +365,9 @@ impl<T: 'static + Send> EventLoop<T> {
             };
 
             #[cfg(feature = "signals")]
-            let future = readable.or(timer).or(channel).or(notif).or(signals);
+            let future = readable.or(timer).or(channel).or(dbus).or(signals);
             #[cfg(not(feature = "signals"))]
-            let future = readable.or(timer).or(channel).or(notif);
+            let future = readable.or(timer).or(channel).or(dbus);
 
             match future.await {
                 Ok(Either::Readable) => {
@@ -387,16 +382,15 @@ impl<T: 'static + Send> EventLoop<T> {
                 Ok(Either::Channel(event)) => {
                     self.base.events.push(event)
                 },
-                Ok(Either::NotifAction(id, action)) => {
-                    let event = NotifEvent::ActionInvoked { action };
-                    self.base.events.push(Event::Notif { id, event });
+                Ok(Either::Dbus(msg)) => {
+                    dispatch_dbus_msg(self, msg);
                 },
                 #[cfg(feature = "signals")]
                 Ok(Either::Signal(signal)) => {
                     if signal == Signal::SIGTERM as i32 {
-                        self.base.events.push(Event::QuitRequested { reason: QuitReason::System })
+                        self.base.events.push(Event::Quit { reason: QuitReason::System })
                     } else if signal == Signal::SIGINT as i32 {
-                        self.base.events.push(Event::QuitRequested { reason: QuitReason::CtrlC })
+                        self.base.events.push(Event::Quit { reason: QuitReason::CtrlC })
                     }
                 }
                 Err(err) => return Err(err),
@@ -406,8 +400,7 @@ impl<T: 'static + Send> EventLoop<T> {
         
     }
 
-    pub fn on_dispatch_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
-        // on linux, this code should run on the main thread anyways
+    pub fn on_main_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
         func()
     }
 
@@ -418,15 +411,15 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub fn suspend(&mut self) {
-        self.base.events.push(Event::Suspend);
+        self.base.events.push(Event::Resume);
     }
 
     pub fn resume(&mut self) {
         self.base.events.push(Event::Resume);
     }
 
-    pub fn request_quit(&mut self) {
-        self.base.events.push(Event::QuitRequested { reason: QuitReason::User });
+    pub fn quit(&mut self) {
+        self.base.events.push(Event::Quit { reason: QuitReason::User });
     }
 
     #[track_caller]
@@ -454,16 +447,24 @@ impl<T: 'static + Send> EventLoop<T> {
 
     }
 
-    // pub fn send_notif(&mut self, notif: dbus::Notif<'_>) -> dbus::client::MethodResult<dbus::NotifId> {
-    //     let id = self.base.dbus_data.notif_proxy
-    //         .send(notif).await?;
-    //     Ok(id)
-    // }
+    pub fn send_notif(&mut self, notif: dbus::notif::Notif<'_>) -> dbus::notif::NotifId {
+        dbus::notif::send(&mut self.base.dbus_data.con, notif)
+    }
 
-    // pub fn close_notif(&mut self, id: dbus::NotifId) {
-    //     self.base.dbus_data.notif_proxy.close(id).await
-    // }
+    pub fn close_notif(&mut self, id: dbus::notif::NotifId) {
+        dbus::notif::close(&mut self.base.dbus_data.con, id);
+    } // TODO: remove
 
+}
+
+fn dispatch_dbus_msg<T: Send>(evl: &mut EventLoop<T>, msg: dbus::client::Incoming) {
+
+    // match msg {
+
+
+        
+    // }
+    
 }
 
 fn ignore_wouldblock<T>(result: Result<T, WaylandError>) -> Result<(), WaylandError> {
@@ -581,12 +582,12 @@ fn get_window_id(surface: &WlSurface) -> WindowId {
 
 pub struct BaseWindow<T: 'static + Send> {
     // our data
-    id: WindowId, // also found in `shared`
+    pub(crate) id: WindowId, // also found in `shared`
     shared: Arc<Mutex<WindowShared>>, // needs to be accessed by some callbacks
     // wayland state
     qh: QueueHandle<BaseLoop<T>>,
     compositor: WlCompositor, // used to create opaque regions
-    wl_surface: WlSurface,
+    pub(crate) wl_surface: WlSurface,
 }
 
 impl<T: 'static + Send> Drop for BaseWindow<T> {
@@ -1314,292 +1315,7 @@ impl<T: 'static + Send> LayerWindow<T> {
     
 }
 
-// ### egl api ###
-
-type FnSwapBuffersWithDamage = fn(
-    khronos_egl::EGLDisplay,
-    khronos_egl::EGLSurface,
-    *const void /* damage rect array */,
-    khronos_egl::Int
-) -> khronos_egl::Int;
-
-pub struct EglInstance {
-    lib: Arc<egl::DynamicInstance<egl::EGL1_0>>,
-    swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
-    display: egl::Display,
-}
-
-impl EglInstance {
-
-    /// Should be only be called once. Although initializing multiple instances is not a hard error.
-    pub fn new<T: 'static + Send>(evh: &mut EventLoop<T>) -> Result<Arc<Self>, EvlError> {
-        
-        let loaded = unsafe {
-            egl::DynamicInstance::<egl::EGL1_0>::load_required()
-                .map_err(|_| EvlError::EglUnsupported)?
-        };
-
-        let lib = Arc::new(loaded);
-
-        let wl_display = evh.base.con.get_ref().display().id().as_ptr();
-        let egl_display = unsafe {
-            lib.get_display(wl_display.cast())
-        }.ok_or(EvlError::NoDisplay)?;
-
-        lib.initialize(egl_display)?;
-
-    	// side note: const EGL_EXTENSIONS = 0x3055
-
-        let func = lib.get_proc_address("eglSwapBuffersWithDamageKHR");
-        let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
-            unsafe { mem::transmute(func) };
-
-        Ok(Arc::new(Self {
-            lib,
-            swap_buffers_with_damage,
-            display: egl_display,
-        }))
-        
-    }
-
-    pub fn get_proc_address(&self, name: &str) -> Option<extern "system" fn()> {
-        self.lib.get_proc_address(name)
-    }
-    
-}
-
-struct EglBase {
-    instance: Arc<EglInstance>,
-    egl_surface: egl::Surface,
-    egl_context: egl::Context,
-    damage_rects: Vec<Rect>, // only here to save some allocations
-    size: Size, // updated in resize
-}
-
-impl Drop for EglBase {
-    fn drop(&mut self) {
-        self.instance.lib.destroy_surface(self.instance.display, self.egl_surface).unwrap();
-        self.instance.lib.destroy_context(self.instance.display, self.egl_context).unwrap();
-    }
-}
-
-impl EglBase {
-
-    /// Create a new egl context that will draw onto the given window.
-    pub(crate) fn new(instance: &Arc<EglInstance>, surface: egl::Surface, config: egl::Config, size: Size) -> Result<Self, EvlError> {
-
-        let context = {
-            let attribs = [
-                egl::CONTEXT_MAJOR_VERSION, 4,
-                egl::CONTEXT_MINOR_VERSION, 0,
-                egl::CONTEXT_CLIENT_VERSION, 3,
-                egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
-                egl::NONE,
-            ];
-            instance.lib.create_context(instance.display, config, None, &attribs).unwrap()
-        };
-
-        Ok(Self {
-            instance: Arc::clone(&instance),
-            egl_surface: surface,
-            egl_context: context,
-            damage_rects: Vec::with_capacity(2),
-            size,
-        })
-        
-    }
-
-    /// Make this context current.
-    pub(crate) fn bind(&self) -> Result<(), egl::Error> {
-
-        self.instance.lib.make_current(
-            self.instance.display,
-            Some(self.egl_surface), // note: it is an error to only specify one of the two (read/draw) surfaces
-            Some(self.egl_surface),
-            Some(self.egl_context)
-        )
-        
-    }
-
-    /// Unbind this context.
-    pub(crate) fn unbind(&self) -> Result<(), egl::Error> {
-
-        self.instance.lib.make_current(
-            self.instance.display,
-            None, None, None
-        )
-        
-    }
-
-    /// Returns an error if this context is not the current one.
-    pub(crate) fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EvlError> {
-
-        // recalculate the origin of the rects to be in the top left
-
-        let damage = damage.unwrap_or(&[]);
-
-        self.damage_rects.clear();
-        self.damage_rects.extend_from_slice(damage);
-
-        for rect in self.damage_rects.iter_mut() {
-            rect.y = self.size.height as i32 - rect.y - rect.h;
-        }
-
-        if let Some(func) = self.instance.swap_buffers_with_damage {
-            // swap with damage, if the fn could be found
-            (func)(self.instance.display.as_ptr(), self.egl_surface.as_ptr(), self.damage_rects.as_ptr().cast(), damage.len() as khronos_egl::Int);
-        } else {
-            // normal swap (if the extension is unsupported)
-            self.instance.lib.swap_buffers(self.instance.display, self.egl_surface)?;
-        }
-
-        Ok(())
-
-    }
-   
-}
-
-pub struct EglContext {
-    inner: EglBase,
-    id: WindowId,
-    wl_egl_surface: wayland_egl::WlEglSurface, // note: needs to be kept alive
-}
-
-impl EglContext {
-
-    /// Create a new egl context that will draw onto the given window.
-    pub fn new<T: 'static + Send>(instance: &Arc<EglInstance>, window: &BaseWindow<T>, size: Size) -> Result<Self, EvlError> {
-
-        let config = {
-            let attribs = [
-                egl::SURFACE_TYPE, egl::WINDOW_BIT,
-                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
-                egl::RED_SIZE, 8,
-                egl::GREEN_SIZE, 8,
-                egl::BLUE_SIZE, 8,
-                egl::ALPHA_SIZE, 8,
-                egl::NONE
-            ];
-            instance.lib.choose_first_config(instance.display, &attribs)?
-                .ok_or(EvlError::EglUnsupported)?
-        };
-
-        let wl_egl_surface = wayland_egl::WlEglSurface::new(
-            window.wl_surface.id(),
-            size.width as i32,
-            size.height as i32
-        )?;
-
-        let attrs = [
-            egl::RENDER_BUFFER, egl::BACK_BUFFER,
-            egl::NONE,
-        ];
-
-        let surface = unsafe {
-            instance.lib.create_window_surface(
-                instance.display,
-                config,
-                wl_egl_surface.ptr() as *mut void,
-                Some(&attrs),
-            )?
-        };
-
-        let inner = EglBase::new(instance, surface, config, size)?;
-
-        Ok(Self {
-            inner,
-            id: window.id,
-            wl_egl_surface,
-        })
-        
-    }
-
-    /// Make this context current.
-    pub fn bind(&self) -> Result<(), egl::Error> {
-        self.inner.bind()
-    }
-
-    /// Unbind this context.
-    pub fn unbind(&self) -> Result<(), egl::Error> {
-        self.inner.unbind()
-    }
-
-    /// Returns an error if this context is not the current one.
-    #[track_caller]
-    pub fn swap_buffers(&mut self, damage: Option<&[Rect]>, token: PresentToken) -> Result<(), EvlError> {
-
-        debug_assert!(self.id == token.id, "present token for another window");
-
-        self.inner.swap_buffers(damage)
-
-    }
-
-    /// Don't forget to also resize your opengl viewport!
-    pub fn resize(&mut self, size: Size) {
-
-        self.inner.size = size;
-        self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
-        
-    }
-
-}
-
-pub struct EglPixelBuffer {
-    inner: EglBase,
-}
-
-impl EglPixelBuffer {
-
-    /// Create a new egl context that will draw onto the given window.
-    pub fn new(instance: &Arc<EglInstance>, size: Size) -> Result<Self, EvlError> {
-
-        let config = {
-            let attribs = [
-                egl::SURFACE_TYPE, egl::PBUFFER_BIT,
-                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
-                egl::RED_SIZE, 8,
-                egl::GREEN_SIZE, 8,
-                egl::BLUE_SIZE, 8,
-                egl::ALPHA_SIZE, 8,
-                egl::NONE
-            ];
-            instance.lib.choose_first_config(instance.display, &attribs)?
-                .ok_or(EvlError::EglUnsupported)?
-        };
-
-        let surface = instance.lib.create_pbuffer_surface(
-            instance.display,
-            config,
-            &[]
-        )?;
-
-        let inner = EglBase::new(instance, surface, config, size)?;
-
-        Ok(Self {
-            inner,
-        })
-        
-    }
-
-    /// Make this context current.
-    pub fn bind(&self) -> Result<(), egl::Error> {
-        self.inner.bind()
-    }
-
-    /// Unbind this context.
-    pub fn unbind(&self) -> Result<(), egl::Error> {
-        self.inner.unbind()
-    }
-
-    /// Returns an error if this context is not the current one.
-    #[track_caller]
-    pub fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EvlError> {
-        self.inner.swap_buffers(damage)
-    }
-
-}
-
-// ### events ###
+// ### more stuff ###
 
 #[derive(Debug)]
 pub struct DndHandle {
@@ -2223,7 +1939,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowSh
         }
 
         else if let XdgToplevelEvent::Close = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::CloseRequested });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
         }
 
     }
@@ -2249,7 +1965,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShare
         }
 
         else if let XdgPopupEvent::PopupDone = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::CloseRequested });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
         }
 
     }
@@ -2286,7 +2002,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<W
         }
 
         else if let ZwlrLayerSurfaceEvent::Closed = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::CloseRequested });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
         }
     
     }
@@ -2306,7 +2022,7 @@ fn process_configure<T: 'static + Send>(evl: &mut BaseLoop<T>, guard: MutexGuard
     } });
 
     if !guard.redraw_requested && !guard.already_redrawing {
-        evl.events.push(Event::Window { id: guard.id, event: WindowEvent::RedrawRequested });
+        evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
     }
 
 }
@@ -2338,7 +2054,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
             guard.redraw_requested = false;
             guard.frame_callback_registered = false;
             guard.already_redrawing = true; // prevent another redraw event from getting sent in case a Configure event arrives just after this
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::RedrawRequested });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
         }
     }
 }
@@ -2777,7 +2493,7 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut BaseLoop<T>, id: Window
 // ### error handling ###
 
 #[derive(Debug)]
-pub enum EvlError {
+pub enum EvlError { // TODO: implement soft errors that can be "ignored" (eg. invalid locate will use en.US fallback)
     Connect(wayland_client::ConnectError),
     Wayland(wayland_client::backend::WaylandError),
     WaylandGlobals(wayland_client::globals::GlobalError),

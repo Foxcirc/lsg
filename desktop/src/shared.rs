@@ -1,7 +1,5 @@
 
-use crate::InvokedNotifAction;
-
-use super::{CustomIcon, DataOffer, DataWriter, DndHandle, Monitor, WindowId, MonitorId, DataSourceId, NotifId};
+use super::{CustomIcon, DataOffer, DataWriter, DndHandle, Monitor, WindowId, MonitorId, DataSourceId};
 
 use bitflags::bitflags;
 
@@ -14,7 +12,7 @@ pub enum Event<T> {
     /// Your app's view should be destroyed but it can keep running in the background.
     Suspend,
     /// Your app should quit.
-    QuitRequested { reason: QuitReason },
+    Quit { reason: QuitReason },
     /// A monitor was discovered or updated.
     MonitorUpdate { id: MonitorId, state: Monitor },
     /// A monitor was removed.
@@ -23,15 +21,15 @@ pub enum Event<T> {
     Window { id: WindowId, event: WindowEvent },
     /// Requests you sending data to another client.
     DataSource { id: DataSourceId, event: DataSourceEvent },
-    ///  Notification event. (eg. an action was invoked)
-    Notif { id: NotifId, event: NotifEvent },
+    // /  Notification event. (eg. an action was invoked)
+    // Notif { id: NotifId, event: NotifEvent },
 }
 
 #[derive(Debug)]
 pub enum WindowEvent {
-    CloseRequested,
+    Close,
     /// You must always redraw if asked to.
-    RedrawRequested,
+    Redraw,
     Resize { size: Size, flags: ConfigureFlags },
     Rescale { scale: f64 },
     Decorations { active: bool },
@@ -66,7 +64,7 @@ pub enum DataSourceEvent {
 #[derive(Debug)]
 /// Events for a notification.
 pub enum NotifEvent {
-    ActionInvoked { action: InvokedNotifAction }
+    // ActionInvoked { action: InvokedNotifAction }
 }
 
 #[derive(Debug)]

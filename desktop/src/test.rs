@@ -55,8 +55,8 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Resume => {
                     // window.title("no-test");
                 },
-                Event::Suspend => unimplemented!(),
-                Event::QuitRequested { reason } => {
+                Event::Resume => unimplemented!(),
+                Event::Quit { reason } => {
                     println!("quit reason: {reason:?}");
                     return;
                 },
@@ -66,7 +66,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                 },
                 Event::MonitorRemove { .. } => todo!(),
                 Event::Window { id, event } if id == window.id() => match event {
-                    WindowEvent::CloseRequested => {
+                    WindowEvent::Close => {
                         // drop(window);
                         // std::thread::sleep_ms(1000);
                         // std::process::exit(0);
@@ -83,7 +83,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                         //     println!("current clip board: {:?} (empty means an error)", buf);
                         // }
                     },
-                    WindowEvent::RedrawRequested => {
+                    WindowEvent::Redraw => {
                         ctx.bind().unwrap();
                         gl::clear(0.3, 0.1, 0.6, 0.0);
                         let token = window.pre_present_notify();
@@ -197,7 +197,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                     let popup_window2 = popup_window.as_mut().unwrap();
                     let popup_ctx2 = popup_ctx.as_mut().unwrap();
                     match event {
-                        WindowEvent::RedrawRequested => {
+                        WindowEvent::Redraw => {
                             popup_ctx2.bind().unwrap();
                             gl::clear(0.2, 0.7, 0.1, 1.0);
                             let token = popup_window2.pre_present_notify();
@@ -213,7 +213,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                         // WindowEvent::Rescale { scale } => {
                         //     println!("@popup rescale to {scale}");
                         // }
-                        WindowEvent::CloseRequested => {
+                        WindowEvent::Close => {
                             drop(popup_ctx.take());
                             drop(popup_window.take());
                         },
