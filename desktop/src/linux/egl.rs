@@ -33,7 +33,7 @@ impl EglInstance {
 
         let lib = Arc::new(loaded);
 
-        let wl_display = evh.wayland.base.con.get_ref().display().id().as_ptr();
+        let wl_display = evh.wayland.state.con.get_ref().display().id().as_ptr();
         let egl_display = unsafe {
             lib.get_display(wl_display.cast())
         }.ok_or(EvlError::NoDisplay)?;

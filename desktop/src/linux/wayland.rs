@@ -57,30 +57,21 @@ use nix::{
 use nix::sys::signal::Signal;
 
 use async_io::{Async, Timer};
-use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
 use futures_lite::FutureExt;
 
 use std::{
-    fmt, env, ops, fs,
-    error::Error as StdError,
-    sync::{Arc, Mutex, MutexGuard},
-    io::{self, Write},
-    os::fd::{AsFd, FromRawFd, AsRawFd},
-    time::{Duration, Instant},
-    collections::{HashSet, HashMap},
+    collections::{HashMap, HashSet}, env, error::Error as StdError, fmt, fs, io::{self, Write}, iter, ops, os::fd::{AsFd, AsRawFd, FromRawFd}, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}
 };
 
 use crate::*;
 
 // ### base event loop ###
 
-pub(crate) struct BaseLoop<T: 'static + Send = ()> {
+pub(crate) struct WaylandState<T: 'static + Send = ()> {
     appid: String,
     pub(crate) con: Async<wayland_client::Connection>,
-    #[cfg(feature = "signals")]
-    signals: async_signals::Signals, // listens to sigterm and emits a quit event
     qh: QueueHandle<Self>,
-    wl: WaylandState,
+    globals: WaylandGlobals,
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
     // -- windowing state --
     mouse_data: MouseData,
@@ -89,8 +80,6 @@ pub(crate) struct BaseLoop<T: 'static + Send = ()> {
     cursor_data: CursorData,
     monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
     last_serial: u32,
-    // -- dbus connection --
-    dbus_data: DbusData,
 }
 
 struct DbusData {
@@ -182,26 +171,48 @@ impl PressedKeys {
     }
 
     pub fn current(&self) -> Vec<xkb::Keycode> {
+
+        // TODO: return an iterator: this should be the logic:
+
+        // let mut idx = 0;
+            
+        // iter::from_fn(move || {
+        //     loop {
+        //         if idx == self.keys.len() {
+        //             return None
+        //         } else if self.keys.get(idx) {
+        //             let code = xkb::Keycode::from(self.min + idx as u32);
+        //             idx += 1;
+        //             return Some(code)
+        //         }
+               
+        //     }
+
+        // })
+
         let mut down = Vec::new(); // we can't return anything that borrows self
+
         for idx in 0..self.keys.len() {
             if self.keys.get(idx) == true {
                 let keycode = xkb::Keycode::from(self.min + idx as u32);
                 down.push(keycode)
             }
         }
+
         down
+
     }
 
 }
 
 // ### public async event loop ### TODO: rework these comments
 
-pub(crate) struct EventLoop<T: 'static + Send> {
-    pub(crate) base: BaseLoop<T>,
-    queue: EventQueue<BaseLoop<T>>,
+pub(crate) struct Connection<T: 'static + Send> {
+    pub(crate) state: WaylandState<T>,
+    queue: EventQueue<WaylandState<T>>,
 }
 
-impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
+impl<T: 'static + Send> Connection<T> { // TODO: rename to Connection?
 
     pub fn new(application: &str) -> Result<Self, EvlError> {
 
@@ -209,33 +220,18 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
             wayland_client::Connection::connect_to_env()?
         )?;
 
-        let (globals, queue) = registry_queue_init::<BaseLoop<T>>(con.get_ref())?;
+        let (globals, queue) = registry_queue_init::<WaylandState<T>>(con.get_ref())?;
         let qh = queue.handle();
 
         let mut monitor_list = HashSet::with_capacity(1);
-        let wl = WaylandState::from_globals(&mut monitor_list, globals, &qh)?;
-
-        #[cfg(feature = "signals")]
-        let signals = async_signals::Signals::new([
-            Signal::SIGTERM as i32,
-            Signal::SIGINT as i32
-        ]).map_err(|err| io::Error::from(err))?;
+        let globals = WaylandGlobals::from_globals(&mut monitor_list, globals, &qh)?;
 
         let mut events = Vec::with_capacity(4);
         events.push(Event::Resume);
 
-        let dbus_data = {
-            let con = dbus::client::Connection::new()?;
-            DbusData {
-                con,
-            }
-        };
-
-        let base = BaseLoop {
+        let base = WaylandState {
             appid: application.to_string(),
-            con, qh, wl,
-            #[cfg(feature = "signals")]
-            signals,
+            con, qh, globals,
             events,
             mouse_data: MouseData::default(),
             keyboard_data: KeyboardData::new()?,
@@ -243,11 +239,10 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
             cursor_data: CursorData::default(),
             monitor_list,
             last_serial: 0, // we don't use an option here since an invalid serial may be a common case and is not treated as an error
-            dbus_data,
         };
 
         Ok(Self {
-            base,
+            state: base,
             queue
         })
         
@@ -255,72 +250,46 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
 
-        // TODO: make this more efficient and reduce cancellation (make this into a stream)
-
         loop {
+
+            // flush all outgoing requests
+            // i forgot this and had to debug 10+ hours... fuckkk me
+            self.state.con.get_ref().flush()?; 
             
             // process all events that we've stored
             let guard = loop {
-                self.queue.dispatch_pending(&mut self.base).expect("todo");
+                self.queue.dispatch_pending(&mut self.state)?;
                 match self.queue.prepare_read() {
                     Some(val) => break val,
                     None => continue,
                 };
             };
 
-            if let Some(error) = self.base.keyboard_data.keymap_error.take() {
+            if let Some(error) = self.state.keyboard_data.keymap_error.take() {
                 return Err(error)
             };
 
-            if let Some(event) = self.base.events.pop() {
+            if let Some(event) = self.state.events.pop() {
                 return Ok(event)
             }
-
-            // flush all outgoing requests
-            // i forgot this and had to debug 10+ hours... fuckkk me
-            self.base.con.get_ref().flush()?; 
 
             // wait for new events
             enum Either {
                 Readable,
                 Timer,
-                // Channel(Event<T>),
-                Dbus(dbus::client::Incoming),
-                #[cfg(feature = "signals")] Signal(i32),
             }
 
             let readable = async {
-                self.base.con.readable().await?;
+                self.state.con.readable().await?;
                 Ok(Either::Readable)
             };
 
             let timer = async {
-                (&mut self.base.keyboard_data.repeat_timer).await;
+                (&mut self.state.keyboard_data.repeat_timer).await;
                 Ok(Either::Timer)
             };
 
-            // let channel = async {
-            //     let event = self.base.proxy_data.receiver.recv().await.unwrap();
-            //     Ok(Either::Channel(event))
-            // };
-
-            let dbus = async {
-                let msg = self.base.dbus_data.con.next().await?;
-                Ok(Either::Dbus(msg))
-            };
-
-            #[cfg(feature = "signals")]
-            let signals = async {
-                use futures_lite::StreamExt;
-                let signal = self.base.signals.next().await
-                    .unwrap_or(0);
-                Ok(Either::Signal(signal))
-            };
-
-            #[cfg(feature = "signals")]
-            let future = readable.or(timer).or(dbus).or(signals);
-            #[cfg(not(feature = "signals"))]
-            let future = readable.or(timer).or(dbus);
+            let future = readable.or(timer);
 
             match future.await {
                 Ok(Either::Readable) => {
@@ -329,23 +298,9 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
                 },
                 Ok(Either::Timer)    => {
                     // emit the sysnthetic key-repeat event
-                    let key = self.base.keyboard_data.repeat_key;
-                    process_key_event(&mut self.base, key, Direction::Down, Source::KeyRepeat);
+                    let key = self.state.keyboard_data.repeat_key;
+                    process_key_event(&mut self.state, key, Direction::Down, Source::KeyRepeat); // TODO: make it not take &mut self.state but only part of it and then remove the Either enum and process these directly in the `async` block
                 },
-                // Ok(Either::Channel(event)) => {
-                //     self.base.events.push(event)
-                // },
-                Ok(Either::Dbus(msg)) => {
-                    dispatch_dbus_msg(self, msg);
-                },
-                #[cfg(feature = "signals")]
-                Ok(Either::Signal(signal)) => {
-                    if signal == Signal::SIGTERM as i32 {
-                        self.base.events.push(Event::Quit { reason: QuitReason::System })
-                    } else if signal == Signal::SIGINT as i32 {
-                        self.base.events.push(Event::Quit { reason: QuitReason::CtrlC })
-                    }
-                }
                 Err(err) => return Err(err),
             }
 
@@ -353,16 +308,15 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
         
     }
 
-    #[track_caller]
     pub fn get_clip_board(&mut self) -> Option<DataOffer> {
 
-        let wl_data_offer = self.base.offer_data.current_selection.clone()?;
+        let wl_data_offer = self.state.offer_data.current_selection.clone()?;
         let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
         let kinds = *data.lock().unwrap(); // copy the bitflags
 
         Some(DataOffer {
             wl_data_offer,
-            con: self.base.con.get_ref().clone(), // should be pretty cheap
+            con: self.state.con.get_ref().clone(), // should be pretty cheap
             kinds,
             dnd: false,
         })
@@ -371,31 +325,13 @@ impl<T: 'static + Send> EventLoop<T> { // TODO: rename to Connection?
 
     pub fn set_clip_board(&mut self, ds: Option<&DataSource>) {
 
-        self.base.wl.data_device.set_selection(
+        self.state.globals.data_device.set_selection(
             ds.map(|val| &val.wl_data_source),
-            self.base.last_serial
+            self.state.last_serial
         );
 
     }
 
-    pub fn send_notif(&mut self, notif: dbus::notif::Notif<'_>) -> dbus::notif::NotifId {
-        dbus::notif::send(&mut self.base.dbus_data.con, notif)
-    }
-
-    pub fn close_notif(&mut self, id: dbus::notif::NotifId) {
-        dbus::notif::close(&mut self.base.dbus_data.con, id);
-    } // TODO: remove
-
-}
-
-fn dispatch_dbus_msg<T: Send>(evl: &mut EventLoop<T>, msg: dbus::client::Incoming) {
-
-    // match msg {
-
-
-        
-    // }
-    
 }
 
 fn ignore_wouldblock<T>(result: Result<T, WaylandError>) -> Result<(), WaylandError> {
@@ -406,14 +342,7 @@ fn ignore_wouldblock<T>(result: Result<T, WaylandError>) -> Result<(), WaylandEr
     }
 }
 
-pub fn run<E: 'static + Send, T, H: FnOnce(EventLoop<E>) -> T>(handler: H, application: &str) -> Result<T, EvlError> {
-
-    let target = EventLoop::new(application)?;
-    Ok(handler(target))
-
-}
-
-struct WaylandState {
+struct WaylandGlobals {
     compositor: WlCompositor,
     wm: XdgWmBase,
     shm: WlShm,
@@ -429,8 +358,8 @@ struct WaylandState {
     cursor_shape_mgr: Option<WpCursorShapeManagerV1>,
 }
 
-impl WaylandState {
-    pub fn from_globals<T: 'static + Send>(monitor_data: &mut HashSet<MonitorId>, globals: GlobalList, qh: &QueueHandle<BaseLoop<T>>) -> Result<Self, BindError> {
+impl WaylandGlobals {
+    pub fn from_globals<T: 'static + Send>(monitor_data: &mut HashSet<MonitorId>, globals: GlobalList, qh: &QueueHandle<WaylandState<T>>) -> Result<Self, BindError> {
 
         // bind the primary monitor we already retreived
         globals.contents().with_list(|list| for val in list {
@@ -516,7 +445,7 @@ pub struct BaseWindow<T: 'static + Send> {
     pub(crate) id: WindowId, // also found in `shared`
     shared: Arc<Mutex<WindowShared>>, // needs to be accessed by some callbacks
     // wayland state
-    qh: QueueHandle<BaseLoop<T>>,
+    qh: QueueHandle<WaylandState<T>>,
     compositor: WlCompositor, // used to create opaque regions
     pub(crate) wl_surface: WlSurface,
 }
@@ -531,13 +460,13 @@ impl<T: 'static + Send> BaseWindow<T> {
 
     pub(crate) fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
-        let surface = evb.wl.compositor.create_surface(&evb.qh, ());
+        let surface = evb.globals.compositor.create_surface(&evb.qh, ());
         let id = get_window_id(&surface);
 
         // fractional scaling, if present
-        let frac_scale_data = evb.wl.frac_scale_mgrs.as_ref().map(|val| {
+        let frac_scale_data = evb.globals.frac_scale_mgrs.as_ref().map(|val| {
             let viewport = val.viewport_mgr.get_viewport(&surface, &evb.qh, ());
             let frac_scale = val.frac_scaling_mgr.get_fractional_scale(&surface, &evb.qh, id);
             FracScaleData { viewport, frac_scale }
@@ -559,7 +488,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             id,
             shared,
             qh: evb.qh.clone(),
-            compositor: evb.wl.compositor.clone(),
+            compositor: evb.globals.compositor.clone(),
             wl_surface: surface,
         }
         
@@ -658,13 +587,13 @@ impl<T: 'static + Send> Window<T> {
 
         let base = BaseWindow::new(evl, size);
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
         // xdg-top-level role (+ init decoration manager)
-        let xdg_surface = evb.wl.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
+        let xdg_surface = evb.globals.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
         let xdg_toplevel = xdg_surface.get_toplevel(&evb.qh, Arc::clone(&base.shared));
 
-        let xdg_decoration = evb.wl.decoration_mgr.as_ref()
+        let xdg_decoration = evb.globals.decoration_mgr.as_ref()
             .map(|val| val.get_toplevel_decoration(&xdg_toplevel, &evb.qh, base.id));
 
         xdg_decoration.as_ref().map(|val| val.set_mode(ZxdgDecorationMode::ServerSide));
@@ -684,7 +613,8 @@ impl<T: 'static + Send> Window<T> {
     pub fn destroy(self) {}
 
     pub fn set_input_mode(&self, evl: &mut EventLoop<T>, mode: InputMode) {
-        evl.base.keyboard_data.input_modes.insert(self.base.id, mode);
+        evl.wayland.state.keyboard_data.input_modes.
+            insert(self.base.id, mode);
     }
 
     pub fn set_decorations(&mut self, value: bool) {
@@ -735,7 +665,7 @@ impl<T: 'static + Send> Window<T> {
 
     pub fn request_user_attention(&self, evl: &mut EventLoop<T>, urgency: Urgency) {
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
         if let Urgency::Info = urgency {
             // we don't wanna switch focus, but on wayland just showing a
@@ -743,12 +673,12 @@ impl<T: 'static + Send> Window<T> {
             return
         }
 
-        if let Some(ref activation_mgr) = evb.wl.activation_mgr {
+        if let Some(ref activation_mgr) = evb.globals.activation_mgr {
 
             let token = activation_mgr.get_activation_token(&evb.qh, self.base.wl_surface.clone());
 
             token.set_app_id(evb.appid.clone());
-            token.set_serial(evb.last_serial, &evb.wl.seat);
+            token.set_serial(evb.last_serial, &evb.globals.seat);
 
             if let Some(ref surface) = evb.keyboard_data.has_focus {
                 token.set_surface(surface);
@@ -765,9 +695,9 @@ impl<T: 'static + Send> Window<T> {
     /// Otherwise the request may be denied or visually broken.
     pub fn start_drag_and_drop(&self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
-        evb.wl.data_device.start_drag(
+        evb.globals.data_device.start_drag(
             Some(&ds.wl_data_source),
             &self.base.wl_surface,
             Some(&icon.wl_surface),
@@ -781,7 +711,7 @@ impl<T: 'static + Send> Window<T> {
 
     pub fn set_cursor(&self, evl: &mut EventLoop<T>, style: CursorStyle) {
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
         // note: the CustomIcon will also be kept alive by the styles as long as needed
         evb.cursor_data.styles.insert(self.base.id, style);
@@ -973,11 +903,11 @@ impl DataSource {
     #[track_caller]
     pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
         debug_assert!(!offers.is_empty(), "must offer at least one DataKind");
 
-        let wl_data_source = evb.wl.data_device_mgr.create_data_source(&evb.qh, mode);
+        let wl_data_source = evb.globals.data_device_mgr.create_data_source(&evb.qh, mode);
 
         for offer in offers {
 
@@ -1035,7 +965,7 @@ impl CustomIcon {
     #[track_caller]
     pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
         let len = data.len();
 
@@ -1067,14 +997,14 @@ impl CustomIcon {
             "length of data must be greater then 0"
         );
 
-        let wl_shm_pool = evb.wl.shm.create_pool(file.as_fd(), len as i32, &evb.qh, ());
+        let wl_shm_pool = evb.globals.shm.create_pool(file.as_fd(), len as i32, &evb.qh, ());
         let wl_buffer = wl_shm_pool.create_buffer(
             0, size.width as i32, size.height as i32,
             size.width as i32 * bytes_per_pixel, wl_format,
             &evb.qh, ()
         );
 
-        let wl_surface = evb.wl.compositor.create_surface(&evb.qh, ());
+        let wl_surface = evb.globals.compositor.create_surface(&evb.qh, ());
         wl_surface.attach(Some(&wl_buffer), 0, 0);
         wl_surface.commit();
 
@@ -1120,11 +1050,11 @@ impl<T: 'static + Send> PopupWindow<T> {
 
         let base = BaseWindow::new(evl, size);
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
         // xdg-popup role
-        let xdg_surface = evb.wl.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
-        let xdg_positioner = evb.wl.wm.create_positioner(&evb.qh, ());
+        let xdg_surface = evb.globals.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
+        let xdg_positioner = evb.globals.wm.create_positioner(&evb.qh, ());
 
         let parent_guard = parent.shared.lock().unwrap();
         xdg_positioner.set_size(size.width as i32, size.height as i32);
@@ -1173,7 +1103,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
         let base = BaseWindow::new(evl, size);
 
-        let evb = &mut evl.base;
+        let evb = &mut evl.wayland.state;
 
         let wl_layer = match layer {
             WindowLayer::Background => Layer::Background,
@@ -1185,7 +1115,7 @@ impl<T: 'static + Send> LayerWindow<T> {
         let wl_output = monitor.map(|val| &val.wl_output);
 
         // creating this kind of window requires some wayland extensions 
-        let layer_shell_mgr = evb.wl.layer_shell_mgr.as_ref().ok_or(
+        let layer_shell_mgr = evb.globals.layer_shell_mgr.as_ref().ok_or(
             Unsupported(ZwlrLayerShellV1::interface().name)
         )?;
 
@@ -1450,7 +1380,7 @@ macro_rules! ignore {
     };
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         registry: &WlRegistry,
@@ -1479,14 +1409,14 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents>
     }
 }
 
-fn process_new_output<T: 'static + Send>(monitor_list: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<BaseLoop<T>>) {
+fn process_new_output<T: 'static + Send>(monitor_list: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<WaylandState<T>>) {
     let info = MonitorInfo::default();
     let output = registry.bind(name, 2, qh, Mutex::new(info)); // first time in my life using Mutex without an Arc
     let id = get_monitor_id(&output);
     monitor_list.insert(id);
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         wl_output: &WlOutput,
@@ -1530,20 +1460,20 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> f
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlShm, ()> for BaseLoop<T> { ignore!(WlShm, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlShmPool, ()> for BaseLoop<T> { ignore!(WlShmPool, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlBuffer, ()> for BaseLoop<T> { ignore!(WlBuffer, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlShm, ()> for WaylandState<T> { ignore!(WlShm, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlShmPool, ()> for WaylandState<T> { ignore!(WlShmPool, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlBuffer, ()> for WaylandState<T> { ignore!(WlBuffer, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgPositioner, ()> for BaseLoop<T> { ignore!(XdgPositioner, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<XdgPositioner, ()> for WaylandState<T> { ignore!(XdgPositioner, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpViewporter, ()> for BaseLoop<T> { ignore!(WpViewporter, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WpViewport, ()> for BaseLoop<T> { ignore!(WpViewport, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WpViewporter, ()> for WaylandState<T> { ignore!(WpViewporter, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WpViewport, ()> for WaylandState<T> { ignore!(WpViewport, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeManagerV1, ()> for BaseLoop<T> { ignore!(WpCursorShapeManagerV1, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeDeviceV1, ()> for BaseLoop<T> { ignore!(WpCursorShapeDeviceV1, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeManagerV1, ()> for WaylandState<T> { ignore!(WpCursorShapeManagerV1, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeDeviceV1, ()> for WaylandState<T> { ignore!(WpCursorShapeDeviceV1, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataDeviceManager, ()> for BaseLoop<T> { ignore!(WlDataDeviceManager, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlDataDeviceManager, ()> for WaylandState<T> { ignore!(WlDataDeviceManager, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         _data_device: &WlDataDevice,
@@ -1640,7 +1570,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
 
         else if let WlDataDeviceEvent::Leave = event {
 
-            let surface = evl.offer_data.has_offer.as_ref().unwrap();
+            let surface = evl.offer_data.has_offer.as_ref().unwrap(); // TODO: this may be none for sameapp drops
             let sameapp = evl.offer_data.dnd_active;
 
             evl.events.push(Event::Window {
@@ -1667,7 +1597,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for BaseLoop<
 
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataOffer, Mutex<DataKinds>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlDataOffer, Mutex<DataKinds>> for WaylandState<T> {
     fn event(
         _evl: &mut Self,
         _data_offer: &WlDataOffer,
@@ -1687,7 +1617,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataOffer, Mutex<DataKinds>> 
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         data_source: &WlDataSource,
@@ -1739,8 +1669,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for BaseL
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationV1, ()> for BaseLoop<T> { ignore!(XdgActivationV1, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationTokenV1, WlSurface> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationV1, ()> for WaylandState<T> { ignore!(XdgActivationV1, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationTokenV1, WlSurface> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         _token: &XdgActivationTokenV1,
@@ -1752,15 +1682,15 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationTokenV1, WlSurface
     
         // activate the token
         if let XdgActivationTokenEvent::Done { token } = event {
-            let activation_mgr = evl.wl.activation_mgr.as_ref().unwrap();
+            let activation_mgr = evl.globals.activation_mgr.as_ref().unwrap();
             activation_mgr.activate(token, surface);
         }
 
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<ZxdgDecorationManagerV1, ()> for BaseLoop<T> { ignore!(ZxdgDecorationManagerV1, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, WindowId> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<ZxdgDecorationManagerV1, ()> for WaylandState<T> { ignore!(ZxdgDecorationManagerV1, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, WindowId> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         _deco: &ZxdgToplevelDecorationV1,
@@ -1782,9 +1712,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, Windo
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleManagerV1, ()> for BaseLoop<T> { ignore!(WpFractionalScaleManagerV1, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleManagerV1, ()> for WaylandState<T> { ignore!(WpFractionalScaleManagerV1, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         seat: &WlSeat,
@@ -1799,17 +1729,17 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for BaseLoop<T> {
             }
             if capabilities.contains(WlSeatCapability::Pointer) {
                 let wl_pointer = seat.get_pointer(qh, ());
-                if let Some(ref wp_cursor_shape_mgr) = evl.wl.cursor_shape_mgr {
+                if let Some(ref wp_cursor_shape_mgr) = evl.globals.cursor_shape_mgr {
                     let wl_shape_device = wp_cursor_shape_mgr.get_pointer(&wl_pointer, qh, ());
-                    evl.wl.shape_device = Some(wl_shape_device);
+                    evl.globals.shape_device = Some(wl_shape_device);
                 }
-                evl.wl.pointer = Some(wl_pointer);
+                evl.globals.pointer = Some(wl_pointer);
             }
         }
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgWmBase, ()> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgWmBase, ()> for WaylandState<T> {
     fn event(
         _: &mut Self,
         wm: &XdgWmBase,
@@ -1824,7 +1754,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgWmBase, ()> for BaseLoop<T> 
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         xdg_surface: &XdgSurface,
@@ -1849,7 +1779,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowSha
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         _surface: &XdgToplevel,
@@ -1876,7 +1806,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowSh
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShared>>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShared>>> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         _surface: &XdgPopup,
@@ -1902,11 +1832,11 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShare
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerShellV1, ()> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerShellV1, ()> for WaylandState<T> {
     ignore!(ZwlrLayerShellV1, ());
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<WindowShared>>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<WindowShared>>> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         zwlr_surface: &ZwlrLayerSurfaceV1,
@@ -1939,7 +1869,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<W
     }
 }
 
-fn process_configure<T: 'static + Send>(evl: &mut BaseLoop<T>, guard: MutexGuard<WindowShared>, width: u32, height: u32) {
+fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, guard: MutexGuard<WindowShared>, width: u32, height: u32) {
 
     // update the window's viewport destination
     if let Some(ref frac_scale_data) = guard.frac_scale_data {
@@ -1971,7 +1901,7 @@ fn read_configure_flags(states: Vec<u8>) -> ConfigureFlags {
         })
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for WaylandState<T> {
     fn event(
         evl: &mut Self,
         _cb: &WlCallback,
@@ -1991,12 +1921,12 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
 }
 
 // global events
-impl<T: 'static + Send> wayland_client::Dispatch<WlCompositor, ()> for BaseLoop<T> { ignore!(WlCompositor, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlCompositor, ()> for WaylandState<T> { ignore!(WlCompositor, ()); }
 
 // surface events (like moving onto an output etc.)
-impl<T: 'static + Send> wayland_client::Dispatch<WlSurface, ()> for BaseLoop<T> { ignore!(WlSurface, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlSurface, ()> for WaylandState<T> { ignore!(WlSurface, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> for WaylandState<T> {
     fn event(
             evl: &mut Self,
             _proxy: &WpFractionalScaleV1,
@@ -2019,10 +1949,10 @@ impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> 
 }
 
 // region events
-impl<T: 'static + Send> wayland_client::Dispatch<WlRegion, ()> for BaseLoop<T> { ignore!(WlRegion, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlRegion, ()> for WaylandState<T> { ignore!(WlRegion, ()); }
 
 // input events
-impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandState<T> {
     fn event(
             evl: &mut Self,
             _proxy: &WlKeyboard,
@@ -2175,7 +2105,9 @@ enum Source {
     KeyRepeat,
 }
 
-fn process_key_event<T: 'static + Send>(evl: &mut BaseLoop<T>, raw_key: u32, dir: Direction, source: Source) {
+fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32, dir: Direction, source: Source) {
+
+    // uses evl.keyboard_data and evl.events
 
     let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
 
@@ -2266,7 +2198,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut BaseLoop<T>, raw_key: u32, dir
 
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for BaseLoop<T> {
+impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState<T> {
     fn event(
             evl: &mut Self,
             _proxy: &WlPointer,
@@ -2390,12 +2322,12 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for BaseLoop<T> 
 
 /// there are different wayland protocols used to set different kinds of
 /// cursor styles
-fn process_new_cursor_style<T: 'static + Send>(evl: &mut BaseLoop<T>, id: WindowId) {
+fn process_new_cursor_style<T: 'static + Send>(evl: &mut WaylandState<T>, id: WindowId) {
 
     let style = evl.cursor_data.styles.get(&id)
         .unwrap_or(&CursorStyle::Predefined { shape: CursorShape::Default });
 
-    if let Some(ref wl_pointer) = evl.wl.pointer {
+    if let Some(ref wl_pointer) = evl.globals.pointer {
 
         let serial = evl.cursor_data.last_enter_serial;
 
@@ -2411,7 +2343,7 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut BaseLoop<T>, id: Window
             },
             CursorStyle::Predefined { shape } => {
                 let wl_shape = shape.to_wl();
-                if let Some(ref wp_shape_device) = evl.wl.shape_device {
+                if let Some(ref wp_shape_device) = evl.globals.shape_device {
                     wp_shape_device.set_shape(serial, wl_shape);
                 }
             }

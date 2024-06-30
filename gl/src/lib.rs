@@ -1,13 +1,13 @@
 
 // simple wrapper for common opengl functions
 
+use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex};
+use num_enum::TryFromPrimitive;
+
 pub fn load_with<F: FnMut(&'static str) -> *const void>(f: F) {
     gl::load_with(f)
 }
     
-use std::{ffi::c_void as void, sync::Mutex, ptr::{null_mut, null}, slice};
-use num_enum::TryFromPrimitive;
-
 pub trait DebugCallback: Fn(DebugSource, DebugType, DebugSeverity, u32, &str) {}
 impl<F: Fn(DebugSource, DebugType, DebugSeverity, u32, &str)> DebugCallback for F {}
 

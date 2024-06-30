@@ -1,7 +1,9 @@
 
 // the main logic: windowing, egl, ...
  pub mod wayland;
- pub use wayland::*;
+ use futures_lite::{FutureExt, StreamExt};
+use nix::sys::signal::Signal;
+pub use wayland::*;
 
 // egl
 pub mod egl;
@@ -14,7 +16,7 @@ pub use dbus::*;
 use crate::*;
 
 use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
-use std::{fmt, error::Error as StdError};
+use std::{error::Error as StdError, fmt, io};
 
 pub fn run<E: 'static + Send, T, H: FnOnce(EventLoop<E>) -> T>(handler: H, application: &str) -> Result<T, EvlError> {
     // TODO: use where clause
@@ -31,7 +33,10 @@ pub struct EventLoop<T: 'static + Send> {
     proxy: EventProxy<T>,
     receiver: AsyncReceiver<Event<T>>,
     // wayland connection & events
-    wayland: wayland::EventLoop<T>, // TODO: move evl proxies from wayland.rs to here
+    wayland: wayland::Connection<T>, // TODO: move evl proxies from wayland.rs to here
+    // unix signal events
+    #[cfg(feature = "signals")]
+    signals: async_signals::Signals, // listens to sigterm and emits a quit event
 
 }
 
@@ -39,20 +44,69 @@ impl<T: 'static + Send> EventLoop<T> {
 
     pub(crate) fn new(application: &str) -> Result<Self, EvlError> {
 
+        #[cfg(feature = "signals")]
+        let signals = async_signals::Signals::new([
+            Signal::SIGTERM as i32,
+            Signal::SIGINT as i32
+        ]).map_err(io::Error::from)?;
+
+        // proxy sender & receiver
         let (sender, receiver) = async_channel::unbounded();
 
         Ok(Self {
             events: Vec::new(),
             proxy: EventProxy { sender },
             receiver,
-            wayland: wayland::EventLoop::new(application)?,
+            wayland: wayland::Connection::new(application)?,
+            #[cfg(feature = "signals")]
+            signals,
         })
 
     }
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
+            // #[cfg(feature = "signals")]
+            // let signals = async {
+            //     use futures_lite::StreamExt;
+            //     let signal = self.state.signals.next().await
+            //         .unwrap_or(0);
+            //     Ok(Either::Signal(signal))
+            // };
+
+                // #[cfg(feature = "signals")]
+                // Ok(Either::Signal(signal)) => {
+                //     if signal == Signal::SIGTERM as i32 {
+                //         self.state.events.push(Event::Quit { reason: QuitReason::System })
+                //     } else if signal == Signal::SIGINT as i32 {
+                //         self.state.events.push(Event::Quit { reason: QuitReason::CtrlC })
+                //     }
+                // }
         // todo: from self.events
-        self.wayland.next().await
+
+        let wayland = async {
+            self.wayland.next().await
+        };
+
+        let proxy = async {
+            Ok(self.receiver.recv().await.unwrap())
+        };
+
+        let signals = async {
+            loop {
+                let signal = self.signals.next().await.unwrap_or(0);
+                if signal == Signal::SIGTERM as i32 {
+                    return Ok(Event::Quit { reason: QuitReason::System })
+                } else if signal == Signal::SIGINT as i32 {
+                    return Ok(Event::Quit { reason: QuitReason::CtrlC })
+                }
+            }
+        };
+
+        wayland
+            .or(proxy)
+            .or(signals)
+            .await
+
     }
     
     pub fn on_main_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
@@ -74,6 +128,14 @@ impl<T: 'static + Send> EventLoop<T> {
 
     pub fn quit(&mut self) {
         self.events.push(Event::Quit { reason: QuitReason::User });
+    }
+
+    pub fn get_clip_board(&mut self) -> Option<DataOffer> {
+        self.wayland.get_clip_board()
+    }
+
+    pub fn set_clip_board(&mut self, src: Option<&DataSource>) {
+        self.wayland.set_clip_board(src)
     }
 
 }
