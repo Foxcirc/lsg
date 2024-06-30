@@ -1,8 +1,6 @@
 
 // the main logic: windowing, egl, ...
- pub mod wayland;
- use futures_lite::{FutureExt, StreamExt};
-use nix::sys::signal::Signal;
+pub mod wayland;
 pub use wayland::*;
 
 // egl
@@ -15,11 +13,11 @@ pub use dbus::*;
 
 use crate::*;
 
-use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
-use std::{error::Error as StdError, fmt, io};
+use futures_lite::FutureExt;
 
-pub fn run<E: 'static + Send, T, H: FnOnce(EventLoop<E>) -> T>(handler: H, application: &str) -> Result<T, EvlError> {
-    // TODO: use where clause
+pub fn run<T, R, H>(handler: H, application: &str) -> Result<R, EvlError>
+    where T: 'static + Send,
+          H: FnOnce(EventLoop<T>) -> R {
 
     let target = EventLoop::new(application)?;
     Ok(handler(target))
@@ -27,95 +25,37 @@ pub fn run<E: 'static + Send, T, H: FnOnce(EventLoop<E>) -> T>(handler: H, appli
 }
 
 pub struct EventLoop<T: 'static + Send> {
-    // events produced by us
     events: Vec<Event<T>>,
-    // event proxy data
-    proxy: EventProxy<T>,
-    receiver: AsyncReceiver<Event<T>>,
-    // wayland connection & events
-    wayland: wayland::Connection<T>, // TODO: move evl proxies from wayland.rs to here
-    // unix signal events
-    #[cfg(feature = "signals")]
-    signals: async_signals::Signals, // listens to sigterm and emits a quit event
-
+    proxy: proxy::InnerProxy<T>,
+    wayland: wayland::Connection<T>,
+    signals: signals::SignalListener,
 }
 
 impl<T: 'static + Send> EventLoop<T> {
 
     pub(crate) fn new(application: &str) -> Result<Self, EvlError> {
-
-        #[cfg(feature = "signals")]
-        let signals = async_signals::Signals::new([
-            Signal::SIGTERM as i32,
-            Signal::SIGINT as i32
-        ]).map_err(io::Error::from)?;
-
-        // proxy sender & receiver
-        let (sender, receiver) = async_channel::unbounded();
-
         Ok(Self {
             events: Vec::new(),
-            proxy: EventProxy { sender },
-            receiver,
+            proxy: proxy::InnerProxy::new(),
             wayland: wayland::Connection::new(application)?,
-            #[cfg(feature = "signals")]
-            signals,
+            signals: signals::SignalListener::new()?,
         })
-
     }
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
-            // #[cfg(feature = "signals")]
-            // let signals = async {
-            //     use futures_lite::StreamExt;
-            //     let signal = self.state.signals.next().await
-            //         .unwrap_or(0);
-            //     Ok(Either::Signal(signal))
-            // };
-
-                // #[cfg(feature = "signals")]
-                // Ok(Either::Signal(signal)) => {
-                //     if signal == Signal::SIGTERM as i32 {
-                //         self.state.events.push(Event::Quit { reason: QuitReason::System })
-                //     } else if signal == Signal::SIGINT as i32 {
-                //         self.state.events.push(Event::Quit { reason: QuitReason::CtrlC })
-                //     }
-                // }
-        // todo: from self.events
-
-        let wayland = async {
-            self.wayland.next().await
-        };
-
-        let proxy = async {
-            Ok(self.receiver.recv().await.unwrap())
-        };
-
-        let signals = async {
-            loop {
-                let signal = self.signals.next().await.unwrap_or(0);
-                if signal == Signal::SIGTERM as i32 {
-                    return Ok(Event::Quit { reason: QuitReason::System })
-                } else if signal == Signal::SIGINT as i32 {
-                    return Ok(Event::Quit { reason: QuitReason::CtrlC })
-                }
-            }
-        };
-
-        wayland
-            .or(proxy)
-            .or(signals)
+        self.wayland.next()
+            .or(self.proxy.next())
+            .or(self.signals.next())
             .await
-
     }
     
+    /// On linux, this is a no-op.
     pub fn on_main_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
-        // on linux the event loop runs on the main thread
-        func()
+        func() // on linux the event loop runs on the main thread
     }
 
     pub fn new_proxy(& self) -> EventProxy<T> {
-        self.proxy.clone()
+        self.proxy.new_proxy()
     }
 
     pub fn suspend(&mut self) {
@@ -140,40 +80,116 @@ impl<T: 'static + Send> EventLoop<T> {
 
 }
 
-pub struct EventProxy<T> {
-    sender: AsyncSender<Event<T>>,
-}
+pub use proxy::*;
+pub mod proxy {
 
-impl<T> Clone for EventProxy<T> {
-    fn clone(&self) -> Self {
-        Self { sender: self.sender.clone() }
-    }
-}
+    use std::{error::Error as StdError, fmt};
 
-impl<T> EventProxy<T> {
+    use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
 
-    pub fn send(&self, event: Event<T>) -> Result<(), SendError<Event<T>>> {
-        self.sender.send_blocking(event)
-            .map_err(|err| SendError { inner: err.into_inner() })
+    use crate::*;
+
+    pub(crate) struct InnerProxy<T> {
+        sender: AsyncSender<Event<T>>,
+        receiver: AsyncReceiver<Event<T>>,
     }
 
-}
+    impl<T> InnerProxy<T> {
 
-pub struct SendError<T> {
-    pub inner: T
-}
+        pub fn new() -> Self {
+            let (sender, receiver) = async_channel::unbounded();
+            Self { sender, receiver }
+        }
 
-impl<T> fmt::Debug for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SendError: EventLoop dead")
+        pub fn new_proxy(&self) -> EventProxy<T> {
+            EventProxy {
+                sender: self.sender.clone(),
+            }
+        }
+
+        pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
+            Ok(self.receiver.recv().await.unwrap())
+        }
+        
     }
-}
-
-impl<T> fmt::Display for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+    
+    pub struct EventProxy<T> {
+        sender: AsyncSender<Event<T>>,
     }
+
+    impl<T> Clone for EventProxy<T> {
+        fn clone(&self) -> Self {
+            Self { sender: self.sender.clone() }
+        }
+    }
+
+    impl<T> EventProxy<T> {
+
+        #[track_caller]
+        pub fn send(&self, event: Event<T>) {
+            // the event loop exiting should be the last thing to happen
+            // anyways
+            self.sender.try_send(event)
+                .expect("event loop dead")
+        }
+
+    }
+
 }
 
-impl<T: fmt::Debug> StdError for SendError<T> {}
+// pub use signals::*; // NOTE: this module has no public items right now
+pub mod signals {
+
+    use std::io;
+
+    use futures_lite::StreamExt;
+    use nix::sys::signal::Signal;
+
+    use crate::*;
+
+    pub(crate) struct SignalListener {
+        #[cfg(feature = "signals")]
+        signals: async_signals::Signals, // listens to sigterm and emits a quit event
+    }
+
+    impl SignalListener {
+
+        pub fn new() -> io::Result<Self> {
+
+            #[cfg(feature = "signals")]
+            let signals = async_signals::Signals::new([
+                Signal::SIGTERM as i32,
+                Signal::SIGINT as i32
+            ]).map_err(io::Error::from)?;
+
+            Ok(Self {
+                #[cfg(feature = "signals")]
+                signals
+            })
+            
+        }
+
+        pub async fn next<T>(&mut self) -> Result<Event<T>, EvlError> {
+
+            #[cfg(feature = "signals")]
+            loop {
+                let signal = self.signals.next().await.unwrap_or(0);
+                if signal == Signal::SIGTERM as i32 {
+                    return Ok(Event::Quit { reason: QuitReason::System })
+                } else if signal == Signal::SIGINT as i32 {
+                    return Ok(Event::Quit { reason: QuitReason::CtrlC })
+                }
+            }
+
+            #[cfg(not(feature = "signals"))]
+            future::pending().await
+
+            
+        }
+        
+    }
+    
+}
+
+// 170
 
