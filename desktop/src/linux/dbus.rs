@@ -1,13 +1,10 @@
 
 pub mod client {
 
-    use std::{
-        borrow::Cow, collections::HashMap, convert::{identity, Infallible}, env, error::Error as StdError, fmt, hash::{DefaultHasher, Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}, sync::Arc
-    };
+    use std::{borrow::Cow, collections::HashMap, convert::identity, env, error::Error as StdError, fmt, hash::{Hash, Hasher}, io::{self, Read, Write}, iter, mem, os::{fd::{AsRawFd, OwnedFd}, unix::net::UnixStream}};
 
     use async_channel as channel;
-    use async_lock::Mutex as AsyncMutex;
-    use futures_lite::{future::block_on, Future, FutureExt};
+    use futures_lite::FutureExt;
 
     #[test]
     fn call() {
@@ -323,7 +320,6 @@ pub mod client {
         reactor: Reactor,
         /// handle to send requests
         requests: channel::Sender<Outgoing>,
-        signals: async_broadcast::Receiver<Arc<SignalTrigger>>,
     }
 
     impl Connection {
@@ -341,8 +337,6 @@ pub mod client {
             )?;
 
             let actions = channel::bounded(4);
-            let signals = async_broadcast::broadcast(4);
-            // signals.0.set_overflow(true); // drop old signals if not consumed
 
             // authenticate and send the hello message
             actions.0.try_send(Outgoing::InitialAuth).unwrap();
@@ -357,7 +351,6 @@ pub mod client {
             Ok(Self {
                 reactor,
                 requests: actions.0,
-                signals: signals.1,
             })
         
         }
@@ -447,17 +440,17 @@ pub mod client {
 
     }
 
-    fn hash_signal(path: &str, iface: &str, member: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        path.hash(&mut hasher);
-        iface.hash(&mut hasher);
-        member.hash(&mut hasher);
-        hasher.finish()
-    }
+    // fn hash_signal(path: &str, iface: &str, member: &str) -> u64 {
+    //     let mut hasher = DefaultHasher::new();
+    //     path.hash(&mut hasher);
+    //     iface.hash(&mut hasher);
+    //     member.hash(&mut hasher);
+    //     hasher.finish()
+    // }
 
-    fn hash_signal_origin(path: &str, iface: &str) -> u64 {
-        hash_signal(path, iface, "")
-    }
+    // fn hash_signal_origin(path: &str, iface: &str) -> u64 {
+    //     hash_signal(path, iface, "")
+    // }
 
     pub type OutgoingId = u32;
 
@@ -596,9 +589,8 @@ pub mod client {
 
     #[derive(Debug, Clone)]
     pub struct SignalMatch {
-        kind: MatchKind,
         rule: String,
-        hash: u64,
+        // hash: u64,
     }
 
     impl SignalMatch {
@@ -610,12 +602,11 @@ pub mod client {
                 path, iface, member
             );
 
-            let hash = hash_signal(path, iface, member);
+            // let hash = hash_signal(path, iface, member);
 
             Self {
-                kind: MatchKind::Specific,
                 rule,
-                hash
+                // hash
             }
         }
 
@@ -626,12 +617,11 @@ pub mod client {
                 path, iface
             );
 
-            let hash = hash_signal_origin(path, iface);
+            // let hash = hash_signal_origin(path, iface);
 
             Self {
-                kind: MatchKind::Originating,
                 rule,
-                hash
+                // hash
             }
 
         }
@@ -2023,8 +2013,6 @@ pub mod client {
 }
 
 // ####### actual desktop-env interface implementation #######
-
-use std::{collections::HashMap, time::Duration};
 
 #[test]
 fn notifs() {

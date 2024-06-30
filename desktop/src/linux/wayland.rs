@@ -53,15 +53,10 @@ use nix::{
     fcntl::{self, OFlag}, unistd::pipe2
 };
 
-#[cfg(feature = "signals")]
-use nix::sys::signal::Signal;
-
 use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
-use std::{
-    collections::{HashMap, HashSet}, env, error::Error as StdError, fmt, fs, io::{self, Write}, iter, ops, os::fd::{AsFd, AsRawFd, FromRawFd}, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}
-};
+use std::{collections::{HashMap, HashSet}, env, error::Error as StdError, fmt, fs, io::{self, Write}, ops, os::fd::{AsFd, AsRawFd, FromRawFd}, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}};
 
 use crate::*;
 
@@ -80,10 +75,6 @@ pub(crate) struct WaylandState<T: 'static + Send = ()> {
     cursor_data: CursorData,
     monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
     last_serial: u32,
-}
-
-struct DbusData {
-    con: dbus::client::Connection,
 }
 
 #[derive(Default)]

@@ -83,8 +83,6 @@ impl<T: 'static + Send> EventLoop<T> {
 pub use proxy::*;
 pub mod proxy {
 
-    use std::{error::Error as StdError, fmt};
-
     use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
 
     use crate::*;

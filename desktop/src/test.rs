@@ -55,7 +55,6 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Resume => {
                     // window.title("no-test");
                 },
-                Event::Resume => unimplemented!(),
                 Event::Quit { reason } => {
                     println!("quit reason: {reason:?}");
                     return;
