@@ -163,24 +163,6 @@ impl PressedKeys {
 
     pub fn current(&self) -> Vec<xkb::Keycode> {
 
-        // TODO: return an iterator: this should be the logic:
-
-        // let mut idx = 0;
-            
-        // iter::from_fn(move || {
-        //     loop {
-        //         if idx == self.keys.len() {
-        //             return None
-        //         } else if self.keys.get(idx) {
-        //             let code = xkb::Keycode::from(self.min + idx as u32);
-        //             idx += 1;
-        //             return Some(code)
-        //         }
-               
-        //     }
-
-        // })
-
         let mut down = Vec::new(); // we can't return anything that borrows self
 
         for idx in 0..self.keys.len() {
@@ -1152,7 +1134,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
     }
 
-    pub fn set_interactivity(&self, value: KbInteractivity) {
+    pub fn interactivity(&self, value: KbInteractivity) {
 
         let wl_intr = match value {
             KbInteractivity::None => KeyboardInteractivity::None,
@@ -1427,8 +1409,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> f
                 guard.description = description;
             },
             WlOutputEvent::Mode { flags, width, height, refresh } => {
-                if flags == WEnum::Value(WlOutputMode::Current) {
-                    guard.size = Size { width: width as u32, height: height as u32 };
+                if flags.into_result().is_ok_and(|it| it.contains(WlOutputMode::Current)) {
+                        guard.size = Size { width: width as u32, height: height as u32 };
                     guard.refresh = refresh as u32;
                 }
             },

@@ -1,6 +1,8 @@
 
 // the main logic: windowing, egl, ...
 pub mod wayland;
+use std::future;
+
 pub use wayland::*;
 
 // egl
@@ -24,11 +26,13 @@ pub fn run<T, R, H>(handler: H, application: &str) -> Result<R, EvlError>
 
 }
 
+// TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
 pub struct EventLoop<T: 'static + Send> {
     events: Vec<Event<T>>,
     proxy: proxy::InnerProxy<T>,
     wayland: wayland::Connection<T>,
     signals: signals::SignalListener,
+    dbus: dbus::client::Connection,
 }
 
 impl<T: 'static + Send> EventLoop<T> {
@@ -39,14 +43,24 @@ impl<T: 'static + Send> EventLoop<T> {
             proxy: proxy::InnerProxy::new(),
             wayland: wayland::Connection::new(application)?,
             signals: signals::SignalListener::new()?,
+            dbus: dbus::client::Connection::new()?,
         })
     }
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
-        self.wayland.next()
+        pop_event(&mut self.events)
+            .or(self.wayland.next())
             .or(self.proxy.next())
             .or(self.signals.next())
+            // .or(self.dbus.next())
             .await
+    }
+    
+    /// Write pending requests. Call this during cleanup
+    /// if you are no longer going to call `next`.
+    pub async fn flush(&mut self) -> Result<(), EvlError> {
+        self.dbus.flush().await
+            .map_err(EvlError::Io)
     }
     
     /// On linux, this is a no-op.
@@ -78,6 +92,14 @@ impl<T: 'static + Send> EventLoop<T> {
         self.wayland.set_clip_board(src)
     }
 
+}
+
+async fn pop_event<T>(events: &mut Vec<Event<T>>) -> Result<Event<T>, EvlError> {
+    if let Some(val) = events.pop() {
+        Ok(future::ready(val).await)
+    } else {
+        future::pending().await
+    }
 }
 
 pub use proxy::*;
@@ -188,6 +210,4 @@ pub mod signals {
     }
     
 }
-
-// 170
 

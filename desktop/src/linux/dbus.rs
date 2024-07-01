@@ -6,6 +6,8 @@ pub mod client {
     use async_channel as channel;
     use futures_lite::FutureExt;
 
+    use crate::notif::NotifId;
+
     #[test]
     fn call() {
 
@@ -266,7 +268,7 @@ pub mod client {
                 initial_auth(&mut rt.bus).await?;
             }
 
-            Outgoing::MethodCall { serial, payload } => {
+            Outgoing::MethodCall(serial, payload) => {
 
                 let mut msg = payload.serialize();
                 msg.serial = serial;
@@ -277,7 +279,7 @@ pub mod client {
 
             },
 
-            Outgoing::MethodCallVoid { payload } => {
+            Outgoing::MethodCallVoid(payload) => {
 
                 let mut msg = payload.serialize();
                 msg.serial = u32::MAX;
@@ -288,7 +290,7 @@ pub mod client {
 
             },
 
-            Outgoing::MethodReply { payload } => {
+            Outgoing::MethodReply(payload) => {
 
                 let mut msg = payload.serialize();
                 msg.serial = u32::MAX;
@@ -299,7 +301,7 @@ pub mod client {
 
             },
 
-            Outgoing::MethodError { payload } => {
+            Outgoing::MethodError(payload) => {
 
                 let mut msg = payload.serialize();
                 msg.serial = u32::MAX;
@@ -363,12 +365,16 @@ pub mod client {
             self.reactor.flush().await
         }
 
+        // pub fn send_notif(&mut self, notif: Notif<'_>) -> NotifId {
+        //     todo!()
+        // }
+
         pub fn method_call(&mut self, payload: MethodCall) -> OutgoingId {
 
             let serial = self.reactor.serial;
             self.reactor.serial += 1;
         
-            let req = Outgoing::MethodCall { serial, payload };
+            let req = Outgoing::MethodCall(serial, payload);
             self.requests.try_send(req).unwrap();
             
             serial
@@ -379,7 +385,7 @@ pub mod client {
         // TODO: ^^ express this thru a type
         pub fn method_call_with_serial(&mut self, payload: MethodCall, serial: u32) -> OutgoingId {
         
-            let req = Outgoing::MethodCall { serial, payload };
+            let req = Outgoing::MethodCall(serial, payload);
             self.requests.try_send(req).unwrap();
             
             serial
@@ -390,11 +396,11 @@ pub mod client {
         
             match result {
                 Ok(payload) => {
-                    let req = Outgoing::MethodReply { payload };
+                    let req = Outgoing::MethodReply(payload);
                     self.requests.try_send(req).unwrap();
                 },
                 Err(payload) => {
-                    let req = Outgoing::MethodError { payload };
+                    let req = Outgoing::MethodError(payload);
                     self.requests.try_send(req).unwrap();
                 },
             }
@@ -487,7 +493,7 @@ pub mod client {
 
         }
     
-        pub fn arg<A: ValidArg>(&mut self, input: A) {
+        pub fn arg<A: IsArg>(&mut self, input: A) {
             self.args.push(input.pack());
         }
 
@@ -643,19 +649,19 @@ pub mod client {
             }
         }
 
-        pub fn push<A: ValidArg>(&mut self, input: A) {
+        pub fn push<A: IsArg>(&mut self, input: A) {
             self.args.push(Some(input.pack()));
         }
 
         #[track_caller]
-        pub fn arg<T: ValidArg>(&mut self, idx: usize) -> T {
+        pub fn arg<T: IsArg>(&mut self, idx: usize) -> T {
             match self.get(idx) {
                 Ok(val) => val,
                 Err(err) => panic!("cannot read arg #{idx}: {err:?}")
             }
         }
 
-        pub fn get<T: ValidArg>(&mut self, idx: usize) -> Result<T, ArgError> {
+        pub fn get<T: IsArg>(&mut self, idx: usize) -> Result<T, ArgError> {
             let arg = self.args.get_mut(idx)
                 .ok_or(ArgError::DoesntExist)?
                 .take().ok_or(ArgError::Taken)?;
@@ -719,13 +725,13 @@ pub mod client {
 
         }
     
-        pub fn push<A: ValidArg>(&mut self, input: A) {
+        pub fn push<A: IsArg>(&mut self, input: A) {
             self.args.push(Some(input.pack()));
         }
 
         /// In contrast to other `arg` methods, this clones the value.
         #[track_caller]
-        pub fn arg<T: ValidArg>(&self, idx: usize) -> T {
+        pub fn arg<T: IsArg>(&self, idx: usize) -> T {
             match self.get(idx) {
                 Ok(val) => val,
                 Err(err) => panic!("cannot read arg #{idx}: {err:?}")
@@ -733,7 +739,7 @@ pub mod client {
         }
 
         /// In contrast to other `get` methods, this clones the value.
-        pub fn get<T: ValidArg>(&self, idx: usize) -> Result<T, ArgError> {
+        pub fn get<T: IsArg>(&self, idx: usize) -> Result<T, ArgError> {
             let arg = self.args.get(idx)
                 .ok_or(ArgError::DoesntExist)?
                 .clone().ok_or(ArgError::Taken)?;
@@ -755,10 +761,10 @@ pub mod client {
 
     pub enum Outgoing {
         InitialAuth,
-        MethodCall     { serial: u32, payload: MethodCall },
-        MethodCallVoid { payload: MethodCall },
-        MethodReply    { payload: MethodReply },
-        MethodError    { payload: MethodError },
+        MethodCall(u32, MethodCall),
+        MethodCallVoid(MethodCall),
+        MethodReply(MethodReply),
+        MethodError(MethodError),
     }
 
     pub enum Incoming {
@@ -778,6 +784,7 @@ pub mod client {
         Signal      = 4,
     }
     impl MessageKind {
+        // TODO: we can use num_enum since it is used in the "gl" crate anyways
         fn from_raw(val: u8) -> Option<Self> {
             match val {
                 0 => Some(Self::Invalid),
@@ -952,13 +959,13 @@ pub mod client {
 
         }
 
-        fn take_field<T: ValidArg>(&mut self, target: FieldCode) -> Option<T> {
+        fn take_field<T: IsArg>(&mut self, target: FieldCode) -> Option<T> {
             take_field(&mut self.fields, target)
         }
 
     }
 
-    fn take_field<T: ValidArg>(fields: &mut Vec<(u8, Variant)>, target: FieldCode) -> Option<T> {
+    fn take_field<T: IsArg>(fields: &mut Vec<(u8, Variant)>, target: FieldCode) -> Option<T> {
         fields.iter()
             .position(|(code, ..)| *code == target as u8)
             .and_then(|idx| {
@@ -1102,7 +1109,7 @@ pub mod client {
 
     }
 
-    fn unpack<T: ValidArg>(buf: &mut DeserializeBuf) -> Result<T, ParseError> {
+    fn unpack<T: IsArg>(buf: &mut DeserializeBuf) -> Result<T, ParseError> {
         T::unpack(Arg::deserialize(buf, &T::kinds())?).ok_or(ParseError::Invalid)
     }
 
@@ -1643,13 +1650,13 @@ pub mod client {
         Struct(Vec<Arg>),
     }
 
-    pub trait ValidArg {
+    pub trait IsArg {
         fn pack(self) -> Arg where Self: Sized;
         fn unpack(arg: Arg) -> Option<Self> where Self: Sized;
         fn kinds() -> Vec<ArgKind>;
     }
     
-    impl ValidArg for &'static str {
+    impl IsArg for &'static str {
         fn pack(self) -> Arg {
             Arg::Simple(SimpleArg::String(Cow::Borrowed(self)))
         }
@@ -1661,7 +1668,7 @@ pub mod client {
         }
     }
 
-    impl ValidArg for String {
+    impl IsArg for String {
         fn pack(self) -> Arg {
             Arg::Simple(SimpleArg::String(Cow::Owned(self)))
         }
@@ -1677,7 +1684,7 @@ pub mod client {
     #[derive(Debug, Default, PartialEq, Eq)]
     pub struct Signature(pub Vec<ArgKind>);
 
-    impl ValidArg for Signature {
+    impl IsArg for Signature {
         fn pack(self) -> Arg {
             let Self(val) = self;
             Arg::Simple(SimpleArg::Signature(val))
@@ -1691,7 +1698,7 @@ pub mod client {
         }
     }
 
-    impl ValidArg for f64 {
+    impl IsArg for f64 {
         fn pack(self) -> Arg {
             Arg::Simple(SimpleArg::Double(OpsF64 { inner: self }))
         }
@@ -1704,7 +1711,7 @@ pub mod client {
         }
     }
 
-    impl ValidArg for OwnedFd {
+    impl IsArg for OwnedFd {
         fn pack(self) -> Arg {
             Arg::Simple(SimpleArg::Fd(OpsOwnedFd { inner: self }))
         }
@@ -1720,7 +1727,7 @@ pub mod client {
     macro_rules! impl_valid_arg {
         ($(($name: ident: $t: ident)),*,) => {
             $(
-                impl ValidArg for $t {
+                impl IsArg for $t {
                     fn pack(self) -> Arg {
                         Arg::Simple(SimpleArg::$name(self))
                     }
@@ -1778,7 +1785,7 @@ pub mod client {
 
     }
 
-    impl ValidArg for Variant {
+    impl IsArg for Variant {
         fn pack(self) -> Arg {
             let val = self.get().expect("cannot serialize empty variant");
             Arg::Compound(CompoundArg::Variant(Box::new(val)))
@@ -1793,7 +1800,7 @@ pub mod client {
         }
     }
 
-    impl<T: ValidArg> ValidArg for Vec<T> {
+    impl<T: IsArg> IsArg for Vec<T> {
         fn pack(self) -> Arg {
             let kind = T::kinds();
             let contents = self.into_iter().map(T::pack).collect();
@@ -1815,7 +1822,7 @@ pub mod client {
         }
     }
 
-    impl<K: ValidArg + Eq + Hash, V: ValidArg> ValidArg for HashMap<K, V> {
+    impl<K: IsArg + Eq + Hash, V: IsArg> IsArg for HashMap<K, V> {
         fn pack(self) -> Arg {
             let tkey = K::kinds()[0];
             let tval = V::kinds();
@@ -1842,11 +1849,11 @@ pub mod client {
         }
     }
 
-    /// implement ValidArg for tuple types, which are packed into a dbus `struct`
+    /// implement IdArg for tuple types, which are packed into a dbus `struct`
     macro_rules! impl_valid_arg_tuple {
         ($([$(($num: tt, $big: ident, $small: ident)),*]),*,) => {
             $(
-                impl<$($big: ValidArg,)*> ValidArg for ($($big,)*) {
+                impl<$($big: IsArg,)*> IsArg for ($($big,)*) {
                     fn pack(self) -> Arg {
                         $(let $small = self.$num.pack();)*
                         Arg::Compound(CompoundArg::Struct(vec![$($small,)*]))
