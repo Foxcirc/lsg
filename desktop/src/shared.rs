@@ -1,4 +1,6 @@
 
+use crate::{InvokedNotifAction, NotifId};
+
 use super::{CustomIcon, DataOffer, DataWriter, DndHandle, Monitor, WindowId, MonitorId, DataSourceId};
 
 use bitflags::bitflags;
@@ -22,7 +24,7 @@ pub enum Event<T> {
     /// Requests you sending data to another client.
     DataSource { id: DataSourceId, event: DataSourceEvent },
     // /  Notification event. (eg. an action was invoked)
-    // Notif { id: NotifId, event: NotifEvent },
+    Notif { id: NotifId, event: NotifEvent },
 }
 
 #[derive(Debug)]
@@ -64,7 +66,7 @@ pub enum DataSourceEvent {
 #[derive(Debug)]
 /// Events for a notification.
 pub enum NotifEvent {
-    // ActionInvoked { action: InvokedNotifAction }
+    ActionInvoked { action: InvokedNotifAction }
 }
 
 #[derive(Debug)]

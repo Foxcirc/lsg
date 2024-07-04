@@ -185,7 +185,7 @@ pub(crate) struct Connection<T: 'static + Send> {
     queue: EventQueue<WaylandState<T>>,
 }
 
-impl<T: 'static + Send> Connection<T> { // TODO: rename to Connection?
+impl<T: 'static + Send> Connection<T> {
 
     pub fn new(application: &str) -> Result<Self, EvlError> {
 
@@ -341,7 +341,7 @@ impl WaylandGlobals {
             }
         });
 
-        // TODO: multiple seats?, switching and updating seats? how to handle it
+        // we don't support processing multiple seats
         let seat: WlSeat = globals.bind(qh, 1..=4, ())?;
 
         // bind the data device, for this seat
@@ -1456,6 +1456,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandSt
         _qh: &wayland_client::QueueHandle<Self>
     ) {
 
+        dbg!(&event);
+
         if let WlDataDeviceEvent::Enter { surface, x, y, id: wl_data_offer, .. } = event {
 
             if let Some(ref val) = wl_data_offer {
@@ -2329,6 +2331,7 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut WaylandState<T>, id: Wi
 // ### error handling ###
 
 #[derive(Debug)]
+// TODO: rethink this error type, have a generic variant, and concrete ones for things you care about (maybe Soft/Hard) ... see below ↓
 pub enum EvlError { // TODO: implement soft errors that can be "ignored" (eg. invalid locate will use en.US fallback)
     Connect(wayland_client::ConnectError),
     Wayland(wayland_client::backend::WaylandError),
@@ -2339,29 +2342,33 @@ pub enum EvlError { // TODO: implement soft errors that can be "ignored" (eg. in
     NoDisplay,
     WaylandEgl(wayland_egl::Error),
     Io(io::Error),
+    DbusMethod(dbus::MethodError),
+    DbusData(dbus::ArgError),
     InvalidKeymap,
     InvalidLocale,
     Unsupported,
     EglUnsupported,
 }
 
-impl fmt::Display for EvlError {
+impl fmt::Display for EvlError { // TODO: move to linux.rs
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "windowing error: {}", match self {
-            Self::Connect(value)    => value.to_string(),
-            Self::Wayland(value)    => value.to_string(),
-            Self::WaylandGlobals(value) => value.to_string(),
-            Self::BindGlobals(value) => value.to_string(),
-            Self::Dispatch(value)   => value.to_string(),
-            Self::Egl(value)        => value.to_string(),
-            Self::NoDisplay         => "cannot get egl display".to_string(),
-            Self::WaylandEgl(value) => value.to_string(),
-            Self::Io(value)         => value.to_string(),
-            Self::InvalidKeymap     => "invalid/unknown keymap".to_string(),
-            Self::InvalidLocale     => "invalid/unknown locale".to_string(),
-            Self::Unsupported       => "required wayland features not present".to_string(),
-            Self::EglUnsupported    => "required egl features not present".to_string(),
-        })
+        match self {
+            Self::Connect(val)        => write!(f, "can't connect: {}", val),
+            Self::Wayland(val)        => write!(f, "wayland: {}", val),
+            Self::WaylandGlobals(val) => write!(f, "wayland globals: {}", val),
+            Self::BindGlobals(val)    => write!(f, "wayland globals: {}", val),
+            Self::Dispatch(val)       => write!(f, "wayland dispatch: {}", val),
+            Self::Egl(val)            => write!(f, "egl: {}", val),
+            Self::NoDisplay           => write!(f, "cannot get egl display"),
+            Self::WaylandEgl(val)     => write!(f, "wayland egl: {}", val),
+            Self::Io(val)             => write!(f, "i/o: {}", val),
+            Self::DbusMethod(val)           => write!(f, "dbus error: {}, {}", val.name, val.desc),
+            Self::DbusData(val)           => write!(f, "dbus response data error: {:?}", val),
+            Self::InvalidKeymap       => write!(f, "invalid/unknown keymap"),
+            Self::InvalidLocale       => write!(f, "invalid/unknown locale"),
+            Self::Unsupported         => write!(f, "required wayland features not present"),
+            Self::EglUnsupported      => write!(f, "required egl features not present"),
+        }
     }
 }
 
@@ -2429,6 +2436,18 @@ impl From<wayland_egl::Error> for EvlError {
 impl From<io::Error> for EvlError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
+    }
+}
+
+impl From<dbus::MethodError> for EvlError {
+    fn from(value: dbus::MethodError) -> Self {
+        Self::DbusMethod(value)
+    }
+}
+
+impl From<dbus::ArgError> for EvlError {
+    fn from(value: dbus::ArgError) -> Self {
+        Self::DbusData(value)
     }
 }
 

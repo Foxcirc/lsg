@@ -17,11 +17,11 @@ use crate::*;
 
 use futures_lite::FutureExt;
 
-pub fn run<T, R, H>(handler: H, application: &str) -> Result<R, EvlError>
+pub fn run<T, R, H>(handler: H, app: &str) -> Result<R, EvlError>
     where T: 'static + Send,
           H: FnOnce(EventLoop<T>) -> R {
 
-    let target = EventLoop::new(application)?;
+    let target = EventLoop::new(app)?;
     Ok(handler(target))
 
 }
@@ -32,18 +32,18 @@ pub struct EventLoop<T: 'static + Send> {
     proxy: proxy::InnerProxy<T>,
     wayland: wayland::Connection<T>,
     signals: signals::SignalListener,
-    dbus: dbus::client::Connection,
+    dbus: dbus::Connection,
 }
 
 impl<T: 'static + Send> EventLoop<T> {
 
-    pub(crate) fn new(application: &str) -> Result<Self, EvlError> {
+    pub(crate) fn new(app: &str) -> Result<Self, EvlError> {
         Ok(Self {
             events: Vec::new(),
             proxy: proxy::InnerProxy::new(),
-            wayland: wayland::Connection::new(application)?,
+            wayland: wayland::Connection::new(app)?,
             signals: signals::SignalListener::new()?,
-            dbus: dbus::client::Connection::new()?,
+            dbus: dbus::Connection::new(app)?,
         })
     }
 
@@ -52,15 +52,16 @@ impl<T: 'static + Send> EventLoop<T> {
             .or(self.wayland.next())
             .or(self.proxy.next())
             .or(self.signals.next())
-            // .or(self.dbus.next())
+            .or(self.dbus.next())
             .await
     }
     
     /// Write pending requests. Call this during cleanup
     /// if you are no longer going to call `next`.
     pub async fn flush(&mut self) -> Result<(), EvlError> {
-        self.dbus.flush().await
-            .map_err(EvlError::Io)
+        // self.dbus.flush().await
+        //     .map_err(EvlError::Io)
+        Ok(())
     }
     
     /// On linux, this is a no-op.
@@ -90,6 +91,10 @@ impl<T: 'static + Send> EventLoop<T> {
 
     pub fn set_clip_board(&mut self, src: Option<&DataSource>) {
         self.wayland.set_clip_board(src)
+    }
+
+    pub fn send_notif(&mut self, notif: &NotifBuilder<'_>) -> Notif {
+        self.dbus.send_notif(notif)
     }
 
 }
