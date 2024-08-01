@@ -2184,7 +2184,7 @@ impl Drop for Notif {
         // call.arg(*id);
         // self.method_call(call);
 
-        let _maybe_closed = self.outgoing.try_send(Outgoing::InitialAuth);
+        let _maybe_closed = self.outgoing.try_send(Outgoing::InitialAuth); // TODO
 
     }
 }
