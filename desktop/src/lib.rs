@@ -1,4 +1,12 @@
 
+//! # Overview
+//! This crate is responsible for handling desktop environment specific stuff.
+//! This includes:
+//! 1. Windowing
+//! 2. Notifications
+//! 3. Status Icons
+//! 4. OpenGL (EGL)
+
 pub mod shared;
 pub use shared::*;
 

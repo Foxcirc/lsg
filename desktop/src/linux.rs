@@ -1,21 +1,22 @@
 
-// the main logic: windowing, egl, ...
+// windowing, ...
 pub mod wayland;
-use std::future;
-
 pub use wayland::*;
 
 // egl
 pub mod egl;
 pub use egl::*;
 
-// needed for notifications, status icons, ...
+// notifs, status icons, ...
 pub mod dbus;
 pub use dbus::*;
 
-use crate::*;
+use crate::shared::*;
 
+use std::future;
 use futures_lite::FutureExt;
+
+// TODO: add tracing
 
 pub fn run<T, R, H>(handler: H, app: &str) -> Result<R, EvlError>
     where T: 'static + Send,
@@ -93,6 +94,8 @@ impl<T: 'static + Send> EventLoop<T> {
         self.wayland.set_clip_board(src)
     }
 
+    // TODO: to mimic other api  (eg. set_clip_board ^^) this should take &Notif and return nothing
+    //       but what would happen if this is called multiple times then?
     pub fn send_notif(&mut self, notif: &NotifBuilder<'_>) -> Notif {
         self.dbus.send_notif(notif)
     }

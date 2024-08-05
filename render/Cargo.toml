@@ -1,5 +1,5 @@
 [package]
-name = "lsg-core"
+name = "render"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

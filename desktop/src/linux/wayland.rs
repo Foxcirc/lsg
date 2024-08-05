@@ -1072,7 +1072,9 @@ impl<T: 'static + Send> Drop for LayerWindow<T> {
 
 impl<T: 'static + Send> LayerWindow<T> {
 
-    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, Unsupported> {
+    /// # Errors
+    /// Will return `Unsupported` if the neceserry extension (ZwlrLayerShellV1) is not present.
+    pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, EvlError> {
 
         let base = BaseWindow::new(evl, size);
 
@@ -1089,7 +1091,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
         // creating this kind of window requires some wayland extensions 
         let layer_shell_mgr = evb.globals.layer_shell_mgr.as_ref().ok_or(
-            Unsupported(ZwlrLayerShellV1::interface().name)
+            EvlError::Unsupported { name: ZwlrLayerShellV1::interface().name }
         )?;
 
         // layer-shell role
@@ -1456,8 +1458,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandSt
         _qh: &wayland_client::QueueHandle<Self>
     ) {
 
-        dbg!(&event);
-
         if let WlDataDeviceEvent::Enter { surface, x, y, id: wl_data_offer, .. } = event {
 
             if let Some(ref val) = wl_data_offer {
@@ -1545,13 +1545,18 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandSt
 
         else if let WlDataDeviceEvent::Leave = event {
 
-            let surface = evl.offer_data.has_offer.as_ref().unwrap(); // TODO: this may be none for sameapp drops
-            let sameapp = evl.offer_data.dnd_active;
+            // this maybe sent twice :(, so has_offer could be None
+            if let Some(ref surface) = evl.offer_data.has_offer {
 
-            evl.events.push(Event::Window {
-                id: get_window_id(surface),
-                event: WindowEvent::Dnd { event: DndEvent::Cancel, sameapp },
-            });
+                evl.events.push(Event::Window {
+                    id: get_window_id(surface),
+                    event: WindowEvent::Dnd {
+                        event: DndEvent::Cancel,
+                        sameapp: evl.offer_data.dnd_active,
+                    },
+                });
+
+            }
 
             evl.offer_data.has_offer = None;
             evl.offer_data.current_offer = None;
@@ -1951,8 +1956,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                         xkb::KEYMAP_COMPILE_NO_FLAGS
                     ) } {
                         Ok(Some(val)) => val,
-                        Ok(None) => { evl.keyboard_data.keymap_error = Some(EvlError::InvalidKeymap); return },
-                        Err(err) => { evl.keyboard_data.keymap_error = Some(EvlError::Io(err));       return }
+                        Ok(None) => { evl.keyboard_data.keymap_error = Some("corrupt xkb keymap received".into()); return },
+                        Err(err) => { evl.keyboard_data.keymap_error = Some(err.into()); return }
                     }
                 };
 
@@ -1970,7 +1975,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                     xkb::COMPILE_NO_FLAGS
                 ) {
                     Ok(val) => val,
-                    Err(..) => { evl.keyboard_data.keymap_error = Some(EvlError::InvalidLocale); return }
+                    Err(..) => { evl.keyboard_data.keymap_error = Some(EvlError::InvalidLocale { value: locale.to_string_lossy().into() }); return }
                 };
 
                 let compose_state = xkb::compose::State::new(&compose_table, xkb::STATE_NO_FLAGS);
@@ -2331,123 +2336,97 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut WaylandState<T>, id: Wi
 // ### error handling ###
 
 #[derive(Debug)]
-// TODO: rethink this error type, have a generic variant, and concrete ones for things you care about (maybe Soft/Hard) ... see below ↓
-pub enum EvlError { // TODO: implement soft errors that can be "ignored" (eg. invalid locate will use en.US fallback)
-    Connect(wayland_client::ConnectError),
-    Wayland(wayland_client::backend::WaylandError),
-    WaylandGlobals(wayland_client::globals::GlobalError),
-    BindGlobals(BindError),
-    Dispatch(wayland_client::DispatchError),
-    Egl(egl::Error),
-    NoDisplay,
-    WaylandEgl(wayland_egl::Error),
-    Io(io::Error),
-    DbusMethod(dbus::MethodError),
-    DbusData(dbus::ArgError),
-    InvalidKeymap,
-    InvalidLocale,
-    Unsupported,
-    EglUnsupported,
+pub enum EvlError {
+    // TODO: document variants
+    Unsupported { name: &'static str, },
+    InvalidLocale { value: String },
+    Dbus { msg: String },
+    Fatal { msg: String },
 }
 
-impl fmt::Display for EvlError { // TODO: move to linux.rs
+impl fmt::Display for EvlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Connect(val)        => write!(f, "can't connect: {}", val),
-            Self::Wayland(val)        => write!(f, "wayland: {}", val),
-            Self::WaylandGlobals(val) => write!(f, "wayland globals: {}", val),
-            Self::BindGlobals(val)    => write!(f, "wayland globals: {}", val),
-            Self::Dispatch(val)       => write!(f, "wayland dispatch: {}", val),
-            Self::Egl(val)            => write!(f, "egl: {}", val),
-            Self::NoDisplay           => write!(f, "cannot get egl display"),
-            Self::WaylandEgl(val)     => write!(f, "wayland egl: {}", val),
-            Self::Io(val)             => write!(f, "i/o: {}", val),
-            Self::DbusMethod(val)           => write!(f, "dbus error: {}, {}", val.name, val.desc),
-            Self::DbusData(val)           => write!(f, "dbus response data error: {:?}", val),
-            Self::InvalidKeymap       => write!(f, "invalid/unknown keymap"),
-            Self::InvalidLocale       => write!(f, "invalid/unknown locale"),
-            Self::Unsupported         => write!(f, "required wayland features not present"),
-            Self::EglUnsupported      => write!(f, "required egl features not present"),
+            Self::Unsupported   { name }  => write!(f, "[missing feature] '{}'", name),
+            Self::InvalidLocale { value } => write!(f, "[invalid locale] '{}'", value),
+            Self::Dbus          { msg }   => write!(f, "[dbus call failed] '{}'", msg),
+            Self::Fatal         { msg }   => write!(f, "[fatal] '{}'", msg)
         }
     }
 }
 
 impl StdError for EvlError {}
 
-#[derive(Debug, Clone, Copy)]
-pub struct Unsupported(&'static str);
-
-impl fmt::Display for Unsupported {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "required wayland features not present: {}", self.0)
-    }
-}
-
-impl StdError for Unsupported {}
-
-impl From<nix::errno::Errno> for EvlError {
-    fn from(value: nix::errno::Errno) -> Self {
-        Self::Io(value.into())
+impl<'a> From<&'a str> for EvlError {
+    fn from(value: &'a str) -> Self {
+        Self::Fatal { msg: value.into() }
     }
 }
 
 impl From<wayland_client::ConnectError> for EvlError {
     fn from(value: wayland_client::ConnectError) -> Self {
-        Self::Connect(value)
+        Self::Fatal { msg: format!("cannot connect to wayland, {}", value) }
     }
 }
 
 impl From<wayland_client::globals::GlobalError> for EvlError {
     fn from(value: wayland_client::globals::GlobalError) -> Self {
-        Self::WaylandGlobals(value)
-    }
-}
-
-impl From<wayland_client::backend::WaylandError> for EvlError {
-    fn from(value: wayland_client::backend::WaylandError) -> Self {
-        Self::Wayland(value)
+        Self::Fatal { msg: format!("failed to get wayland globals, {}", value) }
     }
 }
 
 impl From<BindError> for EvlError {
     fn from(value: BindError) -> Self {
-        Self::BindGlobals(value)
+        Self::Fatal { msg: format!("failed to get wayland global, {}", value) }
+    }
+}
+
+impl From<wayland_client::backend::WaylandError> for EvlError {
+    fn from(value: wayland_client::backend::WaylandError) -> Self {
+        Self::Fatal { msg: format!("failed wayland call, {}", value) }
     }
 }
 
 impl From<wayland_client::DispatchError> for EvlError {
     fn from(value: wayland_client::DispatchError) -> Self {
-        Self::Dispatch(value)
+        Self::Fatal { msg: format!("failed wayland dispatch, {}", value) }
     }
 }
 
 impl From<egl::Error> for EvlError {
     fn from(value: egl::Error) -> Self {
-        Self::Egl(value)
+        Self::Fatal { msg: format!("failed egl call, {}", value) }
     }
 }
 
 impl From<wayland_egl::Error> for EvlError {
     fn from(value: wayland_egl::Error) -> Self {
-        Self::WaylandEgl(value)
+        Self::Fatal { msg: format!("failed wayland-egl call, {}", value) }
+    }
+}
+
+impl From<nix::errno::Errno> for EvlError {
+    fn from(value: nix::errno::Errno) -> Self {
+        Self::Fatal { msg: format!("failed I/O, {}", value) }
     }
 }
 
 impl From<io::Error> for EvlError {
     fn from(value: io::Error) -> Self {
-        Self::Io(value)
+        Self::Fatal { msg: format!("failed I/O, {}", value) }
     }
 }
 
 impl From<dbus::MethodError> for EvlError {
     fn from(value: dbus::MethodError) -> Self {
-        Self::DbusMethod(value)
+        // description handeled inside EvlError::Display::fmt
+        Self::Dbus { msg: format!("{:?}", value) }
     }
 }
 
 impl From<dbus::ArgError> for EvlError {
     fn from(value: dbus::ArgError) -> Self {
-        Self::DbusData(value)
+        // description handeled inside EvlError::Display::fmt
+        Self::Dbus { msg: format!("{:?}", value) }
     }
 }
-

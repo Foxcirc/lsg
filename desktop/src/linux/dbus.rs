@@ -287,8 +287,7 @@ impl Connection {
 
         loop {
 
-            let incoming = self.incoming().await
-                .map_err(EvlError::Io)?;
+            let incoming = self.incoming().await?;
 
             if let Incoming::Reply(serial, result) = incoming {
                 let mut reply = result?;

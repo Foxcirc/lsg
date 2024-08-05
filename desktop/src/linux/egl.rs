@@ -28,7 +28,7 @@ impl EglInstance {
         
         let loaded = unsafe {
             egl::DynamicInstance::<egl::EGL1_0>::load_required()
-                .map_err(|_| EvlError::EglUnsupported)?
+                .map_err(|_| "failed to load egl 1.0")? // NOTE: don't forget to update egl version in error message
         };
 
         let lib = Arc::new(loaded);
@@ -36,7 +36,7 @@ impl EglInstance {
         let wl_display = evh.wayland.state.con.get_ref().display().id().as_ptr();
         let egl_display = unsafe {
             lib.get_display(wl_display.cast())
-        }.ok_or(EvlError::NoDisplay)?;
+        }.ok_or("no display")?;
 
         lib.initialize(egl_display)?;
 
@@ -45,6 +45,8 @@ impl EglInstance {
         let func = lib.get_proc_address("eglSwapBuffersWithDamageKHR");
         let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
             unsafe { mem::transmute(func) };
+
+        // TODO: trace (log) presence of swap bufs with dmg func (does it exist?)
 
         Ok(Arc::new(Self {
             lib,
@@ -173,7 +175,7 @@ impl EglContext {
                 egl::NONE
             ];
             instance.lib.choose_first_config(instance.display, &attribs)?
-                .ok_or(EvlError::EglUnsupported)?
+                .ok_or("failed to choose an egl config (normal context)")?
         };
 
         let wl_egl_surface = wayland_egl::WlEglSurface::new(
@@ -219,19 +221,14 @@ impl EglContext {
     /// Returns an error if this context is not the current one.
     #[track_caller]
     pub fn swap_buffers(&mut self, damage: Option<&[Rect]>, token: PresentToken) -> Result<(), EvlError> {
-
         debug_assert!(self.id == token.id, "present token for another window");
-
         self.inner.swap_buffers(damage)
-
     }
 
     /// Don't forget to also resize your opengl viewport!
     pub fn resize(&mut self, size: Size) {
-
         self.inner.size = size;
         self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
-        
     }
 
 }
@@ -256,7 +253,7 @@ impl EglPixelBuffer {
                 egl::NONE
             ];
             instance.lib.choose_first_config(instance.display, &attribs)?
-                .ok_or(EvlError::EglUnsupported)?
+                .ok_or("failed to choose an egl config (pbuffer)")?
         };
 
         let surface = instance.lib.create_pbuffer_surface(
