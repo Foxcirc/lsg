@@ -29,7 +29,7 @@ pub fn run<T, R, H>(handler: H, app: &str) -> Result<R, EvlError>
 
 // TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
 pub struct EventLoop<T: 'static + Send> {
-    events: Vec<Event<T>>,
+    events: AwaitableVec<Event<T>>,
     proxy: proxy::InnerProxy<T>,
     wayland: wayland::Connection<T>,
     signals: signals::SignalListener,
@@ -40,7 +40,7 @@ impl<T: 'static + Send> EventLoop<T> {
 
     pub(crate) fn new(app: &str) -> Result<Self, EvlError> {
         Ok(Self {
-            events: Vec::new(),
+            events: AwaitableVec::new(Vec::new()),
             proxy: proxy::InnerProxy::new(),
             wayland: wayland::Connection::new(app)?,
             signals: signals::SignalListener::new()?,
@@ -49,7 +49,7 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
-        pop_event(&mut self.events)
+        self.events.next()
             .or(self.wayland.next())
             .or(self.proxy.next())
             .or(self.signals.next())
@@ -70,25 +70,20 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub fn suspend(&mut self) {
-        self.events.push(Event::Suspend);
+        self.events.inner.push(Event::Suspend);
     }
 
     pub fn resume(&mut self) {
-        self.events.push(Event::Resume);
+        self.events.inner.push(Event::Resume);
     }
 
     pub fn quit(&mut self) {
-        self.events.push(Event::Quit { reason: QuitReason::User });
+        self.events.inner.push(Event::Quit { reason: QuitReason::User });
     }
 
     pub fn get_selection(&mut self) -> Option<DataOffer> {
         // TODO: maybe we should also emit a ClipBoardChanged event instead of this
         self.wayland.get_clip_board()
-    }
-
-    // TODO: docs-rs alias to "clipboard" or smth
-    pub fn set_selection(&mut self, src: Option<&DataSource>) {
-        self.wayland.set_clip_board(src)
     }
 
     // TODO: to mimic other api  (eg. set_clip_board ^^) this should take &Notif and return nothing
@@ -99,13 +94,24 @@ impl<T: 'static + Send> EventLoop<T> {
 
 }
 
-// TODO: make pop_event not a function but make a type "Queue" or smth that does this
-async fn pop_event<T>(events: &mut Vec<Event<T>>) -> Result<Event<T>, EvlError> {
-    if let Some(val) = events.pop() {
-        Ok(future::ready(val).await)
-    } else {
-        future::pending().await
+struct AwaitableVec<T> {
+    pub inner: Vec<T>,
+}
+
+impl<T> AwaitableVec<T> {
+
+    pub fn new(inner: Vec<T>) -> Self {
+        Self { inner }
     }
+
+    pub async fn next(&mut self) -> Result<T, EvlError> { // TODO: infallible as error type?
+        if let Some(val) = self.inner.pop() {
+            Ok(val)
+        } else {
+            future::pending().await
+        }
+    }
+
 }
 
 pub use proxy::*;

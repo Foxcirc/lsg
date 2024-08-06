@@ -296,15 +296,6 @@ impl<T: 'static + Send> Connection<T> {
 
     }
 
-    pub fn set_clip_board(&mut self, ds: Option<&DataSource>) {
-
-        self.state.globals.data_device.set_selection(
-            ds.map(|val| &val.wl_data_source),
-            self.state.last_serial
-        );
-
-    }
-
 }
 
 fn ignore_wouldblock<T>(result: Result<T, WaylandError>) -> Result<(), WaylandError> {
@@ -860,7 +851,7 @@ fn get_data_source_id(ds: &WlDataSource) -> DataSourceId {
 }
 
 pub struct DataSource {
-    id: DataSourceId,
+    pub id: DataSourceId,
     wl_data_source: WlDataSource,
 }
 
@@ -873,6 +864,24 @@ impl Drop for DataSource {
 
 impl DataSource {
 
+    /// Create a DataSource that will be the new selection.
+    ///
+    /// In other words this "sets the selection (clipboard)". You will receive events for this DataSource when another client
+    /// wants to read from the selection.
+    // TODO + DOCS: docs-rs alias to "clipboard" or smth
+    pub fn selection<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
+
+        let this = Self::new(evl, offers, mode);
+        
+        evl.wayland.state.globals.data_device.set_selection(
+            Some(&this.wl_data_source),
+            evl.wayland.state.last_serial
+        );
+
+        this
+
+    }
+
     #[track_caller]
     pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
 
@@ -883,10 +892,8 @@ impl DataSource {
         let wl_data_source = evb.globals.data_device_mgr.create_data_source(&evb.qh, mode);
 
         for offer in offers {
-
             let mime_type = offer.to_mime_type();
             wl_data_source.offer(mime_type.to_string()); // why do all wayland methods take String's and not &str
-
         }
 
         // actions are not implemented right now
