@@ -84,10 +84,10 @@ struct CursorData {
 }
 
 #[derive(Default)]
+/// Used for handling drag-and-drop.
 struct OfferData {
     has_offer: Option<WlSurface>,
     current_offer: Option<WlDataOffer>,
-    current_selection: Option<WlDataOffer>,
     x: f64, y: f64,
     dnd_active: bool,
     dnd_icon: Option<CustomIcon>, // set when Window::start_drag_and_drop is called
@@ -279,21 +279,6 @@ impl<T: 'static + Send> Connection<T> {
 
         }
         
-    }
-
-    pub fn get_clip_board(&mut self) -> Option<DataOffer> {
-
-        let wl_data_offer = self.state.offer_data.current_selection.clone()?;
-        let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
-        let kinds = *data.lock().unwrap(); // copy the bitflags
-
-        Some(DataOffer {
-            wl_data_offer,
-            con: self.state.con.get_ref().clone(), // should be pretty cheap
-            kinds,
-            dnd: false,
-        })
-
     }
 
 }
@@ -1570,9 +1555,30 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandSt
 
         }
     
-        else if let WlDataDeviceEvent::Selection { id: wl_data_offer } = event {
+        else if let WlDataDeviceEvent::Selection { id: value /* not an id! */ } = event {
 
-            evl.offer_data.current_selection = wl_data_offer;
+            // the data offer will have already been "introduced", so we have received all
+            // advertised data kinds
+
+            if let Some(wl_data_offer) = value {
+                
+                let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
+                let kinds = *data.lock().unwrap(); // copy the bitflags
+
+                let offer = Some(DataOffer {
+                    wl_data_offer,
+                    con: evl.con.get_ref().clone(), // should be pretty cheap
+                    kinds,
+                    dnd: false,
+                });
+
+                evl.events.push(Event::SelectionUpdate { offer });
+
+            } else {
+                
+                evl.events.push(Event::SelectionUpdate { offer: None });
+
+            }
 
         }
 
@@ -2029,9 +2035,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
 
                     evl.keyboard_data.has_focus = None;
 
-                    // also clear out selection WlDataOffer
-
-                    evl.offer_data.current_selection = None;
+                    // also invalidate selection, to be more correct
+                    evl.events.push(Event::SelectionUpdate { offer: None });
                     
                 };
 

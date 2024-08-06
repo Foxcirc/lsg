@@ -23,7 +23,10 @@ pub enum Event<T> {
     Window { id: WindowId, event: WindowEvent },
     /// Requests you sending data to another client.
     DataSource { id: DataSourceId, event: DataSourceEvent },
-    // /  Notification event. (eg. an action was invoked)
+    /// The selection changed. This event will not be send if your app isn't in focus.
+    /// `None` indicates that the current selection was invalidated.
+    SelectionUpdate { offer: Option<DataOffer> },
+    ///  Notification event. (eg. an action was invoked)
     Notif { id: NotifId, event: NotifEvent },
 }
 

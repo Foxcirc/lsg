@@ -42,6 +42,8 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let mut max = false;
     let mut dnd_ready = false;
 
+    let mut current_selection = None;
+
     // run the event loop
     block_on(async {
 
@@ -64,6 +66,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                     println!("refresh as fps: {}", state.info().fps());
                 },
                 Event::MonitorRemove { .. } => todo!(),
+                Event::SelectionUpdate { offer } => current_selection = offer,
                 Event::Window { id, event } if id == window.id() => match event {
                     WindowEvent::Close => {
                         // drop(window);
@@ -148,7 +151,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                             popup_ctx.take();
                         }
                         else if let Key::ArrowDown = key {
-                            if let Some(offer) = evl.get_selection() {
+                            if let Some(ref offer) = current_selection {
                                 let mut stream = offer.receive(DataKinds::TEXT, IoMode::Blocking).unwrap();
                                 let mut buf = String::new();
                                 let _res = stream.read_to_string(&mut buf);

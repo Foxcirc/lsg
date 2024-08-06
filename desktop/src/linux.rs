@@ -81,13 +81,7 @@ impl<T: 'static + Send> EventLoop<T> {
         self.events.inner.push(Event::Quit { reason: QuitReason::User });
     }
 
-    pub fn get_selection(&mut self) -> Option<DataOffer> {
-        // TODO: maybe we should also emit a ClipBoardChanged event instead of this
-        self.wayland.get_clip_board()
-    }
-
-    // TODO: to mimic other api  (eg. set_clip_board ^^) this should take &Notif and return nothing
-    //       but what would happen if this is called multiple times then?
+    // TODO: make it be Notif::new(&mut evl) instead
     pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
         self.dbus.send_notification(notif)
     }
