@@ -70,15 +70,15 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub fn suspend(&mut self) {
-        self.events.inner.push(Event::Suspend);
+        self.events.push(Event::Suspend);
     }
 
     pub fn resume(&mut self) {
-        self.events.inner.push(Event::Resume);
+        self.events.push(Event::Resume);
     }
 
     pub fn quit(&mut self) {
-        self.events.inner.push(Event::Quit { reason: QuitReason::User });
+        self.events.push(Event::Quit { reason: QuitReason::User });
     }
 
     // TODO: make it be Notif::new(&mut evl) instead
@@ -96,6 +96,10 @@ impl<T> AwaitableVec<T> {
 
     pub fn new(inner: Vec<T>) -> Self {
         Self { inner }
+    }
+
+    pub fn push(&mut self, value: T) {
+        self.inner.push(value)
     }
 
     pub async fn next(&mut self) -> Result<T, EvlError> { // TODO: infallible as error type?
