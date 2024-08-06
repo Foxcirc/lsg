@@ -36,7 +36,7 @@ fn notifs() {
         let mut con = Connection::new("lsg/test").unwrap();
 
         let builder = Notif::build("what if all isn't worth it?");
-        let notif = con.send_notif(&builder);
+        let notif = con.send_notification(&builder);
 
         loop {
             let ev: Event<()> = con.next().await.unwrap();
@@ -333,7 +333,7 @@ impl Connection {
 
     }
 
-    async fn flush(&mut self) -> Result<(), EvlError> {
+    pub async fn flush(&mut self) -> Result<(), EvlError> {
 
 
         while let Ok(req) = self.receiver.try_recv() {
@@ -350,7 +350,7 @@ impl Connection {
         
     }
 
-    pub fn send_notif(&mut self, notif: &NotifBuilder<'_>) -> Notif {
+    pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
 
         let mut call = MethodCall::new(
             "org.freedesktop.Notifications",

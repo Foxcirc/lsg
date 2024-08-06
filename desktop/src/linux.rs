@@ -60,18 +60,13 @@ impl<T: 'static + Send> EventLoop<T> {
     /// Write pending requests. Call this during cleanup
     /// if you are no longer going to call `next`.
     pub async fn flush(&mut self) -> Result<(), EvlError> {
-        // self.dbus.flush().await
-        //     .map_err(EvlError::Io)
-        Ok(())
+        // eg. close a notification
+        self.dbus.flush().await
     }
     
     /// On linux, this is a no-op.
     pub fn on_main_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
         func() // on linux the event loop runs on the main thread
-    }
-
-    pub fn new_proxy(& self) -> EventProxy<T> {
-        self.proxy.new_proxy()
     }
 
     pub fn suspend(&mut self) {
@@ -86,22 +81,25 @@ impl<T: 'static + Send> EventLoop<T> {
         self.events.push(Event::Quit { reason: QuitReason::User });
     }
 
-    pub fn get_clip_board(&mut self) -> Option<DataOffer> {
+    pub fn get_selection(&mut self) -> Option<DataOffer> {
+        // TODO: maybe we should also emit a ClipBoardChanged event instead of this
         self.wayland.get_clip_board()
     }
 
-    pub fn set_clip_board(&mut self, src: Option<&DataSource>) {
+    // TODO: docs-rs alias to "clipboard" or smth
+    pub fn set_selection(&mut self, src: Option<&DataSource>) {
         self.wayland.set_clip_board(src)
     }
 
     // TODO: to mimic other api  (eg. set_clip_board ^^) this should take &Notif and return nothing
     //       but what would happen if this is called multiple times then?
-    pub fn send_notif(&mut self, notif: &NotifBuilder<'_>) -> Notif {
-        self.dbus.send_notif(notif)
+    pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
+        self.dbus.send_notification(notif)
     }
 
 }
 
+// TODO: make pop_event not a function but make a type "Queue" or smth that does this
 async fn pop_event<T>(events: &mut Vec<Event<T>>) -> Result<Event<T>, EvlError> {
     if let Some(val) = events.pop() {
         Ok(future::ready(val).await)
@@ -118,8 +116,8 @@ pub mod proxy {
     use crate::*;
 
     pub(crate) struct InnerProxy<T> {
-        sender: AsyncSender<Event<T>>,
-        receiver: AsyncReceiver<Event<T>>,
+        pub(crate) sender: AsyncSender<Event<T>>,
+        pub(crate) receiver: AsyncReceiver<Event<T>>,
     }
 
     impl<T> InnerProxy<T> {
@@ -129,29 +127,27 @@ pub mod proxy {
             Self { sender, receiver }
         }
 
-        pub fn new_proxy(&self) -> EventProxy<T> {
-            EventProxy {
-                sender: self.sender.clone(),
-            }
-        }
-
         pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
             Ok(self.receiver.recv().await.unwrap())
         }
         
     }
     
-    pub struct EventProxy<T> {
+    pub struct EventProxy<T: Send> {
         sender: AsyncSender<Event<T>>,
     }
 
-    impl<T> Clone for EventProxy<T> {
+    impl<T: Send> Clone for EventProxy<T> {
         fn clone(&self) -> Self {
             Self { sender: self.sender.clone() }
         }
     }
 
-    impl<T> EventProxy<T> {
+    impl<T: Send> EventProxy<T> {
+
+        pub fn new(evl: &EventLoop<T>) -> Self {
+            Self { sender: evl.proxy.sender.clone() }
+        }
 
         #[track_caller]
         pub fn send(&self, event: Event<T>) {

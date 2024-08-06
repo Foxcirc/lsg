@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
 
-    let proxy = evl.new_proxy();
+    let proxy = EventProxy::new(&evl);
     proxy.send(Event::User("lsg-test"));
 
     // we will be using the built-in gl functionality
@@ -148,7 +148,7 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
                             popup_ctx.take();
                         }
                         else if let Key::ArrowDown = key {
-                            if let Some(offer) = evl.get_clip_board() {
+                            if let Some(offer) = evl.get_selection() {
                                 let mut stream = offer.receive(DataKinds::TEXT, IoMode::Blocking).unwrap();
                                 let mut buf = String::new();
                                 let _res = stream.read_to_string(&mut buf);
