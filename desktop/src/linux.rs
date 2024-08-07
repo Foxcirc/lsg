@@ -18,6 +18,8 @@ use futures_lite::FutureExt;
 
 // TODO: add tracing
 
+// TODO: add better and more unit-tests
+
 pub fn run<T, R, H>(handler: H, app: &str) -> Result<R, EvlError>
     where T: 'static + Send,
           H: FnOnce(EventLoop<T>) -> R {

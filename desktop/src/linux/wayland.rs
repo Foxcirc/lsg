@@ -228,14 +228,18 @@ impl<T: 'static + Send> Connection<T> {
             // flush all outgoing requests
             // i forgot this and had to debug 10+ hours... fuckkk me
             self.state.con.get_ref().flush()?; 
+
+            let guard = {
+                let _span = tracing::span!(tracing::Level::TRACE, "lsg::wayland").entered();
             
-            // process all events that we've stored
-            let guard = loop {
-                self.queue.dispatch_pending(&mut self.state)?;
-                match self.queue.prepare_read() {
-                    Some(val) => break val,
-                    None => continue,
-                };
+                // process all events that we've stored
+                loop {
+                    self.queue.dispatch_pending(&mut self.state)?;
+                    match self.queue.prepare_read() {
+                        Some(val) => break val,
+                        None => continue,
+                    }
+                }
             };
 
             if let Some(error) = self.state.keyboard_data.keymap_error.take() {
@@ -308,6 +312,7 @@ struct WaylandGlobals {
 }
 
 impl WaylandGlobals {
+
     pub fn from_globals<T: 'static + Send>(monitor_data: &mut HashSet<MonitorId>, globals: GlobalList, qh: &QueueHandle<WaylandState<T>>) -> Result<Self, BindError> {
 
         // bind the primary monitor we already retreived
@@ -324,7 +329,7 @@ impl WaylandGlobals {
         let data_device_mgr: WlDataDeviceManager = globals.bind(qh, 1..=3, ())?; // < v3 doesn't emit cancelled events
         let data_device = data_device_mgr.get_data_device(&seat, qh, ());
 
-        Ok(Self {
+        let this = Self {
             compositor: globals.bind(qh, 4..=6, ())?,
             wm: globals.bind(qh, 1..=1, ())?,
             shm: globals.bind(qh, 1..=1, ())?,
@@ -333,14 +338,34 @@ impl WaylandGlobals {
             shape_device: None,
             data_device_mgr,
             data_device,
-            frac_scale_mgrs: globals.bind(qh, 1..=1, ()).ok() .and_then( // only Some if both are present
+            frac_scale_mgrs: globals.bind(qh, 1..=1, ()).ok().and_then( // only Some if both are present
                 |vp| Some((vp, globals.bind(qh, 1..=1, ()).ok()?)))
                 .map(|(vp, frc)| FracScaleMgrs { viewport_mgr: vp, frac_scaling_mgr: frc }),
             decoration_mgr: globals.bind(qh, 1..=1, ()).ok(),
             layer_shell_mgr: globals.bind(qh, 1..=1, ()).ok(),
             activation_mgr: globals.bind(qh, 1..=1, ()).ok(),
             cursor_shape_mgr: globals.bind(qh, 1..=1, ()).ok(),
-        })
+        };
+
+        // TODO: what happens if cursor shape feature is not present?
+
+        let _span = tracing::trace_span!("lsg::globals").entered();
+
+        tracing::trace!(
+            "wayland globals arquired, additional features:
+                - fractional scaling: {},
+                - server side decorations: {},
+                - layer shell: {},
+                - surface activations: {},
+                - predefined cursor shapes: {}",
+            this.frac_scale_mgrs.is_some(),
+            this.decoration_mgr.is_some(),
+            this.layer_shell_mgr.is_some(),
+            this.activation_mgr.is_some(),
+            this.cursor_shape_mgr.is_some()
+        );
+
+        Ok(this)
 
     }
 }
@@ -561,7 +586,9 @@ impl<T: 'static + Send> Window<T> {
 
     pub fn destroy(self) {}
 
-    pub fn set_input_mode(&self, evl: &mut EventLoop<T>, mode: InputMode) {
+    pub fn set_input_mode(&mut self, evl: &mut EventLoop<T>, mode: InputMode) {
+        // TODO: this is not a good approach, instead we should always emit both types of events
+        //       for example it would not be possible to listen on CTRL when typing into a text box
         evl.wayland.state.keyboard_data.input_modes.
             insert(self.base.id, mode);
     }
@@ -571,7 +598,7 @@ impl<T: 'static + Send> Window<T> {
         self.xdg_decoration.as_ref().map(|val| val.set_mode(mode));
     }
 
-    pub fn set_title<S: Into<String>>(&self, text: S) {
+    pub fn set_title<S: Into<String>>(&mut self, text: S) {
         self.xdg_toplevel.set_title(text.into());
     }
 
@@ -584,7 +611,7 @@ impl<T: 'static + Send> Window<T> {
         self.base.wl_surface.commit();
     }
 
-    pub fn set_fullscreen(&self, value: bool, monitor: Option<&Monitor>) {
+    pub fn set_fullscreen(&mut self, value: bool, monitor: Option<&Monitor>) {
         if value {
             let wl_output = monitor.map(|val| &val.wl_output);
             self.xdg_toplevel.set_fullscreen(wl_output);
@@ -605,14 +632,14 @@ impl<T: 'static + Send> Window<T> {
         self.base.wl_surface.commit();
     }
 
-    pub fn force_size(&mut self, optional_size: Option<Size>) {
+    pub fn fixed_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
         self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
         self.base.wl_surface.commit();
     }
 
-    pub fn request_user_attention(&self, evl: &mut EventLoop<T>, urgency: Urgency) {
+    pub fn request_user_attention(&mut self, evl: &mut EventLoop<T>, urgency: Urgency) {
 
         let evb = &mut evl.wayland.state;
 
@@ -642,7 +669,8 @@ impl<T: 'static + Send> Window<T> {
     /// You should only start a drag-and-drop when the left mouse button is held down
     /// *and* the user then moves the mouse.
     /// Otherwise the request may be denied or visually broken.
-    pub fn start_drag_and_drop(&self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
+    // TODO: make this DataSource::dnd
+    pub fn start_drag_and_drop(&mut self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
 
         let evb = &mut evl.wayland.state;
 
@@ -658,7 +686,9 @@ impl<T: 'static + Send> Window<T> {
 
     }
 
-    pub fn set_cursor(&self, evl: &mut EventLoop<T>, style: CursorStyle) {
+    // TODO: in theory all window funcs only need &self not &mut self, decide on this and make the API homogenous
+
+    pub fn set_cursor(&mut self, evl: &mut EventLoop<T>, style: CursorStyle) {
 
         let evb = &mut evl.wayland.state;
 
@@ -1625,7 +1655,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for Wayla
         if let WlDataSourceEvent::Send { mime_type, fd } = event {
 
             // always set nonblocking mode explicitly
-            let old_flags = fcntl::fcntl(fd.as_raw_fd(), fcntl::FcntlArg::F_GETFL).expect("handle error");
+            let old_flags = fcntl::fcntl(fd.as_raw_fd(), fcntl::FcntlArg::F_GETFL).expect("handle error"); // TODO:!!!
             let mut new_flags = OFlag::from_bits_retain(old_flags);
             if let IoMode::Nonblocking = mode { new_flags.insert(OFlag::O_NONBLOCK) }
             else { new_flags.remove(OFlag::O_NONBLOCK) };
@@ -1995,7 +2025,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
 
                 evl.keyboard_data.keymap_specific = Some(KeymapSpecificData {
                     xkb_state, compose_state, pressed_keys
-                })
+                });
+
+                tracing::trace!("keymap set, locale: {:?}", &locale);
                 
             },
 
@@ -2067,6 +2099,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
             },
 
             WlKeyboardEvent::RepeatInfo { rate, delay } => {
+
+                tracing::trace!("key repeat info, rate: {}, delay: {}", rate, delay);
 
                 if rate > 0 {
                     evl.keyboard_data.repeat_rate = Duration::from_millis(1000 / rate as u64);
@@ -2156,7 +2190,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32,
         if !modifier {
 
             // only re-arm if this was NOT called from a repeated key event
-            if source == Source::Event {
+            if source != Source::KeyRepeat {
 
                 evl.keyboard_data.repeat_key = raw_key;
 

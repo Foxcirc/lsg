@@ -17,9 +17,7 @@ signals = ["async-signals"]
 [dependencies]
 
 # tracing
-# tracing = "0.1.40"
-# tracing-subscriber = { version = "0.3.18", default-features = false, features = ["std", "fmt"] }
-# TODO: use tracing or not?, async-io uses it anyways
+tracing = "0.1.40"
 
 # egl
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
@@ -46,5 +44,9 @@ async-signals = { version = "0.4.0", optional = true }
 
 [dev-dependencies]
 
+# tracing
+tracing-subscriber = { version = "0.3.18", default-features = false, features = ["fmt", "ansi"] }
+
 # for testing the windowing portion of lsg/desktop
 gl = { path = "../gl" }
+
