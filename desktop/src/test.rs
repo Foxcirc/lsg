@@ -59,13 +59,23 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+
+    /// Returns 3 [x, y, 0.0] points.
+    /// Size is like 0.01 for a small one.
+    fn indicator_triangle(p: [f32; 2], size: f32) -> [f32; 9] {
+        [
+            p[0],        p[1] + size, 0.0,
+            p[0] + size, p[1] - size, 0.0,
+            p[0] - size, p[1] - size, 0.0
+        ]
+    }
+
     let mut resolution = 20;
     let mut points = Vec::with_capacity(resolution);
 
-    let vao = gl::gen_vertex_array();
-    let vbo = gl::gen_buffer(gl::BufferType::ArrayBuffer);
-
-    gl::vertex_attribs(&vao, &vbo, 0, 3, gl::DataType::Float, false, 4 * 3, 0);
+    let vertex_array = gl::gen_vertex_array();
+    let curve_buffer = gl::gen_buffer(gl::BufferType::ArrayBuffer);
+    gl::vertex_attribs(&vertex_array, &curve_buffer, 0, 3, gl::DataType::Float, false, 4 * 3, 0);
 
     const VERT: &str = "#version 320 es
         precision mediump float;
@@ -112,13 +122,13 @@ fn app(mut evl: EventLoop<&str>) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Redraw => {
 
-                        bezier_curve(resolution, p0, p1, p2, &mut points);
-                        gl::buffer_data(&vbo, &points, gl::DrawHint::Dynamic);
-
                         gl::clear(0.0, 0.0, 0.0, 1.0);
-                        // tracing::info!("{points:?}");
-                        gl::draw_arrays(&linked, &vao, gl::Primitive::LineStrip, 0, points.len() / 3);
-                        
+
+                        // render the curve
+                        bezier_curve(resolution, p0, p1, p2, &mut points);
+                        gl::buffer_data(&curve_buffer, &points, gl::DrawHint::Dynamic);
+                        gl::draw_arrays(&linked, &vertex_array, gl::Primitive::LineStrip, 0, points.len() / 3);
+
                         let token = window.pre_present_notify();
                         ctx.swap_buffers(None, token).unwrap();
 
