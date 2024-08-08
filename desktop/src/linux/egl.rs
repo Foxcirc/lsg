@@ -46,7 +46,13 @@ impl EglInstance {
         let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
             unsafe { mem::transmute(func) };
 
-        // TODO: trace (log) presence of swap bufs with dmg func (does it exist?)
+        {
+            let _span = tracing::span!(tracing::Level::TRACE, "EglNewInstance").entered();
+            tracing::trace!(
+                "swap_buffers_with_damage extension present: {}",
+                swap_buffers_with_damage.is_some()
+            );
+        }
 
         Ok(Arc::new(Self {
             lib,
@@ -79,7 +85,7 @@ impl Drop for EglBase {
 
 impl EglBase {
 
-    /// Create a new egl context that will draw onto the given window.
+    /// Create a new egl context that will draw onto the given surface.
     pub(crate) fn new(instance: &Arc<EglInstance>, surface: egl::Surface, config: egl::Config, size: Size) -> Result<Self, EvlError> {
 
         let context = {
@@ -167,7 +173,7 @@ impl EglContext {
         let config = {
             let attribs = [
                 egl::SURFACE_TYPE, egl::WINDOW_BIT,
-                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
+                egl::RENDERABLE_TYPE, egl::OPENGL_BIT,
                 egl::RED_SIZE, 8,
                 egl::GREEN_SIZE, 8,
                 egl::BLUE_SIZE, 8,
@@ -245,7 +251,7 @@ impl EglPixelBuffer {
         let config = {
             let attribs = [
                 egl::SURFACE_TYPE, egl::PBUFFER_BIT,
-                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
+                // egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
                 egl::RED_SIZE, 8,
                 egl::GREEN_SIZE, 8,
                 egl::BLUE_SIZE, 8,

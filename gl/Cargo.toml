@@ -7,3 +7,4 @@ authors.workspace = true
 [dependencies]
 gl = "0.14.0"
 num_enum = "0.7.2"
+tracing = "0.1.40"

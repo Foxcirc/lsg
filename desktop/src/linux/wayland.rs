@@ -473,7 +473,7 @@ impl<T: 'static + Send> BaseWindow<T> {
     }
 
     #[track_caller]
-    pub fn request_redraw(&self, token: PresentToken) {
+    pub fn redraw(&self, token: PresentToken) {
         debug_assert!(self.id == token.id, "token for another window, see PresentToken docs");
         let mut guard = self.shared.lock().unwrap();
         guard.redraw_requested = true;
@@ -698,6 +698,11 @@ impl<T: 'static + Send> Window<T> {
         // immediatly apply the style
         process_new_cursor_style(evb, self.base.id);
 
+    }
+
+    pub fn surface(&self) -> *mut std::ffi::c_void {
+        use wayland_client::Proxy;
+        self.wl_surface.id().as_ptr().cast()
     }
 
 }

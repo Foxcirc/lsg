@@ -88,6 +88,11 @@ impl<T: 'static + Send> EventLoop<T> {
         self.dbus.send_notification(notif)
     }
 
+    pub fn display(&self) -> *mut std::ffi::c_void {
+        use wayland_client::Proxy;
+        self.wayland.state.con.get_ref().display().id().as_ptr().cast()
+    }
+
 }
 
 struct AwaitableVec<T> {

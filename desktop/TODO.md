@@ -41,9 +41,9 @@
 
 # Egl todo's
 [ ] "platform" window support on egl >= 1.5
-[ ] better errors
+[x] better errors
+[x] pbuffers
 [ ] pbuffer from clientbuffer?
-[x] pixmaps (or pbuffers?)
 
 # Platforms that will be supported
 [x] Linux (Wayland only)
@@ -59,6 +59,7 @@ button.lock().title = "..." // <= this is also kinda nice
 button.title = "..."; button.updt();
 button.updt(|it| it.title = "...");
 button.title.set("xxx"); // <= this is it
+button.title = ...; // with DerefMut<MutexGuard<...>> <= also cool
 
 --------------------
 
@@ -72,7 +73,7 @@ struct Button {
 }
 
 impl Button {
-	fn new() -> Arc<Self> { ... }
+	fn new() -> Self { ... }
 }
 
 --------------------

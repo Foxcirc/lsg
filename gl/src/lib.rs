@@ -58,14 +58,23 @@ pub fn debug_message_control(severity: Option<DebugSeverity>, source: Option<Deb
     ) }
 }
 
-pub fn colored_print(source: DebugSource, _kind: DebugType, severity: DebugSeverity, _id: u32, message: &str) {
-    let color = if severity == DebugSeverity::High { "31" } else { "34" };
-    println!(
-        "gl/{:?} (Severity: {:?}): \x1b[{}m{}\x1b[39m",
-        source, severity, color, message.trim_end_matches("\n")
-    );
-}
+pub fn debug_message_tracing_handler(source: DebugSource, kind: DebugType, severity: DebugSeverity, id: u32, msg: &str) {
 
+    use DebugSeverity::*;
+
+    let _span = tracing::span!(tracing::Level::INFO, "GlMessage").entered();
+
+    let message = format!("gl {}, from {:?}, of kind {:?}, '{:?}'", id, source, kind, msg.trim_end_matches("\n"));
+
+    if severity == Notification || severity == Low {
+        tracing::debug!("{}", message);
+    } else if severity == Medium {
+        tracing::warn!("{}", message);
+    } else {
+        tracing::error!("{}", message);
+    }
+
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
@@ -105,47 +114,43 @@ pub struct Shader {
     id: u32
 }
 
-impl Shader {
+pub fn create_shader(kind: ShaderType, source: &str) -> Result<Shader, ShaderError> {
 
-    pub fn new(kind: ShaderType, source: &str) -> Result<Self, ShaderError> {
+    let source_ptr = source.as_ptr().cast();
+    let source_len = source.len();
 
-        let source_ptr = source.as_ptr().cast();
-        let source_len = source.len();
+    let id = unsafe { gl::CreateShader(kind as u32) };
+    unsafe { gl::ShaderSource(id, 1, &source_ptr, (&source_len as *const usize).cast()) };
+    unsafe { gl::CompileShader(id) };
 
-        let id = unsafe { gl::CreateShader(kind as u32) };
-        unsafe { gl::ShaderSource(id, 1, &source_ptr, (&source_len as *const usize).cast()) };
-        unsafe { gl::CompileShader(id) };
+    if !shader_compile_status(id) {
 
-        if !Self::compile_status(id) {
+        let len = shader_info_log_length(id);
+        let mut written = 0; // not actually used
+        let mut buf: Vec<u8> = Vec::new();
+        buf.resize(len, 0);
 
-            let len = Self::info_log_length(id);
-            let mut written = 0; // not actually used
-            let mut buf: Vec<u8> = Vec::new();
-            buf.resize(len, 0);
+        unsafe { gl::GetShaderInfoLog(id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
 
-            unsafe { gl::GetShaderInfoLog(id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
+        let msg = CString::from_vec_with_nul(buf).unwrap();
+        Err(ShaderError { msg, kind })
 
-            let msg = CString::from_vec_with_nul(buf).unwrap();
-            Err(ShaderError { msg, kind })
-
-        } else {
-            Ok(Self { id })
-        }
-
+    } else {
+        Ok(Shader { id })
     }
 
-    fn compile_status(shader: u32) -> bool {
-        let mut out = 0;
-        unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut out) };
-        out as u8 == gl::TRUE
-    }
+}
 
-    fn info_log_length(shader: u32) -> usize {
-        let mut out = 0;
-        unsafe { gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut out) };
-        out as usize
-    }
+fn shader_compile_status(shader: u32) -> bool {
+    let mut out = 0;
+    unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut out) };
+    out as u8 == gl::TRUE
+}
 
+fn shader_info_log_length(shader: u32) -> usize {
+    let mut out = 0;
+    unsafe { gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut out) };
+    out as usize
 }
 
 pub struct ShaderError {
@@ -175,59 +180,55 @@ pub struct Program {
     shaders: Vec<Shader>,
 }
 
-impl Program {
+pub fn create_program() -> Program {
+    Program {
+        id: unsafe { gl::CreateProgram() },
+        shaders: Vec::with_capacity(2)
+    }
+}
 
-    pub fn new() -> Self {
-        Self {
-            id: unsafe { gl::CreateProgram() },
-            shaders: Vec::with_capacity(2)
-        }
+pub fn attach_shader(program: &mut Program, shader: Shader) {
+    unsafe { gl::AttachShader(program.id, shader.id) }
+    program.shaders.push(shader);
+}
+
+pub fn link_program(mut program: Program) -> Result<LinkedProgram, LinkError> {
+
+    unsafe { gl::LinkProgram(program.id) }
+
+    for shader in program.shaders.drain(..) {
+        unsafe { gl::DeleteShader(shader.id) }
     }
 
-    pub fn attach(&mut self, shader: Shader) {
-        unsafe { gl::AttachShader(self.id, shader.id) }
-        self.shaders.push(shader);
-    }
-    
-    pub fn link(mut self) -> Result<LinkedProgram, LinkError> {
+    if !program_compile_status(program.id) {
 
-        unsafe { gl::LinkProgram(self.id) }
+        let len = program_info_log_length(program.id);
+        let mut written = 0; // not actually used
+        let mut buf: Vec<u8> = Vec::new();
+        buf.resize(len, 0);
 
-        for shader in self.shaders.drain(..) {
-            unsafe { gl::DeleteShader(shader.id) }
-        }
+        unsafe { gl::GetProgramInfoLog(program.id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
 
-        if !Self::compile_status(self.id) {
+        let msg = CString::from_vec_with_nul(buf).unwrap();
 
-            let len = Self::info_log_length(self.id);
-            let mut written = 0; // not actually used
-            let mut buf: Vec<u8> = Vec::new();
-            buf.resize(len, 0);
+        Err(LinkError { msg })
 
-            unsafe { gl::GetProgramInfoLog(self.id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
-
-            let msg = CString::from_vec_with_nul(buf).unwrap();
-
-            Err(LinkError { msg })
-
-        } else {
-            Ok(LinkedProgram { id: self.id })
-        }
-
+    } else {
+        Ok(LinkedProgram { id: program.id })
     }
 
-    fn compile_status(program: u32) -> bool {
-        let mut out = 0;
-        unsafe { gl::GetProgramiv(program, gl::LINK_STATUS, &mut out) };
-        out as u8 == gl::TRUE
-    }
+}
 
-    fn info_log_length(program: u32) -> usize {
-        let mut out = 0;
-        unsafe { gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut out) };
-        out as usize
-    }
+fn program_compile_status(program: u32) -> bool {
+    let mut out = 0;
+    unsafe { gl::GetProgramiv(program, gl::LINK_STATUS, &mut out) };
+    out as u8 == gl::TRUE
+}
 
+fn program_info_log_length(program: u32) -> usize {
+    let mut out = 0;
+    unsafe { gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut out) };
+    out as usize
 }
 
 pub struct LinkError {
@@ -289,12 +290,13 @@ pub fn gen_buffer(kind: BufferType) -> Buffer {
     
 }
 
-pub fn buffer_data<T>(this: &Buffer, data: &[T], usage: DrawHint) {
+pub fn buffer_data(this: &Buffer, data: &[f32], usage: DrawHint) {
     
     bind_buffer(this);
+
     unsafe { gl::BufferData(
         this.kind as u32,
-        (data.len() * size_of::<T>()) as isize,
+        (data.len() * size_of::<f32>()) as isize,
         data.as_ptr().cast(),
         usage as u32
     ) }
@@ -310,17 +312,20 @@ pub struct Buffer {
     kind: BufferType,
 }
 
-pub fn vertex_attribs(this: &Buffer, location: usize, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
+/// The array will also be enabled.
+pub fn vertex_attribs(vao: &VertexArrayObject,vbo: &Buffer, location: usize, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
-    assert_eq!(this.kind, BufferType::ArrayBuffer);
+    assert_eq!(vbo.kind, BufferType::ArrayBuffer);
 
-    bind_buffer(this);
+    bind_vertex_array(vao);
+    bind_buffer(vbo);
+
     unsafe { gl::VertexAttribPointer(
         location as u32,
         count as i32,
         kind as u32,
         normalize as u8,
-        (stride * size_of::<f32>()) as i32,
+        stride as i32,
         start as *const _,
     ) };
 
@@ -393,7 +398,9 @@ pub fn draw_elements(program: &LinkedProgram, vao: &VertexArrayObject, primitive
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum Primitive {
-    Triangles = gl::TRIANGLES
+    Triangles = gl::TRIANGLES,
+    Lines = gl::LINES,
+    LineStrip = gl::LINE_STRIP,
 }
 
 pub fn clear(r: f32, g: f32, b: f32, alpha: f32) {
