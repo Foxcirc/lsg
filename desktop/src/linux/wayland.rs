@@ -45,8 +45,6 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Event as ZwlrLayerSurfaceEvent, Anchor, KeyboardInteractivity},
 };
 
-use khronos_egl as egl;
-
 use xkbcommon::xkb;
 
 use nix::{
@@ -56,8 +54,10 @@ use nix::{
 use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
-use std::{collections::{HashMap, HashSet}, env, error::Error as StdError, fmt, fs, io::{self, Write}, ops, os::fd::{AsFd, AsRawFd, FromRawFd}, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}};
+use std::{collections::{HashMap, HashSet}, env, error::Error as StdError, ffi::c_void as void, fmt, fs, io::{self, Write}, ops, os::fd::{AsFd, AsRawFd, FromRawFd}, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}};
 
+use common::*;
+use render::*;
 use crate::*;
 
 // ### base event loop ###
@@ -473,13 +473,12 @@ impl<T: 'static + Send> BaseWindow<T> {
     }
 
     #[track_caller]
-    pub fn redraw(&self, token: PresentToken) {
-        debug_assert!(self.id == token.id, "token for another window, see PresentToken docs");
+    pub fn redraw(&self) {
         let mut guard = self.shared.lock().unwrap();
         guard.redraw_requested = true;
     }
 
-    pub fn pre_present_notify(&self) -> PresentToken {
+    pub fn pre_present_notify(&self) {
         // note: it seems you have request the frame callback before swapping buffers
         //       otherwise the callback will never fire because the compositor thinks the content didn't change
         let mut guard = self.shared.lock().unwrap();
@@ -489,7 +488,6 @@ impl<T: 'static + Send> BaseWindow<T> {
             self.wl_surface.frame(&self.qh, Arc::clone(&self.shared));
             self.wl_surface.commit();
         }
-        PresentToken { id: self.id }
     }
 
     pub fn set_transparency(&self, value: bool) {
@@ -507,6 +505,12 @@ impl<T: 'static + Send> BaseWindow<T> {
     /// This simply drops the window.
     pub fn close(self) {} // TODO: add close helper fns to everything to make closing things more explicit...
     
+}
+
+impl<T: Send + 'static> GlSurface for BaseWindow<T> {
+    fn ptr(&self) -> *mut void {
+        self.wl_surface.id().as_ptr().cast()
+    }
 }
 
 struct WindowShared {
@@ -2444,15 +2448,9 @@ impl From<wayland_client::DispatchError> for EvlError {
     }
 }
 
-impl From<egl::Error> for EvlError {
-    fn from(value: egl::Error) -> Self {
-        Self::Fatal { msg: format!("failed egl call, {}", value) }
-    }
-}
-
-impl From<wayland_egl::Error> for EvlError {
-    fn from(value: wayland_egl::Error) -> Self {
-        Self::Fatal { msg: format!("failed wayland-egl call, {}", value) }
+impl From<render::EglError> for EvlError {
+    fn from(value: render::EglError) -> Self {
+        Self::Fatal { msg: format!("failed egl call, {:?}", value) }
     }
 }
 

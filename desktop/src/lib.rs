@@ -5,7 +5,6 @@
 //! 1. Windowing
 //! 2. Notifications
 //! 3. Status Icons
-//! 4. OpenGL (EGL)
 
 pub mod shared;
 pub use shared::*;

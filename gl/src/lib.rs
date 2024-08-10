@@ -3,6 +3,7 @@
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex};
 use num_enum::TryFromPrimitive;
+use common::Size;
 
 pub fn load_with<F: FnMut(&'static str) -> *const void>(f: F) {
     gl::load_with(f)
@@ -126,10 +127,16 @@ pub fn create_shader(kind: ShaderType, source: &str) -> Result<Shader, ShaderErr
     if !shader_compile_status(id) {
 
         let len = shader_info_log_length(id);
-        let mut written = 0; // not actually used
+
+        if len == 0 {
+            let msg = CString::new("[no error log provided]").unwrap();
+            return Err(ShaderError { msg, kind });
+        }
+
         let mut buf: Vec<u8> = Vec::new();
         buf.resize(len, 0);
 
+        let mut written = 0; // not actually used
         unsafe { gl::GetShaderInfoLog(id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
 
         let msg = CString::from_vec_with_nul(buf).unwrap();
@@ -379,8 +386,8 @@ pub fn uniform_3f(program: &LinkedProgram, uniform: usize, x: f32, y: f32, z: f3
     unsafe { gl::Uniform3f(uniform as i32, x, y, z) };
 }
 
-pub fn resize_viewport(width: u32, height: u32) {
-    unsafe { gl::Viewport(0, 0, width as i32, height as i32) }
+pub fn resize_viewport(size: Size) {
+    unsafe { gl::Viewport(0, 0, size.width as i32, size.height as i32) }
 }
 
 pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {

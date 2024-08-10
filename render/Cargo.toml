@@ -5,3 +5,14 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+
+common = { path = "../common" }
+
+# tracing
+tracing = "0.1.40"
+
+# OpenGL
+wayland-egl = "0.32.0" # TODO: make optional, only needed on linux (wayland)
+egl = { package = "khronos-egl", version = "6.0.0", features = ["dynamic"] }
+gl = { path = "../gl" }
+

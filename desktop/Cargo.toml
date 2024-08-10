@@ -16,17 +16,16 @@ signals = ["async-signals"]
 
 [dependencies]
 
+common = { path = "../common" }
+render = { path = "../render" } # TODO: make an internal feature that enables this integration only for lsg, so this dependency isn't forced on users
+
 # tracing
 tracing = "0.1.40"
-
-# egl
-khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 
 # wayland deps
 wayland-client = "0.31.2"
 wayland-protocols = { version = "0.31.2", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.2.0", features = ["client", "wayland-client"] }
-wayland-egl = "0.32.0"
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
 
 # other

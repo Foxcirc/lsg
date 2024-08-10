@@ -38,6 +38,7 @@
 [ ] System tray (using kde StatusNotifier OR xdp.TrayIcon)
 [ ] File manager (using ??? or xdp)
 [ ] Screen saver (idle inhibition)
+[ ] Global menus (dbus-menu kde menu protocol)
 
 # Egl todo's
 [ ] "platform" window support on egl >= 1.5

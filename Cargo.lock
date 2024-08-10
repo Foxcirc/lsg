@@ -184,6 +184,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "acbf1af155f9b9ef647e42cdc158db4b64a1b61f743629225fde6f3e0be2a7c7"
 
 [[package]]
+name = "common"
+version = "0.1.0"
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -207,14 +211,14 @@ dependencies = [
  "async-signals",
  "bitflags 2.5.0",
  "bv",
+ "common",
  "futures-lite",
  "gl 0.1.0",
- "khronos-egl",
  "nix 0.28.0",
+ "render",
  "tracing",
  "tracing-subscriber",
  "wayland-client",
- "wayland-egl",
  "wayland-protocols",
  "wayland-protocols-wlr",
  "xkbcommon",
@@ -357,6 +361,7 @@ dependencies = [
 name = "gl"
 version = "0.1.0"
 dependencies = [
+ "common",
  "gl 0.14.0",
  "num_enum",
  "tracing",
@@ -657,6 +662,13 @@ checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
 [[package]]
 name = "render"
 version = "0.1.0"
+dependencies = [
+ "common",
+ "gl 0.1.0",
+ "khronos-egl",
+ "tracing",
+ "wayland-egl",
+]
 
 [[package]]
 name = "rustix"

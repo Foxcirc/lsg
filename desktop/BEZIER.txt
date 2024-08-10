@@ -1,9 +1,9 @@
 
+
 use futures_lite::future::block_on;
 use tracing::{debug, trace};
 
 use desktop::*;
-use render::*;
 use common::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +21,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     // we will be using the built-in gl functionality
-    let egl = EglInstance::new(&evl)?;
+    let egl = EglInstance::new(&mut evl)?;
 
     gl::load_with(|name|
         egl.get_proc_address(name).unwrap() as *const _
@@ -30,7 +30,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size { width: 500 , height: 500 };
     let mut window = Window::new(&mut evl, size);
 
-    let mut ctx = EglContext::new(&egl, &*window, size)?; // create an egl context for our window
+    let mut ctx = EglContext::new(&egl, &window, size)?; // create an egl context for our window
     ctx.bind()?; // make the context current
 
     window.set_title("lsg/test");
@@ -147,10 +147,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                         gl::draw_arrays(&linked, &vertex_array, gl::Primitive::Triangles, 0, 3);
 
-                        window.pre_present_notify();
-                        ctx.swap_buffers(None).unwrap();
+                        let token = window.pre_present_notify();
+                        ctx.swap_buffers(None, token).unwrap();
 
-                        // window.redraw();
+                        window.redraw(token);
 
                     },
 

@@ -1,7 +1,8 @@
 
-//! This workspace crate contains code to render to a [`RenderTarget`]
-//! using opengl.
-//! Types of fragments that can be rendered are:
-//! 1. Polygon (filled polygon)
-//! 2. Outline (unfilled polygon)
-//! 3. Curve3, Curve4
+//! This workspace crate contains code to render using OpenGL.
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))] pub mod egl;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))] pub use egl::*;
+
+pub(crate) mod delauney;
+pub(crate) use delauney::*;

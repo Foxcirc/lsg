@@ -3,34 +3,24 @@
 pub mod wayland;
 pub use wayland::*;
 
-// egl
-pub mod egl;
-pub use egl::*;
-
 // notifs, status icons, ...
 pub mod dbus;
 pub use dbus::*;
+use wayland_client::Proxy;
 
 use crate::shared::*;
 
-use std::future;
+use render::*;
+
+use std::{ffi::c_void as void, future};
 use futures_lite::FutureExt;
 
 // TODO: add tracing
 
 // TODO: add better and more unit-tests
 
-pub fn run<T, R, H>(handler: H, app: &str) -> Result<R, EvlError>
-    where T: 'static + Send,
-          H: FnOnce(EventLoop<T>) -> R {
-
-    let target = EventLoop::new(app)?;
-    Ok(handler(target))
-
-}
-
 // TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
-pub struct EventLoop<T: 'static + Send> {
+pub struct EventLoop<T: 'static + Send = ()> {
     events: AwaitableVec<Event<T>>,
     proxy: proxy::InnerProxy<T>,
     wayland: wayland::Connection<T>,
@@ -48,6 +38,15 @@ impl<T: 'static + Send> EventLoop<T> {
             signals: signals::SignalListener::new()?,
             dbus: dbus::Connection::new(app)?,
         })
+    }
+
+    pub fn run<R, H>(handler: H, app: &str) -> Result<R, EvlError>
+        where T: 'static + Send,
+              H: FnOnce(Self) -> R {
+
+        let target = Self::new(app)?;
+        Ok(handler(target))
+
     }
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
@@ -93,6 +92,12 @@ impl<T: 'static + Send> EventLoop<T> {
         self.wayland.state.con.get_ref().display().id().as_ptr().cast()
     }
 
+}
+
+impl<T: Send + 'static> GlDisplay for EventLoop<T> {
+    fn ptr(&self) -> *mut void {
+        self.wayland.state.con.get_ref().display().id().as_ptr().cast()
+    }
 }
 
 struct AwaitableVec<T> {

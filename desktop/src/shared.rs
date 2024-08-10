@@ -1,7 +1,6 @@
 
-use crate::{InvokedNotifAction, NotifId};
-
-use super::{CustomIcon, DataOffer, DataWriter, DndHandle, Monitor, WindowId, MonitorId, DataSourceId};
+use common::*;
+use crate::*;
 
 use bitflags::bitflags;
 
@@ -198,47 +197,6 @@ pub enum KbInteractivity {
     Exclusive
 }
 
-/// A rectangular region on a surface.
-///
-/// The origin is in the top left of the surface.
-/// Normally EGL specifies the origin in the bottom left of the surface but this is **NOT**
-/// what this library does. We recalculate the origin for consistency with windowing systems.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Rect {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-}
-
-impl Rect {
-    pub const INFINITE: Self = Self::new(0, 0, i32::MAX, i32::MAX);
-    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
-        Self { x, y, w, h}
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Size {
-    pub width: u32,
-    pub height: u32
-}
-
-impl Size {
-    pub const INFINITE: Size = Size { width: u32::MAX, height: u32::MAX };
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Pos {
-    pub x: u32,
-    pub y: u32
-}
-
-impl Pos {
-    pub const ORIGIN: Pos = Pos { x: 0, y: 0 };
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum Key {
     Escape,
@@ -331,6 +289,3 @@ impl MonitorInfo {
         self.refresh / 1000
     }    
 }
-
-#[derive(Clone, Copy)]
-pub struct PresentToken { pub(crate) id: WindowId }
