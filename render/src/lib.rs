@@ -4,5 +4,5 @@
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))] pub mod egl;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))] pub use egl::*;
 
-pub(crate) mod delauney;
-pub(crate) use delauney::*;
+pub mod triangulate;
+pub use triangulate::*; // TODO: make pub(crate)

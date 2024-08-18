@@ -30,7 +30,7 @@ impl Renderer {
 
         target.bind();
 
-        // for now, just render lines between all the vertices
+        // for now, just render all edges
         
     }
 
@@ -50,16 +50,18 @@ pub struct Geometry {
 }
 
 /// Vertex position in screen-space coordinates.
+#[derive(Debug, Clone, Copy)]
 pub struct Vertex {
-    x: u16,
-    y: u16,
+    pub x: u16,
+    pub y: u16,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Polygon {
     /// index into the `vertices` buffer
-    idx: u16,
+    pub idx: u16,
     /// how many vertices to read
-    len: u16,
+    pub len: u16,
 }
 
 /* 
@@ -78,9 +80,7 @@ pub trait GlDisplay {
 pub trait GlSurface {
     /// ### Platforms
     /// **On Wayland,**
-    /// should return a pointer to a WlEglSurface, which needs to be obtained
-    /// through the `wayland-egl` library first. You can't just pass a pointer to
-    /// a wayland surface!
+    /// should return a pointer to a `wl-surface` proxy object.
     // TODO: add link to example in the desktop crate
     fn ptr(&self) -> *mut void;
 }
@@ -309,7 +309,7 @@ impl EglContext {
             instance.lib.create_window_surface(
                 instance.display,
                 config,
-                window.ptr(),
+                wl_egl_surface.ptr().cast_mut(),
                 Some(&attrs),
             )?
         };
