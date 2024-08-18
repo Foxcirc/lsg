@@ -10,8 +10,6 @@ use wayland_client::Proxy;
 
 use crate::shared::*;
 
-use render::*;
-
 use std::{ffi::c_void as void, future};
 use futures_lite::FutureExt;
 
@@ -94,7 +92,7 @@ impl<T: 'static + Send> EventLoop<T> {
 
 }
 
-impl<T: Send + 'static> GlDisplay for EventLoop<T> {
+impl<T: Send + 'static> egl::Display for EventLoop<T> {
     fn ptr(&self) -> *mut void {
         self.wayland.state.con.get_ref().display().id().as_ptr().cast()
     }

@@ -212,6 +212,7 @@ dependencies = [
  "bitflags 2.5.0",
  "bv",
  "common",
+ "egl",
  "futures-lite",
  "gl 0.1.0",
  "nix 0.28.0",
@@ -238,6 +239,16 @@ name = "downcast-rs"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
+
+[[package]]
+name = "egl"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "khronos-egl",
+ "tracing",
+ "wayland-egl",
+]
 
 [[package]]
 name = "env_filter"
@@ -665,10 +676,9 @@ version = "0.1.0"
 dependencies = [
  "bv",
  "common",
+ "egl",
  "gl 0.1.0",
- "khronos-egl",
  "tracing",
- "wayland-egl",
 ]
 
 [[package]]

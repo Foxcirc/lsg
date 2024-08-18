@@ -57,7 +57,6 @@ use futures_lite::FutureExt;
 use std::{collections::{HashMap, HashSet}, env, error::Error as StdError, ffi::c_void as void, fmt, fs, io::{self, Write}, ops, os::fd::{AsFd, AsRawFd, FromRawFd}, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}};
 
 use common::*;
-use render::*;
 use crate::*;
 
 // ### base event loop ###
@@ -507,7 +506,7 @@ impl<T: 'static + Send> BaseWindow<T> {
     
 }
 
-impl<T: Send + 'static> GlSurface for BaseWindow<T> {
+impl<T: Send + 'static> egl::Surface for BaseWindow<T> {
     fn ptr(&self) -> *mut void {
         self.wl_surface.id().as_ptr().cast()
     }
@@ -2273,7 +2272,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
              WlPointerEvent::Motion { surface_x, surface_y, .. } => {
 
                 evl.mouse_data.x = surface_x;
-                evl.mouse_data.y = surface_x;
+                evl.mouse_data.y = surface_y;
 
                 let surface = evl.mouse_data.has_focus.as_ref().unwrap();
                 let id = get_window_id(&surface);
@@ -2448,8 +2447,8 @@ impl From<wayland_client::DispatchError> for EvlError {
     }
 }
 
-impl From<render::EglError> for EvlError {
-    fn from(value: render::EglError) -> Self {
+impl From<egl::EglError> for EvlError {
+    fn from(value: egl::EglError) -> Self {
         Self::Fatal { msg: format!("failed egl call, {:?}", value) }
     }
 }

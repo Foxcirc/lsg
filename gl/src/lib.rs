@@ -1,7 +1,7 @@
 
 // simple wrapper for common opengl functions
 
-use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex};
+use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
 use num_enum::TryFromPrimitive;
 use common::Size;
 
@@ -161,18 +161,28 @@ fn shader_info_log_length(shader: u32) -> usize {
 }
 
 pub struct ShaderError {
-    msg: CString,
-    kind: ShaderType
+    pub msg: CString,
+    pub kind: ShaderType
 }
 
 impl fmt::Debug for ShaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f,
-            "ShaderError {{\x1b[0;31m\n    {:?}Shader:\n    {}\n\x1b[0;39m}}",
+            "ShaderError {{\n\tkind: {:?}Shader,\n\tmsg: {}\n}}",
             self.kind, self.msg.to_string_lossy().trim_end_matches("\n")
         )
     }
 }
+
+impl fmt::Display for ShaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+            "in {:?}, {}", self.kind, self.msg.to_string_lossy().trim_end_matches("\n")
+        )
+    }
+}
+
+impl StdError for ShaderError {}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
@@ -245,12 +255,21 @@ pub struct LinkError {
 impl fmt::Debug for LinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f,
-            "LinkErrorError {{\x1b[0;31m\n    {}\n\x1b[0;39m}}",
+            "LinkErrorError {{\n\tmsg: {}}}",
             self.msg.to_string_lossy().trim_end_matches("\n")
         )
     }
 }
 
+impl fmt::Display for LinkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.msg.to_string_lossy().trim_end_matches("\n"))
+    }
+}
+
+impl StdError for LinkError {}
+
+#[derive(Clone)]
 pub struct LinkedProgram {
     pub(crate) id: u32,
 }
@@ -274,6 +293,7 @@ pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<usize, Att
 pub struct AttribUnknown;
 
 #[repr(transparent)]
+#[derive(Clone)]
 pub struct VertexArrayObject {
     id: u32
 }
@@ -297,12 +317,12 @@ pub fn gen_buffer(kind: BufferType) -> Buffer {
     
 }
 
-pub fn buffer_data(this: &Buffer, data: &[f32], usage: DrawHint) {
+pub fn buffer_data(buffer: &Buffer, data: &[f32], usage: DrawHint) {
     
-    bind_buffer(this);
+    bind_buffer(buffer);
 
     unsafe { gl::BufferData(
-        this.kind as u32,
+        buffer.kind as u32,
         (data.len() * size_of::<f32>()) as isize,
         data.as_ptr().cast(),
         usage as u32
@@ -314,6 +334,7 @@ pub fn bind_buffer(this: &Buffer) {
     unsafe { gl::BindBuffer(this.kind as u32, this.id) }
 }
 
+#[derive(Clone)]
 pub struct Buffer {
     id: u32,
     kind: BufferType,

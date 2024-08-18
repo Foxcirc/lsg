@@ -1,4 +1,6 @@
 
+what happens if i try to run wayland app without having a compositor launched
+
 # Requirements for a new backend
 [x] Open and configure windows
 [x] Handling events
