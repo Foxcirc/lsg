@@ -419,6 +419,7 @@ pub struct BaseWindow<T: 'static + Send> {
     shared: Arc<Mutex<WindowShared>>, // needs to be accessed by some callbacks
     // wayland state
     qh: QueueHandle<WaylandState<T>>,
+    proxy: EventProxy<T>,
     compositor: WlCompositor, // used to create opaque regions
     pub(crate) wl_surface: WlSurface,
 }
@@ -452,7 +453,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             flags: ConfigureFlags::default(),
             redraw_requested: false,
             frame_callback_registered: false,
-            already_redrawing: false,
+            already_got_redraw_event: false,
             // need to access some wayland objects
             frac_scale_data,
         }));
@@ -462,6 +463,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             shared,
             qh: evb.qh.clone(),
             compositor: evb.globals.compositor.clone(),
+            proxy: EventProxy::new(evl),
             wl_surface: surface,
         }
         
@@ -474,7 +476,16 @@ impl<T: 'static + Send> BaseWindow<T> {
     #[track_caller]
     pub fn redraw(&self) {
         let mut guard = self.shared.lock().unwrap();
-        guard.redraw_requested = true;
+        // if guard.frame_callback_registered {
+            // we will receive the callback and then redraw with vsync
+            guard.redraw_requested = true;
+        // } else {
+            // TODO: what happens if a configure event gets sent right after this? doooooom
+            // TODO: doom if called multiple times, we simply need to dedup redraw events in the evl
+            // let event = WindowEvent::Redraw;
+            // self.proxy.send(Event::Window { id: self.id, event });
+            // ahhhhhhh
+        // }
     }
 
     pub fn pre_present_notify(&self) {
@@ -483,7 +494,7 @@ impl<T: 'static + Send> BaseWindow<T> {
         let mut guard = self.shared.lock().unwrap();
         if !guard.frame_callback_registered {
             guard.frame_callback_registered = true;
-            guard.already_redrawing = false; // reset it here, because this must be invoked after a frame event was received
+            guard.already_got_redraw_event = false; // reset it here, because this must be invoked after a frame event was received
             self.wl_surface.frame(&self.qh, Arc::clone(&self.shared));
             self.wl_surface.commit();
         }
@@ -519,7 +530,7 @@ struct WindowShared {
     flags: ConfigureFlags,
     redraw_requested: bool,
     frame_callback_registered: bool,
-    already_redrawing: bool,
+    already_got_redraw_event: bool, // TODO: rethink this logic and write it down somewhere
     // need to access some wayland objects
     frac_scale_data: Option<FracScaleData>,
 }
@@ -1913,7 +1924,7 @@ fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, guard: MutexG
         flags: guard.flags
     } });
 
-    if !guard.redraw_requested && !guard.already_redrawing {
+    if !guard.redraw_requested && !guard.already_got_redraw_event {
         evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
     }
 
@@ -1945,7 +1956,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
         if guard.redraw_requested {
             guard.redraw_requested = false;
             guard.frame_callback_registered = false;
-            guard.already_redrawing = true; // prevent another redraw event from getting sent in case a Configure event arrives just after this
+            guard.already_got_redraw_event = true; // prevent another redraw event from getting sent in case a Configure event arrives just after this
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
         }
     }

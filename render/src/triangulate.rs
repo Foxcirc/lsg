@@ -3,12 +3,14 @@
 
 use std::{f32::consts::PI, fmt, error::Error as StdError};
 use bv::BitVec;
+use common::Size;
 
-use crate::Vertex;
+use crate::{CurveGeometry, CurvePoint, GlPoint};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TriagError {
     TooShort,
+    TwoControl,
     Invalid,
 }
 
@@ -16,47 +18,156 @@ impl fmt::Display for TriagError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooShort => write!(f, "input too short, need at least 3 points to triangulate"),
-            Self::Invalid => write!(f, "invalid input state, only non self-intersecting, counter-clockwise ordered polygons are accepted"),
+            Self::TwoControl=> write!(f, "two control points next to each other are not allowed"),
+            Self::Invalid => write!(f, "invalid input, only non self-intersecting, counter-clockwise ordered polygons are accepted"),
         }
     }
 }
 
 impl StdError for TriagError {}
 
-pub struct Triangulator { // TODO: make pub(crate)
-    /// stores if a vertex is an ear
-    ears: BitVec<usize>,
-    /// stores if a vertex was removed
-    removed: BitVec<usize>,
-    /// stores the output triangles
-    trigs: Vec<Vertex>,
+/// Output after processing a polygon.
+pub struct OutputGeometry<'a> {
+    /// triangles are fully filled
+    pub basic: &'a [Triangle],
+    /// triangles should be rendered as a beziér curve
+    pub curved: &'a [Triangle], // TODO: easy: optimize this and return indices + vertices
 }
 
-impl Triangulator {
+/// The position is in normalized device coordinates.
+#[derive(Debug, Clone)]
+#[repr(packed)]
+pub struct Triangle {
+    pub a: GlPoint,
+    pub b: GlPoint,
+    pub c: GlPoint,
+}
 
-    pub fn new() -> Self {
+pub struct Triangulator { // TODO: make pub(crate)
+    // window size
+    size: Size,
+    // state during triangulation
+    ears: BitVec<usize>,
+    removed: BitVec<usize>,
+    // outputs
+    basic: Vec<Triangle>,
+    curved: Vec<Triangle>,
+}
+
+impl Triangulator { // TODO: rename (maybe) since it does more then triangulating
+
+    pub fn new(size: Size) -> Self {
         Self {
+            size,
             ears: BitVec::new(),
             removed: BitVec::new(),
-            trigs: Vec::new(),
+            basic: Vec::new(),
+            curved: Vec::new(),
         }
     }
 
-    pub fn triangulate<'s>(&'s mut self, polygon: &[Vertex]) -> Result<&'s [Vertex], TriagError> {
+    pub fn resize(&mut self, size: Size) {
+        self.size = size;
+    }
+
+    /// Prepares the polygons for rendering.
+    ///
+    /// # Processing Steps
+    /// - Convert coordinates to OpenGl screen space.
+    /// - Triangulate the polygon using ear-clipping, with some restrictions.
+    /// - Output extra triangles for the curved parts.
+    pub fn process<'s>(&'s mut self, geometry: &CurveGeometry) -> Result<OutputGeometry, TriagError> {
+
+        // reset our state
+        self.basic.clear();
+        self.curved.clear();
+
+        for shape in &geometry.shapes {
+            let points = &geometry.points[shape.idx as usize..shape.len as usize];
+            if points.len() < 3 { return Err(TriagError::TooShort) }
+            self.triangulate(points)?; // writes to self.basic
+            self.curves(points)?; // writes to self.curved
+        }
+
+        Ok(OutputGeometry {
+            basic: &self.basic,
+            curved: &self.curved,
+        })
+        
+    }
+
+    /// Calculate patch-on triangles that should be rendered as curves.
+    ///
+    /// Appends to `self.curved`.
+    /// Accepts window- and returns normalized device coordinates.
+    pub fn curves(&mut self, points: &[CurvePoint]) -> Result<(), TriagError> {
+
+        let len = points.len();
+        debug_assert!(len >= 3);
+
+        // find all pairs which look like (basic - control - basic)
+        // and make triangles out of then
+
+        let mut idx = 0;
+        loop {
+
+            let [ia, ib, ic] = if idx == 0 {
+                [len - 1, idx, 1]
+            } else if idx == len - 1 {
+                [len - 2, idx, 0]
+            } else {
+                [idx - 1, idx, idx + 1]
+            };
+
+            // println!("{}, {}, {}", points[ia].basic(), points[ib].basic(), points[ic].basic());
+
+            // can't have two control points next to each other
+            if (!points[ia].basic() && !points[ib].basic()) ||
+               (!points[ib].basic() && !points[ic].basic()) {
+                return Err(TriagError::TwoControl)
+            }
+
+            // find the relevant pairs
+            else if  points[ia].basic() &&
+                    !points[ib].basic() &&
+                     points[ic].basic() {
+
+                self.curved.push(Triangle {
+                    a: points[ia].gl(self.size),
+                    b: points[ib].gl(self.size),
+                    c: points[ic].gl(self.size),
+                });
+
+            }
+            
+            idx += 1;
+            if idx == len { break };
+            
+        }
+        
+        Ok(())
+        
+    }
+
+    /// Ear-clipping triangulation for a single polygon.
+    ///
+    /// Appends to `self.basic`.
+    /// Accepts window- and returns normalized device coordinates.
+    ///
+    /// The algorithms is purposely written in a way that is similar to the
+    /// compute shader implementation.
+    // TODO(DOC): link to docs on the triangulation compute shader
+    fn triangulate(&mut self, points: &[CurvePoint]) -> Result<(), TriagError> {
         
         // TODO: split polygons with > 1000 vertices into sub-polygons for the gpu
 
-        let len = polygon.len();
-
-        if len < 3 {
-            return Err(TriagError::TooShort)
-        }
+        let len = points.len();
+        debug_assert!(len >= 3);
 
         // reset our state
 
         self.ears.clear();
         self.removed.clear();
-        self.trigs.clear();
 
         self.ears.resize(len as u64, false);
         self.removed.resize(len as u64, false);
@@ -64,10 +175,44 @@ impl Triangulator {
         // calculate initial ear state for every point
 
         for idx in 0..len {
-            let ear = Self::ear(polygon, &self.removed, idx);
+            let ear = Self::ear(points, &self.removed, idx);
             self.ears.set(idx as u64, ear);
         }
 
+        // mark all convex triangles that include a control
+        // point as removed, as we render their triangles as `curved`
+
+        let mut idx = 0;
+        loop {
+
+            let [ia, ib, ic] = if idx == 0 {
+                [len - 1, idx, 1]
+            } else if idx == len - 1 {
+                [len - 2, idx, 0]
+            } else {
+                [idx - 1, idx, idx + 1]
+            };
+
+            // can't have two control points next to each other
+            if (!points[ia].basic() && !points[ib].basic()) ||
+               (!points[ib].basic() && !points[ic].basic()) {
+                return Err(TriagError::TwoControl)
+            }
+
+            // find the relevant pairs
+            else if  points[ia].basic() &&
+                    !points[ib].basic() &&
+                     points[ic].basic() {
+
+                self.removed.set(ib as u64, true);
+                
+            }
+            
+            idx += 1;
+            if idx == len { break };
+            
+        }
+        
         // remove ears and recalculate neightbours
         
         let mut changes = false; // used to check for errors
@@ -85,6 +230,7 @@ impl Triangulator {
             let idx = counter - 1;
             
             // skip all removed points
+            // triangles should include control points though
             if self.removed[idx as u64] {
                 continue
             }
@@ -96,19 +242,19 @@ impl Triangulator {
                     break
                 };
 
-                self.trigs.extend_from_slice(&[
-                    polygon[ia],
-                    polygon[ib],
-                    polygon[ic],
-                ]);
+                self.basic.push(Triangle {
+                    a: points[ia].gl(self.size),
+                    b: points[ib].gl(self.size),
+                    c: points[ic].gl(self.size),
+                });
 
                 // mark the point as self.removed
                 self.removed.set(ib as u64, true);
 
                 // recalculate the neighbors
-                let ear = Self::ear(polygon, &self.removed, ia);
+                let ear = Self::ear(points, &self.removed, ia);
                 self.ears.set(ia as u64, ear);
-                let ear = Self::ear(polygon, &self.removed, ic);
+                let ear = Self::ear(points, &self.removed, ic);
                 self.ears.set(ic as u64, ear);
 
                 changes = true;
@@ -117,7 +263,7 @@ impl Triangulator {
 
         }
 
-        Ok(&self.trigs)
+        Ok(())
 
     }
 
@@ -164,13 +310,15 @@ impl Triangulator {
     }
 
     /// Check if the point at `idx` is an ear.
-    fn ear(polygon: &[Vertex], removed: &BitVec, idx: usize) -> bool {
+    /// Y-flipped version.
+    fn ear(polygon: &[CurvePoint], removed: &BitVec, idx: usize) -> bool {
 
         let [ia, ib, ic] = Self::neightbours(removed, idx);
         let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
 
-        let ba = [a.x as i32 - b.x as i32, a.y as i32 - b.y as i32];
-        let bc = [c.x as i32 - b.x as i32, c.y as i32 - b.y as i32];
+        let ba = [a.x() as i32 - b.x() as i32, -(a.y() as i32 - b.y() as i32)];
+        let bc = [c.x() as i32 - b.x() as i32, -(c.y() as i32 - b.y() as i32)];
+        //                                     ^ this minus adjusts it for being y-flipped
     
         // calcualte the angle BA to BC
 
@@ -197,14 +345,17 @@ impl Triangulator {
     }
 
     /// Area of the triangle ABC.
-    fn area(a: Vertex, b: Vertex, c: Vertex) -> f32 {
-        ((a.x as i32 * (b.y as i32 - c.y as i32) +
-          b.x as i32 * (c.y as i32 - a.y as i32) +
-          c.x as i32 * (a.y as i32 - b.y as i32)) as f32 / 2.0).abs()
+    /// Y-flipped version.
+    fn area(a: CurvePoint, b: CurvePoint, c: CurvePoint) -> f32 {
+        ((a.x() as f32 * (c.y() as f32 - b.y() as f32) +
+          b.x() as f32 * (a.y() as f32 - c.y() as f32) +
+          c.x() as f32 * (b.y() as f32 - a.y() as f32)) / 2.0).abs()
+    //                  ^^^ the subtracion is fipped to account for the y-flip
     }
 
     /// If `point` lies within the triangle `trig`.
-    fn intersects(trig: [Vertex; 3], point: Vertex) -> bool {
+    /// Y-flipped version.
+    fn intersects(trig: [CurvePoint; 3], point: CurvePoint) -> bool {
 
         let abc = Self::area(trig[0], trig[1], trig[2]);
 
@@ -247,43 +398,43 @@ fn neightbours() {
 #[test]
 fn convex() {
 
-    let points: &mut [Vertex] = &mut [
-        Vertex { x: 0, y: 0 },
-        Vertex { x: 10, y: 0 },
-        Vertex { x: 15, y: 5 },
-        Vertex { x: 20, y: 10 },
-        Vertex { x: 15, y: 15 },
-        Vertex { x: 10, y: 20 },
-        Vertex { x: 0, y: 20 },
+    let points: &mut [CurvePoint] = &mut [
+        CurvePoint::base(0, 0),
+        CurvePoint::base(10, 0),
+        CurvePoint::base(15, 5),
+        CurvePoint::base(20, 10),
+        CurvePoint::base(15, 15),
+        CurvePoint::base(10, 20),
+        CurvePoint::base(0, 20),
     ];
 
-    let mut state = Triangulator::new();
-    let result = state.triangulate(points);
+    points.reverse();
 
-    assert_eq!(
-        result,
-        Ok(&[Vertex { x: 0 , y: 20 }, Vertex { x: 0 , y: 0  }, Vertex { x: 10, y: 0  },
-          Vertex { x: 0 , y: 20 }, Vertex { x: 10, y: 0  }, Vertex { x: 15, y: 5  },
-          Vertex { x: 0 , y: 20 }, Vertex { x: 15, y: 5  }, Vertex { x: 20, y: 10 },
-          Vertex { x: 0 , y: 20 }, Vertex { x: 20, y: 10 }, Vertex { x: 15, y: 15 },
-          Vertex { x: 0 , y: 20 }, Vertex { x: 15, y: 15 }, Vertex { x: 10, y: 20 }] as &[Vertex])
-    )
+    let mut state = Triangulator::new(Size { width: 20, height: 20 });
+    state.triangulate(points).unwrap();
+
+    dbg!(&state.basic);
 
 }
 
 #[test]
-fn misc() {
+fn curves() {
 
-    let points: &mut [Vertex] = &mut [
-        Vertex { x: 183, y: 66 },
-        Vertex { x: 502, y: 126},
-        Vertex { x: 167, y: 214 },
+    let points: &mut [CurvePoint] = &mut [
+        CurvePoint::base(10, 10),
+        CurvePoint::control(20, 20),
+        CurvePoint::control(20, 20),
+        CurvePoint::base(10, 10),
     ];
 
-    let mut state = Triangulator::new();
-    let result = state.triangulate(points).unwrap();
+    let mut state = Triangulator::new(Size { width: 20, height: 20 });
+    let result = state.curves(points);
 
-    dbg!(result);
+    assert_eq!(
+        result,
+        Err(TriagError::TwoControl)
+    );
+
 
 }
 

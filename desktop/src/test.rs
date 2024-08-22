@@ -1,7 +1,7 @@
 
 use futures_lite::future::block_on;
-use render::Vertex;
-use tracing::{debug, trace};
+use render::{CurvePoint, CurveShape};
+use tracing::{debug, trace, warn};
 
 use desktop::*;
 use egl::*;
@@ -70,13 +70,29 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let shared = render::CurveShared::new(&evl).unwrap();
     let mut renderer = render::CurveRenderer::new(&shared, &*window, Size { width: 500, height: 500 }).unwrap();
 
-    let mut geometry = render::Geometry {
-        verticies: Vec::new(),
-        polygons: Vec::new(),
+    let mut geometry = render::CurveGeometry {
+        points: Vec::new(),
+        shapes: Vec::new(),
     };
 
-    geometry.verticies.push(Vertex { x: 0, y: 0 });
+    geometry.points.push(CurvePoint::base(0, 0));
+    geometry.shapes.push(CurveShape::new(0, 0));
+    
+    // let points: &mut [CurvePoint] = &mut [
+    //     CurvePoint::base(0, 0),
+    //     CurvePoint::base(10, 0),
+    //     CurvePoint::base(15, 5),
+    //     CurvePoint::base(20, 10),
+    //     CurvePoint::base(15, 15),
+    //     CurvePoint::base(10, 20),
+    //     CurvePoint::base(0, 20),
+    // ];
 
+    // points.reverse();
+
+    // geometry.points.extend_from_slice(points);
+
+    geometry.shapes.last_mut().unwrap().len += 1; // TODO: this is counter-intuitive: we use exclusive range so 0..1 means &[]
     // run the event loop
     block_on(async {
 
@@ -90,11 +106,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                         gl::clear(0.0, 0.0, 0.0, 1.0);
                         // println!("geometry: {:?}", &geometry.verticies);
-                        renderer.render(&geometry);
+                        renderer.render(&geometry).ok();
                         window.pre_present_notify();
                         ctx.swap_buffers(None).unwrap();
 
-                        // TODO: reimplement window.redraw() sending a redraw event if no frame cb is registered
                         window.redraw();
 
                     },
@@ -109,19 +124,42 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseMotion { x, y } => {
 
-                        if let Some(point) = geometry.verticies.last_mut() {
-                            *point = Vertex { x: x as u16, y: y as u16 };
+                        // TODO: i think on wayland x, y can be negative .-. try clicking and then moving the mouse out the upper window boundry
+                        if let Some(point) = geometry.points.last_mut() {
+                            if point.basic() {
+                                *point = CurvePoint::base(x as i16, y as i16);
+                            } else {
+                                *point = CurvePoint::control(x as i16, y as i16);
+                            }
                         }
 
                     },
 
                     WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
 
-                        geometry.verticies.push(
-                            Vertex { x: x as u16, y: y as u16 }
+                        geometry.points.push(
+                            CurvePoint::base(x as i16, y as i16)
                         );
 
-                        debug!("add point {:?}", geometry.verticies.last().unwrap());
+                        geometry.shapes.last_mut().unwrap().len += 1;
+
+                        debug!("add point {:?}", geometry.points.last().unwrap());
+
+                        println!("{:?}", geometry.points);
+                    },
+
+
+                    WindowEvent::MouseDown { button: MouseButton::Right, x, y } => {
+
+                        geometry.points.push(
+                            CurvePoint::control(x as i16, y as i16)
+                        );
+
+                        geometry.shapes.last_mut().unwrap().len += 1;
+
+                        debug!("add control point {:?}", geometry.points.last().unwrap());
+
+                        println!("{:?}", geometry.points);
 
                     },
 

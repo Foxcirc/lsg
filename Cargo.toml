@@ -15,11 +15,11 @@ package.authors = ["foxcirc"]
 # harness = false
 # edition = "2021" # the default seems to be 2015
 
+[dependencies]
+desktop = { path = "desktop" }
+render  = { path = "render"  }
+
 [dev-dependencies]
 async-executor = "1.8.0"
 futures-lite = "2.2.0"
 env_logger = "0.11.2"
-
-[dependencies]
-desktop = { version = "0.1.0", path = "desktop" }
-gl = { version = "0.1.0", path = "gl" }

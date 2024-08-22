@@ -389,6 +389,7 @@ impl Context {
     /// Normally EGL specifies the origin in the bottom left of the surface but this is **not**
     /// what this library does. We recalculate the origin for consistency with windowing systems.
     pub fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EglError> {
+        // TODO: i would like to harden the interface so that this can't fail
         self.inner.swap_buffers(damage)
     }
 
