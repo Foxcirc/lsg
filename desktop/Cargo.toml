@@ -5,8 +5,14 @@ edition.workspace = true
 authors.workspace = true
 
 [[test]]
-name = "window"
+name = "test"
 path = "src/test.rs"
+harness = false
+edition = "2021" # why is 2015 the default?
+
+[[test]]
+name = "test2"
+path = "src/test2.rs"
 harness = false
 edition = "2021" # why is 2015 the default?
 

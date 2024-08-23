@@ -1,8 +1,7 @@
 
-use std::{fmt, mem::{size_of, transmute}};
+use std::{fmt, mem::size_of};
 
 use common::*;
-
 use crate::triangulate;
 
 // trait Widget<R>
@@ -73,6 +72,12 @@ impl CurveGeometry {
 pub struct GlPoint {
     x: f32,
     y: f32,
+}
+
+impl GlPoint {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
 }
 
 /// A point on a curve.
@@ -162,11 +167,9 @@ impl CurveShape { // TODO: just use a Range<u16>
 
 pub struct CurveShared {
     lib: egl::Instance,
-    share: egl::ShareContext,
-    /// used for rendering basic triangles
-    basic: gl::LinkedProgram,
-    /// used for rendering beziér curves
-    curve: gl::LinkedProgram,
+    // share: egl::ShareContext,
+    // program: gl::LinkedProgram,
+    // mode: gl::UniformLocation,
 }
 
 impl CurveShared {
@@ -174,45 +177,29 @@ impl CurveShared {
     pub fn new<D: egl::Display>(display: &D) -> Result<Self, RenderError> {
 
         let lib = egl::Instance::new(display)?;
-        let share = egl::ShareContext::new(&lib)?;
+        // let share = egl::ShareContext::new(&lib)?;
 
-        // add shared shaders that the curve renderer uses
+        // share.bind().expect("TODO");
 
-        let basic = {
+        // // add shared shaders that the curve renderer uses
 
-            const VERT: &str = include_str!("shader/basic.vert");
-            const FRAG: &str = include_str!("shader/basic.frag");
+        // const VERT: &str = include_str!("shader/curve.vert");
+        // const FRAG: &str = include_str!("shader/curve.frag");
 
-            let vert = gl::create_shader(gl::ShaderType::Vertex, VERT)?;
-            let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG)?;
+        // let vert = gl::create_shader(gl::ShaderType::Vertex, VERT)?;
+        // let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG)?;
 
-            let mut val = gl::create_program();
-            gl::attach_shader(&mut val, vert);
-            gl::attach_shader(&mut val, frag);
-            gl::link_program(val)?
-
-        };
-
-        let curve = {
-
-            const VERT: &str = include_str!("shader/curve.vert");
-            const FRAG: &str = include_str!("shader/curve.frag");
-
-            let vert = gl::create_shader(gl::ShaderType::Vertex, VERT)?;
-            let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG)?;
-
-            let mut val = gl::create_program();
-            gl::attach_shader(&mut val, vert);
-            gl::attach_shader(&mut val, frag);
-            gl::link_program(val)?
-
-        };
+        // let mut builder = gl::create_program();
+        // gl::attach_shader(&mut builder, vert);
+        // gl::attach_shader(&mut builder, frag);
+        // let program = gl::link_program(builder)?;
+        // let mode = gl::uniform_location(&program, "mode")?;
 
         Ok(Self {
             lib,
-            share,
-            basic,
-            curve
+            // share,
+            // program,
+            // mode,
         })
 
     }
@@ -224,20 +211,13 @@ pub struct CurveRenderer {
     pub size: Size,
     ctx: egl::Context,
     triangulator: triangulate::Triangulator,
-    basic: BasicData,
-    curve: CurveData,
-}
-
-struct BasicData {
-    vao: gl::VertexArrayObject,
+    /// No uv's.
+    // vao1: gl::VertexArrayObject,
+    /// With uv's.
+    vao2: gl::VertexArrayObject,
     vbo: gl::Buffer,
     program: gl::LinkedProgram,
-}
-
-struct CurveData {
-    vao: gl::VertexArrayObject,
-    vbo: gl::Buffer,
-    program: gl::LinkedProgram,
+    // mode: gl::UniformLocation,
 }
 
 impl CurveRenderer {
@@ -250,64 +230,113 @@ impl CurveRenderer {
             &shared.lib,
             window,
             size,
-            Some(&shared.share)
+            None,
         )?;
+
+        ctx.unbind().expect("TODO");
+        ctx.bind().expect("TODO");
+
+        const VERT: &str = include_str!("shader/curve.vert");
+        const FRAG: &str = include_str!("shader/curve.frag");
+
+        let vert = gl::create_shader(gl::ShaderType::Vertex, VERT).unwrap();
+        let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG).unwrap();
+
+        let mut builder = gl::create_program();
+        gl::attach_shader(&mut builder, vert);
+        gl::attach_shader(&mut builder, frag);
+        let program = gl::link_program(builder).unwrap();
 
         let triangulator = triangulate::Triangulator::new(size);
 
-        let basic = {
-            let program = shared.basic.clone();
-            let vbo = gl::gen_buffer(gl::BufferType::ArrayBuffer);
-            let vao = gl::gen_vertex_array();
-            gl::vertex_attribs(&vao, &vbo, 0, 2, gl::DataType::Float, false, 2 * size_of::<f32>(), 0);
-            BasicData { vbo, vao, program }
-        };
-
-        let curve = {
-            let program = shared.curve.clone();
-            let vbo = gl::gen_buffer(gl::BufferType::ArrayBuffer);
-            let vao = gl::gen_vertex_array();
-            gl::vertex_attribs(&vao, &vbo, 0, 2, gl::DataType::Float, false, 2 * size_of::<f32>(), 0);
-            CurveData { vbo, vao, program }
-        };
+        let buffer = gl::gen_buffer(gl::BufferType::ArrayBuffer);
+        
+        // let vao1 = gl::gen_vertex_array();
+        // gl::vertex_attrib_pointer(&vao1, &buffer, 0, 2, gl::DataType::Float, false, 2 * size_of::<f32>(), 0);
+        
+        let vao2 = gl::gen_vertex_array();
+        gl::vertex_attrib_pointer(&vao2, &buffer, 0, 2, gl::DataType::Float, false, 4 * size_of::<f32>(), 0);
+        gl::vertex_attrib_pointer(&vao2, &buffer, 1, 2, gl::DataType::Float, false, 4 * size_of::<f32>(), 2);
 
         Ok(Self {
             size,
             ctx,
             triangulator,
-            basic,
-            curve,
+            // vao1,
+            vao2,
+            vbo: buffer,
+            program,
+            // mode: shared.mode.clone(),
         })
 
     }
     
     pub fn resize(&mut self, size: Size) {
+        // self.ctx.bind().expect("TODO");
         self.size = size;
         self.triangulator.resize(size);
+        self.ctx.resize(size);
         gl::resize_viewport(size);
     }
     
     pub fn render(&mut self, geometry: &CurveGeometry) -> Result<(), RenderError> {
+        // self.ctx.bind().expect("TODO");
+            let p0 = [-0.7f32, -0.2];
+            let p1 = [ 0.0f32,  0.2];
+            let p2 = [ 0.7f32, -0.2];
+            let buffer = [
+                p0[0], p0[1], /* pos */ 0.0, 0.0,  /* uv */
+                p1[0], p1[1], /* pos */ 0.5, 0.0,  /* uv */
+                p2[0], p2[1], /* pos */ 1.0, 1.0,  /* uv */
+            ];
+            // gl::uniform_1ui(&self.program, self.mode, CONVEX);
+            tracing::error!("DRAW");
+            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len() / 4);
+            return Ok(());
+
+        const FILLED:  u32 = 1;
+        const CONVEX:  u32 = 2;
+        const CONCAVE: u32 = 3;
 
         // println!("{:?}", geometry.points);
         let data = self.triangulator.process(geometry)?;
 
         // draw the basic triangles
 
-        // if !data.basic.is_empty() {
-        //     // let buffer = unsafe { transmute(data.basic) }; // TODO: this should be safe, but I wanna avoid it in the best case
-        //     let buffer: Vec<f32> = data.basic.into_iter().map(|it| [[it.a.x, it.a.y], [it.b.x, it.b.y], [it.c.x, it.c.y]]).flatten().flatten().collect();
-        //     gl::buffer_data(&self.basic.vbo, &buffer, gl::DrawHint::Dynamic);
-        //     gl::draw_arrays(&self.basic.program, &self.basic.vao, gl::Primitive::Triangles, 0, buffer.len());
-        // }
+        if data.basic.len() > 0 {
+            // let buffer: &[f32] = unsafe { transmute(data.basic) }; // TODO: this should be safe, but I wanna avoid it in the best case
+            let buffer: Vec<f32> = data.basic.into_iter().map(|it| [[it.a.x, it.a.y], [it.b.x, it.b.y], [it.c.x, it.c.y]]).flatten().flatten().collect();
+            // gl::uniform_1ui(&self.program, self.mode, FILLED);
+            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+            // gl::draw_arrays(&self.program, &self.vao1, gl::Primitive::Triangles, 0, buffer.len());
+            // TODO: enable vao1 again
+        }
 
-        // draw the curves
+        // draw the convex curves
 
-        if !data.curved.is_empty() {
-            // let buffer = unsafe { transmute(data.basic) }; // TODO: this should be safe, but I wanna avoid it in the best case
-            let buffer: Vec<f32> = data.curved.into_iter().map(|it| [[it.a.x, it.a.y], [it.b.x, it.b.y], [it.c.x, it.c.y]]).flatten().flatten().collect();
-            gl::buffer_data(&self.basic.vbo, &buffer, gl::DrawHint::Dynamic);
-            gl::draw_arrays(&self.basic.program, &self.basic.vao, gl::Primitive::Triangles, 0, buffer.len());
+        if data.convex.len() > 0 {
+            // let buffer: &[f32] = unsafe { transmute(data.convex) }; // TODO: this should be safe, but I wanna avoid it in the best case
+            let buffer: Vec<f32> = data.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
+            let p0 = [-0.7f32, -0.2];
+            let p1 = [ 0.0f32,  0.2];
+            let p2 = [ 0.7f32, -0.2];
+            let buffer = [
+                p0[0], p0[1], /* pos */ 0.0, 0.0,  /* UV */
+                p1[0], p1[1], /* pos */ 0.5, 0.0,  /* UV */
+                p2[0], p2[1], /* pos */ 1.0, 1.0,  /* UV */
+            ];
+            // gl::uniform_1ui(&self.program, self.mode, CONVEX);
+            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
+        }
+
+        if data.concave.len() > 0 {
+            // let buffer: &[f32] = unsafe { transmute(data.concave) }; // TODO: this should be safe, but I wanna avoid it in the best case
+            let buffer: Vec<f32> = data.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
+            // gl::uniform_1ui(&self.program, self.mode, CONCAVE);
+            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
         }
 
         Ok(())
@@ -337,6 +366,12 @@ impl From<gl::ShaderError> for RenderError {
 impl From<gl::LinkError> for RenderError {
     fn from(value: gl::LinkError) -> Self {
         Self::Fatal(format!("linking shader program failed, {}", value))
+    }
+}
+
+impl From<gl::UniformUnknown> for RenderError {
+    fn from(_: gl::UniformUnknown) -> Self {
+        Self::Fatal(format!("cannot query uniform"))
     }
 }
 

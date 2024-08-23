@@ -1,13 +1,17 @@
 
-# version 320 es
+// This is the vertex shader for the curve renderer.
+// The vertex shader is the same for every kind of triangle.
+
+#version 320 es
+// #version 440 core
 precision mediump float;
 
-layout (location = 0) in vec3 pos;
-layout (location = 1) in vec2 uvIn; // todo: try inout keyword instead of in
+layout (location = 0) in vec2 pos; // TODO: remove location = N and use gl::attrib_location(name)
+layout (location = 1) in vec2 uvIn;
 
 out vec2 uv;
 
 void main() {
-    gl_Position = vec4(pos.x, pos.y, pos.z, 1.0);
-    uv = uvIn;
+    uv = uvIn; // the uv's will be interpolated for the fragment shader
+    gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
 }

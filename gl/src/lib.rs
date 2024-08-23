@@ -274,19 +274,24 @@ pub struct LinkedProgram {
     pub(crate) id: u32,
 }
 
-pub fn bind_program(program: &LinkedProgram) {
+fn bind_program(program: &LinkedProgram) {
     unsafe { gl::UseProgram(program.id) }
 }
 
-pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<usize, AttribUnknown> {
+pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<AttribLocation, AttribUnknown> {
     let mut buf = [0; 1024];
     let cname = to_small_cstr(&mut buf, name);
     let result = unsafe { gl::GetAttribLocation(program.id, cname.as_ptr()) };
     if result == -1 {
         Err(AttribUnknown)
     } else {
-        Ok(result as usize)
+        Ok(AttribLocation { index: result as u32 })
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct AttribLocation {
+    index: u32,
 }
 
 #[derive(Debug)]
@@ -304,7 +309,7 @@ pub fn gen_vertex_array() -> VertexArrayObject {
     VertexArrayObject { id }
 }
 
-pub fn bind_vertex_array(this: &VertexArrayObject) {
+fn bind_vertex_array(this: &VertexArrayObject) {
     unsafe { gl::BindVertexArray(this.id) }
 }
 
@@ -330,7 +335,7 @@ pub fn buffer_data(buffer: &Buffer, data: &[f32], usage: DrawHint) {
 
 }
 
-pub fn bind_buffer(this: &Buffer) {
+fn bind_buffer(this: &Buffer) {
     unsafe { gl::BindBuffer(this.kind as u32, this.id) }
 }
 
@@ -341,7 +346,7 @@ pub struct Buffer {
 }
 
 /// The array will also be enabled.
-pub fn vertex_attribs(vao: &VertexArrayObject,vbo: &Buffer, location: usize, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
+pub fn vertex_attrib_pointer(vao: &VertexArrayObject,vbo: &Buffer, location: u32, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
     assert_eq!(vbo.kind, BufferType::ArrayBuffer);
 
@@ -357,7 +362,7 @@ pub fn vertex_attribs(vao: &VertexArrayObject,vbo: &Buffer, location: usize, cou
         start as *const _,
     ) };
 
-    unsafe { gl::EnableVertexAttribArray(location as u32) };
+    unsafe { gl::EnableVertexAttribArray(location) };
 
 }
 
@@ -383,28 +388,43 @@ pub enum BufferType {
 }
 
 
-pub fn uniform_location(program: &LinkedProgram, name: &str) -> Result<usize, UniformUnknown> {
+pub fn uniform_location(program: &LinkedProgram, name: &str) -> Result<UniformLocation, UniformUnknown> {
     let mut buf = [0; 1024];
     let cname = to_small_cstr(&mut buf, name);
-    let result = unsafe { gl::GetUniformLocation(program.id, cname.as_ptr()) };
-    if result == -1 {
+    let index = unsafe { gl::GetUniformLocation(program.id, cname.as_ptr()) };
+    if index == -1 {
         Err(UniformUnknown)
     } else {
-        Ok(result as usize)
+        Ok(UniformLocation { index })
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct UniformLocation {
+    index: i32,
 }
 
 #[derive(Debug)]
 pub struct UniformUnknown;
 
-pub fn uniform_4f(program: &LinkedProgram, uniform: usize, x: f32, y: f32, z: f32, w: f32) {
+pub fn uniform_1i(program: &LinkedProgram, uniform: UniformLocation, val: i32) {
     bind_program(program);
-    unsafe { gl::Uniform4f(uniform as i32, x, y, z, w) };
+    unsafe { gl::Uniform1i(uniform.index, val) };
 }
 
-pub fn uniform_3f(program: &LinkedProgram, uniform: usize, x: f32, y: f32, z: f32) {
+pub fn uniform_1ui(program: &LinkedProgram, uniform: UniformLocation, val: u32) {
     bind_program(program);
-    unsafe { gl::Uniform3f(uniform as i32, x, y, z) };
+    unsafe { gl::Uniform1ui(uniform.index, val) };
+}
+
+pub fn uniform_3f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32) {
+    bind_program(program);
+    unsafe { gl::Uniform3f(uniform.index, x, y, z) };
+}
+
+pub fn uniform_4f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32, w: f32) {
+    bind_program(program);
+    unsafe { gl::Uniform4f(uniform.index, x, y, z, w) };
 }
 
 pub fn resize_viewport(size: Size) {

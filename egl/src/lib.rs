@@ -13,7 +13,9 @@ TODO: verify thread safety and add more constraints
      - how is this in lsg, can you render from multiple threads using this in theory rn, at least if you implement your own renderer
  */
 
-pub trait Display {
+/// ### Safety
+/// You must always return valid pointer.
+pub unsafe trait Display {
     /// ### Platforms
     /// **On Wayland,**
     /// should return a pointer to the `wl-display` proxy object.
@@ -21,7 +23,9 @@ pub trait Display {
     fn ptr(&self) -> *mut void;
 }
 
-pub trait Surface {
+/// ### Safety
+/// You must always return valid pointer.
+pub unsafe trait Surface {
     /// ### Platforms
     /// **On Wayland,**
     /// should return a pointer to a `wl-surface` proxy object.
@@ -68,7 +72,7 @@ type FnSwapBuffersWithDamage = fn(
 
 #[derive(Clone)]
 pub struct Instance {
-    lib: Arc<egl::DynamicInstance<egl::EGL1_0>>,
+    lib: Arc<egl::DynamicInstance<egl::EGL1_5>>,
     swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
     display: egl::Display,
 }
@@ -79,8 +83,8 @@ impl Instance {
     pub fn new<D: Display>(display: &D) -> Result<Self, EglError> {
         
         let lib = unsafe {
-            let loaded = egl::DynamicInstance::<egl::EGL1_0>::load_required()
-                .map_err(|_| "failed to load egl 1.0")?; // NOTE: don't forget to update egl version in error message
+            let loaded = egl::DynamicInstance::<egl::EGL1_5>::load_required()
+                .map_err(|_| "failed to load egl 1.5")?; // NOTE: don't forget to update egl version in error message
             Arc::new(loaded)
         };
 
@@ -120,8 +124,8 @@ struct BaseContext {
     instance: Instance,
     egl_surface: egl::Surface,
     egl_context: egl::Context,
-    damage_rects: Vec<Rect>, // only here to save some allocations
-    size: Size, // updated in resize
+    damage_rects: Vec<Rect>, // only here to save some allocations, used in `resize`
+    size: Size, // updated in `resize`
 }
 
 impl Drop for BaseContext {
@@ -136,20 +140,33 @@ impl BaseContext {
     /// Create a new egl context that will draw onto the given surface.
     pub(crate) fn new(instance: &Instance, surface: egl::Surface, config: egl::Config, size: Size, share: Option<&ShareContext>) -> Result<Self, EglError> {
 
+        // type BindApi = fn(u32);
+        // let func = instance.get_proc_address("eglBindAPI").expect("cannot load fn eglBindAPI");
+        // let bind_api: BindApi = unsafe { mem::transmute(func) };
+
+        // opengl has the by far worst api i've seen... ever
+        // like what the fuck is this, why is this not an attrib?!
+        // bind_api(egl::OPENGL_API);
+
         let context = {
             let attribs = [
-                egl::CONTEXT_MAJOR_VERSION, 4,
-                egl::CONTEXT_MINOR_VERSION, 0,
+
+                // egl::CONTEXT_MAJOR_VERSION, 4,
+                // egl::CONTEXT_MINOR_VERSION, 0,
                 egl::CONTEXT_CLIENT_VERSION, 3,
+
+                // egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
                 egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
+
                 egl::NONE,
+
             ];
             instance.lib.create_context(
                 instance.display,
                 config,
                 share.map(|it| it.inner.egl_context),
                 &attribs
-            ).unwrap()
+            )?
         };
 
         Ok(Self {
@@ -167,7 +184,7 @@ impl BaseContext {
 
         self.instance.lib.make_current(
             self.instance.display,
-            Some(self.egl_surface), // note: it is an error to only specify one of the two (read/draw) surfaces
+            Some(self.egl_surface), // NOTE: it is an error to only specify one of the two (read/draw) surfaces
             Some(self.egl_surface),
             Some(self.egl_context)
         )
@@ -227,11 +244,13 @@ impl SurfacelessContext {
     /// Create a new egl context that will draw onto the given surface.
     pub(crate) fn new(instance: &Instance, config: egl::Config) -> Result<Self, EglError> {
 
+        todo!("surfaceless context");
         let context = {
             let attribs = [
                 egl::CONTEXT_MAJOR_VERSION, 4,
-                egl::CONTEXT_MINOR_VERSION, 0,
-                egl::CONTEXT_CLIENT_VERSION, 3,
+                egl::CONTEXT_MINOR_VERSION, 3,
+                egl::CONTEXT_CLIENT_VERSION, 4, // TODO: was 3 once idk what it means what am i doing get me out
+                egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
                 egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
                 egl::NONE,
             ];
@@ -282,17 +301,18 @@ impl ShareContext {
 
         let config = {
             let attribs = [
-                egl::SURFACE_TYPE, egl::WINDOW_BIT,
-                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
-                egl::RED_SIZE, 8,
-                egl::GREEN_SIZE, 8,
-                egl::BLUE_SIZE, 8,
-                egl::ALPHA_SIZE, 8,
+                // egl::SURFACE_TYPE, egl::WINDOW_BIT,
+                // egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
+                // egl::RED_SIZE, 8,
+                // egl::GREEN_SIZE, 8,
+                // egl::BLUE_SIZE, 8,
+                // egl::ALPHA_SIZE, 8,
+                // TODO: what attribs to pass here
                 egl::NONE
             ];
             instance.lib.choose_first_config(instance.display, &attribs)?
                 .ok_or("failed to choose an egl config (normal context)")?
-        };
+        }; // TODO: move "choosing a config" into the SurfacelessContext / BaseContext, or out of there
 
         let inner = SurfacelessContext::new(instance, config)?;
 
@@ -325,13 +345,18 @@ impl Context {
         // TODO: add the ability to use not opengl ES
         // TODO: add the ability to use a custom config
         let config = {
-            let attribs = [
+            let attribs = [ // surface attribs
+
                 egl::SURFACE_TYPE, egl::WINDOW_BIT,
+                // egl::RENDERABLE_TYPE, egl::OPENGL_BIT,
                 egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
+
                 egl::RED_SIZE, 8,
                 egl::GREEN_SIZE, 8,
                 egl::BLUE_SIZE, 8,
                 egl::ALPHA_SIZE, 8,
+                // egl::DEPTH_SIZE, 24,
+                // egl::STENCIL_SIZE, 8,
                 egl::NONE
             ];
             instance.lib.choose_first_config(instance.display, &attribs)?
@@ -346,7 +371,7 @@ impl Context {
             ).map_err(|_| "cannot create WlEglSurface")?
         };
 
-        let attrs = [
+        let attrs = [ // TODO: attrs or attribs, choose a name man
             egl::RENDER_BUFFER, egl::BACK_BUFFER,
             egl::NONE,
         ];

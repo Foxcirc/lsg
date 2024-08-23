@@ -92,9 +92,10 @@ impl<T: 'static + Send> EventLoop<T> {
 
 }
 
-impl<T: Send + 'static> egl::Display for EventLoop<T> {
+unsafe impl<T: Send + 'static> egl::Display for EventLoop<T> {
     fn ptr(&self) -> *mut void {
-        self.wayland.state.con.get_ref().display().id().as_ptr().cast()
+        self.wayland.state.con.get_ref()
+            .display().id().as_ptr().cast()
     }
 }
 

@@ -29,6 +29,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     gl::load_with(|name|
         egl.get_proc_address(name).unwrap() as *const _
     );
+
+    gl::debug_message_callback(gl::debug_message_tracing_handler);
     
     let size = Size { width: 500 , height: 500 };
     let mut window = Window::new(&mut evl, size);
@@ -39,8 +41,6 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     window.set_title("lsg/test");
     window.set_transparency(true);
     window.set_input_mode(&mut evl, InputMode::SingleKey);
-
-    gl::debug_message_callback(gl::debug_message_tracing_handler);
 
     // let points: &mut [[i32; 2]] = &mut [
     //     [0, 0],

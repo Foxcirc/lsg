@@ -30,17 +30,39 @@ impl StdError for TriagError {}
 pub struct OutputGeometry<'a> {
     /// triangles are fully filled
     pub basic: &'a [Triangle],
-    /// triangles should be rendered as a beziér curve
-    pub curved: &'a [Triangle], // TODO: easy: optimize this and return indices + vertices
+    /// triangles should be rendered as a convex beziér curve
+    pub convex: &'a [CurveTriangle], // TODO: optimize this and return indices + vertices
+    /// triangles should be rendered as a concave beziér curve
+    pub concave: &'a [CurveTriangle],
 }
 
 /// The position is in normalized device coordinates.
 #[derive(Debug, Clone)]
 #[repr(packed)]
 pub struct Triangle {
+    // vertex 1
     pub a: GlPoint,
+    // vertex 2
     pub b: GlPoint,
+    // vertex 3
     pub c: GlPoint,
+}
+
+/// The position is in normalized device coordinates.
+/// Also stores uv coordinates that are used to render it as a curve.
+#[derive(Debug, Clone)]
+#[repr(packed)]
+pub struct CurveTriangle {
+    // vertex 1
+    pub a: GlPoint,
+    pub uva: GlPoint,
+    // vertex 2
+    pub b: GlPoint,
+    pub uvb: GlPoint,
+    // vertex 3
+    pub c: GlPoint,
+    pub uvc: GlPoint,
+
 }
 
 pub struct Triangulator { // TODO: make pub(crate)
@@ -51,7 +73,8 @@ pub struct Triangulator { // TODO: make pub(crate)
     removed: BitVec<usize>,
     // outputs
     basic: Vec<Triangle>,
-    curved: Vec<Triangle>,
+    convex: Vec<CurveTriangle>,
+    concave: Vec<CurveTriangle>,
 }
 
 impl Triangulator { // TODO: rename (maybe) since it does more then triangulating
@@ -62,7 +85,8 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
             ears: BitVec::new(),
             removed: BitVec::new(),
             basic: Vec::new(),
-            curved: Vec::new(),
+            convex: Vec::new(),
+            concave: Vec::new(),
         }
     }
 
@@ -80,7 +104,8 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
 
         // reset our state
         self.basic.clear();
-        self.curved.clear();
+        self.convex.clear();
+        self.concave.clear();
 
         for shape in &geometry.shapes {
             let points = &geometry.points[shape.idx as usize..shape.len as usize];
@@ -91,7 +116,8 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
 
         Ok(OutputGeometry {
             basic: &self.basic,
-            curved: &self.curved,
+            convex: &self.convex,
+            concave: &self.concave,
         })
         
     }
@@ -132,11 +158,23 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
                     !points[ib].basic() &&
                      points[ic].basic() {
 
-                self.curved.push(Triangle {
+                let neightbours = [points[ia], points[ib], points[ic]];
+                let convex = Self::convex(neightbours);
+
+                let triangle = CurveTriangle {
                     a: points[ia].gl(self.size),
                     b: points[ib].gl(self.size),
                     c: points[ic].gl(self.size),
-                });
+                    uva: GlPoint::new(0.0, 0.0),
+                    uvb: GlPoint::new(0.5, 0.0),
+                    uvc: GlPoint::new(1.0, 1.0),
+                };
+
+                if convex {
+                    self.convex.push(triangle);
+                } else {
+                    self.concave.push(triangle);
+                }
 
             }
             
@@ -309,12 +347,37 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
     
     }
 
-    /// Check if the point at `idx` is an ear.
+    /// Check if the point at `idx` is an ear, accounting for removed neightbours.
     /// Y-flipped version.
     fn ear(polygon: &[CurvePoint], removed: &BitVec, idx: usize) -> bool {
 
         let [ia, ib, ic] = Self::neightbours(removed, idx);
-        let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
+        let neightbours = [polygon[ia], polygon[ib], polygon[ic]];
+
+        // short curcuit if it is concave
+        let convex = Self::convex(neightbours);
+        if !convex {
+            return false
+        }
+
+        let [a, b, c] = neightbours;
+
+        let mut intersects = false;
+        for point in polygon.iter() {
+            if [a, b, c].contains(point) { continue };
+            intersects |= Self::intersects([a, b, c], *point)
+        }
+
+        !intersects
+
+    }
+
+
+    /// Check if the three points are convex, assuming counter clockwise orientation.
+    /// Y-flipped version.
+    fn convex(neightbours: [CurvePoint; 3]) -> bool {
+
+        let [a, b, c] = neightbours;
 
         let ba = [a.x() as i32 - b.x() as i32, -(a.y() as i32 - b.y() as i32)];
         let bc = [c.x() as i32 - b.x() as i32, -(c.y() as i32 - b.y() as i32)];
@@ -334,14 +397,8 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
 
         // check if any other vertex is inside the triangle ABC
 
-        let mut intersects = false;
-        for point in polygon.iter() {
-            if [a, b, c].contains(point) { continue };
-            intersects |= Self::intersects([a, b, c], *point)
-        }
-
-        !intersects && angle < 180.0 // TODO: can precicion errors mess this up so that we go into an infinite loop later? prevent infinite looping!
-
+        angle < 180.0 // TODO: can precicion errors mess this up so that we go into an infinite loop later? prevent infinite looping!
+        
     }
 
     /// Area of the triangle ABC.

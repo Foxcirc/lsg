@@ -517,7 +517,7 @@ impl<T: 'static + Send> BaseWindow<T> {
     
 }
 
-impl<T: Send + 'static> egl::Surface for BaseWindow<T> {
+unsafe impl<T: Send + 'static> egl::Surface for BaseWindow<T> {
     fn ptr(&self) -> *mut void {
         self.wl_surface.id().as_ptr().cast()
     }
