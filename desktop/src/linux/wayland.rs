@@ -184,6 +184,8 @@ pub(crate) struct Connection<T: 'static + Send> {
     queue: EventQueue<WaylandState<T>>,
 }
 
+// TODO: don't use Deref<BaseWindow> for Window, since Deref can be confusing
+
 impl<T: 'static + Send> Connection<T> {
 
     pub fn new(application: &str) -> Result<Self, EvlError> {
@@ -419,7 +421,7 @@ pub struct BaseWindow<T: 'static + Send> {
     shared: Arc<Mutex<WindowShared>>, // needs to be accessed by some callbacks
     // wayland state
     qh: QueueHandle<WaylandState<T>>,
-    proxy: EventProxy<T>,
+    // proxy: EventProxy<T>,
     compositor: WlCompositor, // used to create opaque regions
     pub(crate) wl_surface: WlSurface,
 }
@@ -463,7 +465,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             shared,
             qh: evb.qh.clone(),
             compositor: evb.globals.compositor.clone(),
-            proxy: EventProxy::new(evl),
+            // proxy: EventProxy::new(evl),
             wl_surface: surface,
         }
         

@@ -158,8 +158,7 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
                     !points[ib].basic() &&
                      points[ic].basic() {
 
-                let neightbours = [points[ia], points[ib], points[ic]];
-                let convex = Self::convex(neightbours);
+                let [a, b, c] = [points[ia], points[ib], points[ic]];
 
                 let triangle = CurveTriangle {
                     a: points[ia].gl(self.size),
@@ -170,7 +169,7 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
                     uvc: GlPoint::new(1.0, 1.0),
                 };
 
-                if convex {
+                if Self::convex([a, b, c]) {
                     self.convex.push(triangle);
                 } else {
                     self.concave.push(triangle);
@@ -231,16 +230,19 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
                 [idx - 1, idx, idx + 1]
             };
 
+            let [a, b, c] = [points[ia], points[ib], points[ic]];
+
             // can't have two control points next to each other
-            if (!points[ia].basic() && !points[ib].basic()) ||
-               (!points[ib].basic() && !points[ic].basic()) {
+            if (!a.basic() && !b.basic()) ||
+               (!b.basic() && !c.basic()) {
                 return Err(TriagError::TwoControl)
             }
 
             // find the relevant pairs
             else if  points[ia].basic() &&
                     !points[ib].basic() &&
-                     points[ic].basic() {
+                     points[ic].basic() && 
+                     Self::convex([a, b, c]) {
 
                 self.removed.set(ib as u64, true);
                 
@@ -397,7 +399,7 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
 
         // check if any other vertex is inside the triangle ABC
 
-        angle < 180.0 // TODO: can precicion errors mess this up so that we go into an infinite loop later? prevent infinite looping!
+        angle < 180.0
         
     }
 

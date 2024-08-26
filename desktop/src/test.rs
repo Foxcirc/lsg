@@ -35,8 +35,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size { width: 500 , height: 500 };
     let mut window = Window::new(&mut evl, size);
 
-    let mut ctx = Context::new(&egl, &*window, size, None)?; // create an egl context for our window
-    ctx.bind()?; // make the context current
+    // let mut ctx = Context::new(&egl, &*window, size, None)?; // create an egl context for our window
+    // ctx.bind()?; // make the context current
 
     window.set_title("lsg/test");
     window.set_transparency(true);
@@ -104,11 +104,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Redraw => {
 
-                        gl::clear(0.0, 0.0, 0.0, 1.0);
+                        gl::clear(0.0, 0.0, 0.0, 0.2);
                         // println!("geometry: {:?}", &geometry.verticies);
-                        renderer.render(&geometry).ok();
+                        renderer.draw(&geometry).ok();
                         window.pre_present_notify();
-                        ctx.swap_buffers(None).unwrap();
+                        // ctx.swap_buffers(None).unwrap();
 
                         window.redraw();
 
@@ -117,7 +117,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::Resize { size, .. } => {
                         // ctx.resize(size);
                         renderer.resize(size);
-                        ctx.resize(size);
+                        // ctx.resize(size);
                         gl::resize_viewport(size);
                         // current_size = size;
                     },

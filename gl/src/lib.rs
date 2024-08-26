@@ -345,8 +345,17 @@ pub struct Buffer {
     kind: BufferType,
 }
 
+pub struct VertexAttribs {
+    pub location: u32,
+    pub count: usize,
+    pub kind: DataType,
+    pub normalize: bool,
+    pub stride: usize,
+    pub start: usize,
+}
+
 /// The array will also be enabled.
-pub fn vertex_attrib_pointer(vao: &VertexArrayObject,vbo: &Buffer, location: u32, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
+pub fn vertex_attrib_pointer(vao: &VertexArrayObject, vbo: &Buffer, attribs: VertexAttribs) {
 
     assert_eq!(vbo.kind, BufferType::ArrayBuffer);
 
@@ -354,15 +363,15 @@ pub fn vertex_attrib_pointer(vao: &VertexArrayObject,vbo: &Buffer, location: u32
     bind_buffer(vbo);
 
     unsafe { gl::VertexAttribPointer(
-        location as u32,
-        count as i32,
-        kind as u32,
-        normalize as u8,
-        stride as i32,
-        start as *const _,
+        attribs.location as u32,
+        attribs.count as i32,
+        attribs.kind as u32,
+        attribs.normalize as u8,
+        attribs.stride as i32,
+        attribs.start as *const _,
     ) };
 
-    unsafe { gl::EnableVertexAttribArray(location) };
+    unsafe { gl::EnableVertexAttribArray(attribs.location) };
 
 }
 

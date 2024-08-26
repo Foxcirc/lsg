@@ -1,8 +1,8 @@
 
-use std::{fmt, mem::size_of};
+use std::{fmt, mem::size_of, thread::sleep_ms};
 
 use common::*;
-use crate::triangulate;
+use crate::{triangulate, OutputGeometry};
 
 // trait Widget<R>
 // fn draw(&mut self, renderer: &mut R);
@@ -211,13 +211,11 @@ pub struct CurveRenderer {
     pub size: Size,
     ctx: egl::Context,
     triangulator: triangulate::Triangulator,
-    /// No uv's.
-    // vao1: gl::VertexArrayObject,
-    /// With uv's.
-    vao2: gl::VertexArrayObject,
+    vao1: gl::VertexArrayObject, // mode without uv's
+    vao2: gl::VertexArrayObject, // mode with uv's
     vbo: gl::Buffer,
     program: gl::LinkedProgram,
-    // mode: gl::UniformLocation,
+    mode: gl::UniformLocation,
 }
 
 impl CurveRenderer {
@@ -226,15 +224,8 @@ impl CurveRenderer {
 
         // TODO: we are not binding any ctx rn :P
 
-        let ctx = egl::Context::new(
-            &shared.lib,
-            window,
-            size,
-            None,
-        )?;
-
-        ctx.unbind().expect("TODO");
-        ctx.bind().expect("TODO");
+        let ctx = egl::Context::new(&shared.lib, window, size, None)?;
+        ctx.bind()?;
 
         const VERT: &str = include_str!("shader/curve.vert");
         const FRAG: &str = include_str!("shader/curve.frag");
@@ -251,22 +242,48 @@ impl CurveRenderer {
 
         let buffer = gl::gen_buffer(gl::BufferType::ArrayBuffer);
         
-        // let vao1 = gl::gen_vertex_array();
-        // gl::vertex_attrib_pointer(&vao1, &buffer, 0, 2, gl::DataType::Float, false, 2 * size_of::<f32>(), 0);
+        let vao1 = gl::gen_vertex_array();
         
+        gl::vertex_attrib_pointer(&vao1, &buffer, gl::VertexAttribs {
+            location: 0,
+            kind: gl::DataType::Float,
+            normalize: false,
+            count: 2,
+            stride: 2 * size_of::<f32>(),
+            start: 0 * size_of::<f32>(),
+        });
+
         let vao2 = gl::gen_vertex_array();
-        gl::vertex_attrib_pointer(&vao2, &buffer, 0, 2, gl::DataType::Float, false, 4 * size_of::<f32>(), 0);
-        gl::vertex_attrib_pointer(&vao2, &buffer, 1, 2, gl::DataType::Float, false, 4 * size_of::<f32>(), 2);
+
+        gl::vertex_attrib_pointer(&vao2, &buffer, gl::VertexAttribs {
+            location: 0,
+            kind: gl::DataType::Float,
+            normalize: false,
+            count: 2,
+            stride: 4 * size_of::<f32>(),
+            start: 0 * size_of::<f32>(),
+        });
+
+        gl::vertex_attrib_pointer(&vao2, &buffer, gl::VertexAttribs {
+            location: 1,
+            kind: gl::DataType::Float,
+            normalize: false,
+            count: 2,
+            stride: 4 * size_of::<f32>(),
+            start: 2 * size_of::<f32>(),
+        });
+
+        let mode = gl::uniform_location(&program, "mode").expect("FUCK TODO");
 
         Ok(Self {
             size,
             ctx,
             triangulator,
-            // vao1,
+            vao1,
             vao2,
             vbo: buffer,
             program,
-            // mode: shared.mode.clone(),
+            mode,
         })
 
     }
@@ -279,67 +296,74 @@ impl CurveRenderer {
         gl::resize_viewport(size);
     }
     
-    pub fn render(&mut self, geometry: &CurveGeometry) -> Result<(), RenderError> {
+    pub fn draw(&mut self, geometry: &CurveGeometry) -> Result<(), RenderError> {
         // self.ctx.bind().expect("TODO");
-            let p0 = [-0.7f32, -0.2];
-            let p1 = [ 0.0f32,  0.2];
-            let p2 = [ 0.7f32, -0.2];
-            let buffer = [
-                p0[0], p0[1], /* pos */ 0.0, 0.0,  /* uv */
-                p1[0], p1[1], /* pos */ 0.5, 0.0,  /* uv */
-                p2[0], p2[1], /* pos */ 1.0, 1.0,  /* uv */
-            ];
-            // gl::uniform_1ui(&self.program, self.mode, CONVEX);
-            tracing::error!("DRAW");
-            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len() / 4);
-            return Ok(());
+            // let p0 = [-0.7f32, -0.2];
+            // let p1 = [ 0.0f32,  0.2];
+            // let p2 = [ 0.7f32, -0.2];
+            // let buffer = [
+            //     p0[0], p0[1], /* pos */ 0.0, 0.0,  /* uv */
+            //     p1[0], p1[1], /* pos */ 0.5, 0.0,  /* uv */
+            //     p2[0], p2[1], /* pos */ 1.0, 1.0,  /* uv */
+            // ];
+            // // gl::uniform_1ui(&self.program, self.mode, CONVEX);
+            // gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+            // gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len() / 4);
+            // self.ctx.swap_buffers(None).expect("TODO fuck");
+            // return Ok(());
 
         const FILLED:  u32 = 1;
         const CONVEX:  u32 = 2;
         const CONCAVE: u32 = 3;
-
+        
         // println!("{:?}", geometry.points);
-        let data = self.triangulator.process(geometry)?;
+        match self.triangulator.process(geometry) {
 
-        // draw the basic triangles
+            Ok(data) => {
 
-        if data.basic.len() > 0 {
-            // let buffer: &[f32] = unsafe { transmute(data.basic) }; // TODO: this should be safe, but I wanna avoid it in the best case
-            let buffer: Vec<f32> = data.basic.into_iter().map(|it| [[it.a.x, it.a.y], [it.b.x, it.b.y], [it.c.x, it.c.y]]).flatten().flatten().collect();
-            // gl::uniform_1ui(&self.program, self.mode, FILLED);
-            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-            // gl::draw_arrays(&self.program, &self.vao1, gl::Primitive::Triangles, 0, buffer.len());
-            // TODO: enable vao1 again
+                // draw the basic triangles
+                if data.basic.len() > 0 {
+                 // println!("{:?}", data.basic);
+                 // let buffer: &[f32] = unsafe { transmute(data.basic) }; // TODO: this should be safe, but I wanna avoid it in the best case
+                    let buffer: Vec<f32> = data.basic.into_iter().map(|it| [[it.a.x, it.a.y], [it.b.x, it.b.y], [it.c.x, it.c.y]]).flatten().flatten().collect();
+                    gl::uniform_1ui(&self.program, self.mode, FILLED);
+                    gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+                    gl::draw_arrays(&self.program, &self.vao1, gl::Primitive::Triangles, 0, buffer.len());
+                }
+
+                // draw the convex curves
+                if data.convex.len() > 0 {
+                    println!("drawing {} convex trigs: {:?}", data.convex.len(), data.convex.get(0).map(|t| [t.a, t.b, t.c]));
+                    // let buffer: &[f32] = unsafe { transmute(data.convex) }; // TODO: this should be safe, but I wanna avoid it in the best case
+                    let buffer: Vec<f32> = data.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
+                    gl::uniform_1ui(&self.program, self.mode, CONVEX);
+                    gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+                    gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
+                }
+
+                // TODO: fix annoying race condition with uniform value write race
+
+                // draw the concave curves
+                if data.concave.len() > 0 {
+                    println!("drawing {} concave trigs: {:?}", data.concave.len(), data.concave.get(0).map(|t| [t.a, t.b, t.c]));
+                    // let buffer: &[f32] = unsafe { transmute(data.concave) }; // TODO: this should be safe, but I wanna avoid it in the best case
+                    let buffer: Vec<f32> = data.concave.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
+                    gl::uniform_1ui(&self.program, self.mode, CONCAVE);
+                    gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+                    gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
+                }
+
+                self.ctx.swap_buffers(None).expect("TODO");
+                Ok(())
+
+            },
+
+            Err(err) => {
+                self.ctx.swap_buffers(None).expect("TODO");
+                Err(err.into())
+            }
+
         }
-
-        // draw the convex curves
-
-        if data.convex.len() > 0 {
-            // let buffer: &[f32] = unsafe { transmute(data.convex) }; // TODO: this should be safe, but I wanna avoid it in the best case
-            let buffer: Vec<f32> = data.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
-            let p0 = [-0.7f32, -0.2];
-            let p1 = [ 0.0f32,  0.2];
-            let p2 = [ 0.7f32, -0.2];
-            let buffer = [
-                p0[0], p0[1], /* pos */ 0.0, 0.0,  /* UV */
-                p1[0], p1[1], /* pos */ 0.5, 0.0,  /* UV */
-                p2[0], p2[1], /* pos */ 1.0, 1.0,  /* UV */
-            ];
-            // gl::uniform_1ui(&self.program, self.mode, CONVEX);
-            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
-        }
-
-        if data.concave.len() > 0 {
-            // let buffer: &[f32] = unsafe { transmute(data.concave) }; // TODO: this should be safe, but I wanna avoid it in the best case
-            let buffer: Vec<f32> = data.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
-            // gl::uniform_1ui(&self.program, self.mode, CONCAVE);
-            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
-        }
-
-        Ok(())
         
     }
 

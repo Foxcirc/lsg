@@ -77,8 +77,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let vertex_array = gl::gen_vertex_array();
     let curve_buffer = gl::gen_buffer(gl::BufferType::ArrayBuffer);
-    gl::vertex_attrib_pointer(&vertex_array, &curve_buffer, 0, 3, gl::DataType::Float, false, 4 * 5, 0); // pos
-    gl::vertex_attrib_pointer(&vertex_array, &curve_buffer, 1, 2, gl::DataType::Float, false, 4 * 5, 4 * 3); // UV
+    gl::vertex_attrib_pointer(&vertex_array, &curve_buffer, gl::VertexAttribs { location: 0, count: 3, kind: gl::DataType::Float, normalize: false, stride: 4 * 5, start: 0 }); // pos
+    gl::vertex_attrib_pointer(&vertex_array, &curve_buffer, gl::VertexAttribs { location: 1, count: 2, kind: gl::DataType::Float, normalize: false, stride: 4 * 5, start: 4 * 3 }); // UV
 
     const VERT: &str = "#version 320 es
         precision mediump float;

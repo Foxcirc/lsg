@@ -151,11 +151,10 @@ impl BaseContext {
         let context = {
             let attribs = [
 
-                // egl::CONTEXT_MAJOR_VERSION, 4,
-                // egl::CONTEXT_MINOR_VERSION, 0,
+                egl::CONTEXT_MAJOR_VERSION, 4,
+                egl::CONTEXT_MINOR_VERSION, 0,
                 egl::CONTEXT_CLIENT_VERSION, 3,
 
-                // egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
                 egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
 
                 egl::NONE,
@@ -164,7 +163,8 @@ impl BaseContext {
             instance.lib.create_context(
                 instance.display,
                 config,
-                share.map(|it| it.inner.egl_context),
+                // share.map(|it| it.inner.egl_context),
+                None,
                 &attribs
             )?
         };
