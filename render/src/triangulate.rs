@@ -1,7 +1,7 @@
 
 //! Ear-clipping triangulation on the cpu.
 
-use std::{f32::consts::PI, fmt, error::Error as StdError};
+use std::{error::Error as StdError, f32::consts::PI, fmt, ops::Range};
 use bv::BitVec;
 use common::Size;
 
@@ -28,12 +28,19 @@ impl StdError for TriagError {}
 
 /// Output after processing a polygon.
 pub struct OutputGeometry<'a> {
-    /// triangles are fully filled
-    pub basic: &'a [Triangle],
-    /// triangles should be rendered as a convex beziér curve
-    pub convex: &'a [CurveTriangle], // TODO: optimize this and return indices + vertices
-    /// triangles should be rendered as a concave beziér curve
-    pub concave: &'a [CurveTriangle],
+    /// raw vertices of different kinds, described by `indices`
+    pub vertices: &'a [f32],
+    /// raw indices of different kinds, described by the other fields
+    pub indices: &'a [u32],
+    /// index into indices,
+    /// fully filled triangles, vertex layout is `{ x: f32, y: f32 }`
+    pub basic: Range<u16>,
+    /// index into indicesj,
+    /// triangles to render as a convex beziér curve, vertex layout is `{ x: f32, y: f32, u: f32, v: f32 }`
+    pub convex: Range<u16>,
+    /// index into indices,
+    /// triangles to render as a convex beziér curve, vertex layout is `{ x: f32, y: f32, u: f32, v: f32 }`
+    pub concave: Range<u16>,
 }
 
 /// The position is in normalized device coordinates.

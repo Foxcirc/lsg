@@ -322,13 +322,17 @@ pub fn gen_buffer(kind: BufferType) -> Buffer {
     
 }
 
-pub fn buffer_data(buffer: &Buffer, data: &[f32], usage: DrawHint) {
+/// This function doesn't perform type-checking, it accepts a slice of any type
+/// and hands it to opengl as bytes.
+/// This is not unsafe, since all bytes are valid numbers, but may cause nasty bugs, so
+/// be careful to pass in the right type here.
+pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
     
     bind_buffer(buffer);
 
     unsafe { gl::BufferData(
         buffer.kind as u32,
-        (data.len() * size_of::<f32>()) as isize,
+        (data.len() * size_of::<T>()) as isize,
         data.as_ptr().cast(),
         usage as u32
     ) }
@@ -354,6 +358,8 @@ pub struct VertexAttribs {
     pub stride: usize,
     pub start: usize,
 }
+
+// TODO: implement buffer deleting (cleanup in the destructors)
 
 /// The array will also be enabled.
 pub fn vertex_attrib_pointer(vao: &VertexArrayObject, vbo: &Buffer, attribs: VertexAttribs) {
@@ -442,16 +448,21 @@ pub fn resize_viewport(size: Size) {
     unsafe { gl::Viewport(0, 0, size.width as i32, size.height as i32) }
 }
 
+/// Remember,
+/// `count` is the number of vertices not primitives.
 pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawArrays(primitive as u32, start as i32, count as i32) }
 }
 
-pub fn draw_elements(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, count: usize) {
+/// Expects u32 as indices right now.
+/// `start` is an index in bytes * sizeof(u32), not in bytes.
+/// `count` is the number of indices not primitives.
+pub fn draw_elements(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {
     bind_program(program);
     bind_vertex_array(vao);
-    unsafe { gl::DrawElements(primitive as u32, count as i32, gl::UNSIGNED_INT, null()) }
+    unsafe { gl::DrawElements(primitive as u32, count as i32, gl::UNSIGNED_INT, (start * size_of::<u32>()) as *const void) }
 }
 
 #[derive(Debug, Clone, Copy)]

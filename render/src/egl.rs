@@ -214,6 +214,7 @@ pub struct CurveRenderer {
     vao1: gl::VertexArrayObject, // mode without uv's
     vao2: gl::VertexArrayObject, // mode with uv's
     vbo: gl::Buffer,
+    ebo: gl::Buffer,
     program: gl::LinkedProgram,
     mode: gl::UniformLocation,
 }
@@ -238,11 +239,12 @@ impl CurveRenderer {
 
         let triangulator = triangulate::Triangulator::new(size);
 
-        let buffer = gl::gen_buffer(gl::BufferType::ArrayBuffer);
+        let vbo = gl::gen_buffer(gl::BufferType::ArrayBuffer);
+        let ebo = gl::gen_buffer(gl::BufferType::ElementBuffer);
         
         let vao1 = gl::gen_vertex_array();
         
-        gl::vertex_attrib_pointer(&vao1, &buffer, gl::VertexAttribs {
+        gl::vertex_attrib_pointer(&vao1, &vbo, gl::VertexAttribs {
             location: 0,
             count: 2,
             stride: 2 * size_of::<f32>(),
@@ -252,7 +254,7 @@ impl CurveRenderer {
 
         let vao2 = gl::gen_vertex_array();
 
-        gl::vertex_attrib_pointer(&vao2, &buffer, gl::VertexAttribs {
+        gl::vertex_attrib_pointer(&vao2, &vbo, gl::VertexAttribs {
             location: 0,
             count: 2,
             stride: 4 * size_of::<f32>(),
@@ -260,7 +262,7 @@ impl CurveRenderer {
             ..Default::default()
         });
 
-        gl::vertex_attrib_pointer(&vao2, &buffer, gl::VertexAttribs {
+        gl::vertex_attrib_pointer(&vao2, &vbo, gl::VertexAttribs {
             location: 1,
             count: 2,
             stride: 4 * size_of::<f32>(),
@@ -276,7 +278,8 @@ impl CurveRenderer {
             triangulator,
             vao1,
             vao2,
-            vbo: buffer,
+            vbo,
+            ebo,
             program,
             mode,
         })
@@ -298,55 +301,51 @@ impl CurveRenderer {
         const FILLED:  u32 = 1;
         const CONVEX:  u32 = 2;
         const CONCAVE: u32 = 3;
-        
-        // println!("{:?}", geometry.points);
-        match self.triangulator.process(geometry) {
 
-            Ok(data) => {
+        self.ctx.swap_buffers(None).expect("TODO REMOVE THIS"); // TODO only there for test.rs to work
 
-                // draw the basic triangles
-                if data.basic.len() > 0 {
-                 // println!("{:?}", data.basic);
-                 // let buffer: &[f32] = unsafe { transmute(data.basic) }; // TODO: this should be safe, but I wanna avoid it in the best case
-                    let buffer: Vec<f32> = data.basic.into_iter().map(|it| [[it.a.x, it.a.y], [it.b.x, it.b.y], [it.c.x, it.c.y]]).flatten().flatten().collect();
-                    gl::uniform_1ui(&self.program, self.mode, FILLED);
-                    gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-                    gl::draw_arrays(&self.program, &self.vao1, gl::Primitive::Triangles, 0, buffer.len());
-                }
+        let result = self.triangulator.process(geometry)?;
 
-                // draw the convex curves
-                if data.convex.len() > 0 {
-                    // println!("drawing {} convex trigs: {:?}", data.convex.len(), data.convex.get(0).map(|t| [t.a, t.b, t.c]));
-                    // let buffer: &[f32] = unsafe { transmute(data.convex) }; // TODO: this should be safe, but I wanna avoid it in the best case
-                    let buffer: Vec<f32> = data.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
-                    gl::uniform_1ui(&self.program, self.mode, CONVEX);
-                    gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-                    gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
-                }
+        // upload the vertices & indices to the gpu
+        gl::buffer_data(&self.vbo, result.vertices, gl::DrawHint::Dynamic);
+        gl::buffer_data(&self.ebo, result.indices,  gl::DrawHint::Dynamic);
 
-                // TODO: fix annoying race condition with uniform value write race
-
-                // draw the concave curves
-                if data.concave.len() > 0 {
-                    // println!("drawing {} concave trigs: {:?}", data.concave.len(), data.concave.get(0).map(|t| [t.a, t.b, t.c]));
-                    // let buffer: &[f32] = unsafe { transmute(data.concave) }; // TODO: this should be safe, but I wanna avoid it in the best case
-                    let buffer: Vec<f32> = data.concave.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
-                    gl::uniform_1ui(&self.program, self.mode, CONCAVE);
-                    gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-                    gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
-                }
-
-                self.ctx.swap_buffers(None).expect("TODO");
-                Ok(())
-
-            },
-
-            Err(err) => {
-                self.ctx.swap_buffers(None).expect("TODO"); // TODO: this can go after this is more ready, since this is only here for the test.rs rn
-                Err(err.into())
-            }
-
+        // draw the basic triangles
+        if result.basic.len() > 0 {
+         // println!("{:?}", data.basic);
+            gl::uniform_1ui(&self.program, self.mode, FILLED);
+            gl::draw_elements(&self.program, &self.vao1, gl::Primitive::Triangles, result.basic.start as usize, result.basic.len());
         }
+
+        /*
+
+        // draw the convex curves
+        if result.convex.len() > 0 {
+            // println!("drawing {} convex trigs: {:?}", data.convex.len(), data.convex.get(0).map(|t| [t.a, t.b, t.c]));
+            // let buffer: &[f32] = unsafe { transmute(data.convex) }; // TODO: this should be safe, but I wanna avoid it in the best case
+            let buffer: Vec<f32> = result.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
+            gl::uniform_1ui(&self.program, self.mode, CONVEX);
+            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
+        }
+
+        // TODO: fix annoying race condition with uniform value write race
+
+        // draw the concave curves
+        if result.concave.len() > 0 {
+            // println!("drawing {} concave trigs: {:?}", data.concave.len(), data.concave.get(0).map(|t| [t.a, t.b, t.c]));
+            // let buffer: &[f32] = unsafe { transmute(data.concave) }; // TODO: this should be safe, but I wanna avoid it in the best case
+            let buffer: Vec<f32> = result.concave.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
+            gl::uniform_1ui(&self.program, self.mode, CONCAVE);
+            gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
+            gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len());
+        }
+
+        */
+
+        self.ctx.swap_buffers(None).expect("TODO");
+
+        Ok(())
         
     }
 
