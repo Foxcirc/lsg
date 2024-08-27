@@ -33,6 +33,6 @@ void main() {
     
     a = min(1.0, a + 0.1);
 
-    final = vec4(0.1, 0.5, b, a);
+    final = vec4(0.3, b, 0.8, a);
 
 }

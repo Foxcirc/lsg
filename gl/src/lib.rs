@@ -345,6 +345,7 @@ pub struct Buffer {
     kind: BufferType,
 }
 
+#[derive(Default)]
 pub struct VertexAttribs {
     pub location: u32,
     pub count: usize,
@@ -375,9 +376,10 @@ pub fn vertex_attrib_pointer(vao: &VertexArrayObject, vbo: &Buffer, attribs: Ver
 
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(u32)]
 pub enum DataType {
+    #[default]
     Float = gl::FLOAT,
 }
 

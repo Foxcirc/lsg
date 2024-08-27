@@ -222,8 +222,6 @@ impl CurveRenderer {
 
     pub fn new<W: egl::Surface>(shared: &CurveShared, window: &W, size: Size) -> Result<Self, egl::EglError> {
 
-        // TODO: we are not binding any ctx rn :P
-
         let ctx = egl::Context::new(&shared.lib, window, size, None)?;
         ctx.bind()?;
 
@@ -246,31 +244,28 @@ impl CurveRenderer {
         
         gl::vertex_attrib_pointer(&vao1, &buffer, gl::VertexAttribs {
             location: 0,
-            kind: gl::DataType::Float,
-            normalize: false,
             count: 2,
             stride: 2 * size_of::<f32>(),
-            start: 0 * size_of::<f32>(),
+            start:  0 * size_of::<f32>(),
+            ..Default::default()
         });
 
         let vao2 = gl::gen_vertex_array();
 
         gl::vertex_attrib_pointer(&vao2, &buffer, gl::VertexAttribs {
             location: 0,
-            kind: gl::DataType::Float,
-            normalize: false,
             count: 2,
             stride: 4 * size_of::<f32>(),
-            start: 0 * size_of::<f32>(),
+            start:  0 * size_of::<f32>(),
+            ..Default::default()
         });
 
         gl::vertex_attrib_pointer(&vao2, &buffer, gl::VertexAttribs {
             location: 1,
-            kind: gl::DataType::Float,
-            normalize: false,
             count: 2,
             stride: 4 * size_of::<f32>(),
-            start: 2 * size_of::<f32>(),
+            start:  2 * size_of::<f32>(),
+            ..Default::default()
         });
 
         let mode = gl::uniform_location(&program, "mode").expect("FUCK TODO");
@@ -297,20 +292,8 @@ impl CurveRenderer {
     }
     
     pub fn draw(&mut self, geometry: &CurveGeometry) -> Result<(), RenderError> {
-        // self.ctx.bind().expect("TODO");
-            // let p0 = [-0.7f32, -0.2];
-            // let p1 = [ 0.0f32,  0.2];
-            // let p2 = [ 0.7f32, -0.2];
-            // let buffer = [
-            //     p0[0], p0[1], /* pos */ 0.0, 0.0,  /* uv */
-            //     p1[0], p1[1], /* pos */ 0.5, 0.0,  /* uv */
-            //     p2[0], p2[1], /* pos */ 1.0, 1.0,  /* uv */
-            // ];
-            // // gl::uniform_1ui(&self.program, self.mode, CONVEX);
-            // gl::buffer_data(&self.vbo, &buffer, gl::DrawHint::Dynamic);
-            // gl::draw_arrays(&self.program, &self.vao2, gl::Primitive::Triangles, 0, buffer.len() / 4);
-            // self.ctx.swap_buffers(None).expect("TODO fuck");
-            // return Ok(());
+
+        // TODO: bind correct gl CTX
 
         const FILLED:  u32 = 1;
         const CONVEX:  u32 = 2;
@@ -333,7 +316,7 @@ impl CurveRenderer {
 
                 // draw the convex curves
                 if data.convex.len() > 0 {
-                    println!("drawing {} convex trigs: {:?}", data.convex.len(), data.convex.get(0).map(|t| [t.a, t.b, t.c]));
+                    // println!("drawing {} convex trigs: {:?}", data.convex.len(), data.convex.get(0).map(|t| [t.a, t.b, t.c]));
                     // let buffer: &[f32] = unsafe { transmute(data.convex) }; // TODO: this should be safe, but I wanna avoid it in the best case
                     let buffer: Vec<f32> = data.convex.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
                     gl::uniform_1ui(&self.program, self.mode, CONVEX);
@@ -345,7 +328,7 @@ impl CurveRenderer {
 
                 // draw the concave curves
                 if data.concave.len() > 0 {
-                    println!("drawing {} concave trigs: {:?}", data.concave.len(), data.concave.get(0).map(|t| [t.a, t.b, t.c]));
+                    // println!("drawing {} concave trigs: {:?}", data.concave.len(), data.concave.get(0).map(|t| [t.a, t.b, t.c]));
                     // let buffer: &[f32] = unsafe { transmute(data.concave) }; // TODO: this should be safe, but I wanna avoid it in the best case
                     let buffer: Vec<f32> = data.concave.into_iter().map(|it| [[it.a.x, it.a.y, it.uva.x, it.uva.y], [it.b.x, it.b.y, it.uvb.x, it.uvb.y], [it.c.x, it.c.y, it.uvc.x, it.uvc.y]]).flatten().flatten().collect();
                     gl::uniform_1ui(&self.program, self.mode, CONCAVE);
@@ -359,7 +342,7 @@ impl CurveRenderer {
             },
 
             Err(err) => {
-                self.ctx.swap_buffers(None).expect("TODO");
+                self.ctx.swap_buffers(None).expect("TODO"); // TODO: this can go after this is more ready, since this is only here for the test.rs rn
                 Err(err.into())
             }
 
