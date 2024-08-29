@@ -359,6 +359,12 @@ pub struct VertexAttribs {
     pub start: usize,
 }
 
+impl VertexAttribs {
+    pub fn floats(location: u32, count: usize, stride: usize, start: usize) -> Self {
+        Self { location, count, stride, start, ..Default::default() }
+    }
+}
+
 // TODO: implement buffer deleting (cleanup in the destructors)
 
 /// The array will also be enabled.

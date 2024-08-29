@@ -1,6 +1,6 @@
 
 use futures_lite::future::block_on;
-use render::{CurvePoint, CurveShape};
+use render::{CurvePoint, Shape};
 use tracing::{debug, trace, warn};
 
 use desktop::*;
@@ -73,10 +73,21 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let mut geometry = render::CurveGeometry {
         points: Vec::new(),
         shapes: Vec::new(),
+        singular: Vec::new(),
+        instances: Vec::new(),
     };
 
+    // geometry.points.extend([
+    //     CurvePoint::base(0, 0),
+    //     CurvePoint::base(0, size.height as i16),
+    //     CurvePoint::base(size.width as i16, size.height as i16),
+    //     CurvePoint::base(size.width as i16, 0),
+    // ]);
+
+    // geometry.shapes.push(Shape::singular(0, 3));
+
     geometry.points.push(CurvePoint::base(0, 0));
-    geometry.shapes.push(CurveShape::new(0, 0));
+    geometry.shapes.push(Shape::singular(0, 1, 0));
     
     // let points: &mut [CurvePoint] = &mut [
     //     CurvePoint::base(0, 0),
@@ -92,7 +103,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     // geometry.points.extend_from_slice(points);
 
-    geometry.shapes.last_mut().unwrap().len += 1; // TODO: this is counter-intuitive: we use exclusive range so 0..1 means &[]
+    gl::clear(0.0, 0.0, 0.0, 0.2);
+    window.pre_present_notify();
+    renderer.ctx.swap_buffers(None).unwrap();
+    window.redraw();
+
     // run the event loop
     block_on(async {
 
@@ -105,11 +120,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::Redraw => {
 
                         gl::clear(0.0, 0.0, 0.0, 0.2);
-                        // println!("geometry: {:?}", &geometry.verticies);
-                        renderer.draw(&geometry).ok();
                         window.pre_present_notify();
-                        // ctx.swap_buffers(None).unwrap();
-
+                        renderer.draw(&geometry).ok();
                         window.redraw();
 
                     },
@@ -124,9 +136,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseMotion { x, y } => {
 
+                        if x < 0.0 || y < 0.0 { continue }; // TODO: sometimes -1.0, handle this by default
+
                         // TODO: i think on wayland x, y can be negative .-. try clicking and then moving the mouse out the upper window boundry
                         if let Some(point) = geometry.points.last_mut() {
-                            if point.basic() {
+                            if point.kind() {
                                 *point = CurvePoint::base(x as i16, y as i16);
                             } else {
                                 *point = CurvePoint::control(x as i16, y as i16);
@@ -141,11 +155,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                             CurvePoint::base(x as i16, y as i16)
                         );
 
-                        geometry.shapes.last_mut().unwrap().len += 1;
+                        if let Some(shape) = geometry.shapes.last_mut() {
+                            *shape = Shape::singular(shape.start(), shape.range() + 1, 0);
+                        }
 
                         debug!("add point {:?}", geometry.points.last().unwrap());
-
-                        println!("{:?}", geometry.points);
                     },
 
 
@@ -155,11 +169,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                             CurvePoint::control(x as i16, y as i16)
                         );
 
-                        geometry.shapes.last_mut().unwrap().len += 1;
+                        if let Some(shape) = geometry.shapes.last_mut() {
+                            *shape = Shape::singular(shape.start(), shape.range() + 1, 0);
+                        }
 
                         debug!("add control point {:?}", geometry.points.last().unwrap());
-
-                        println!("{:?}", geometry.points);
 
                     },
 

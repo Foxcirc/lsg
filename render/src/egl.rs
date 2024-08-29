@@ -1,5 +1,5 @@
 
-use std::{fmt, mem::size_of, thread::sleep_ms};
+use std::{fmt, mem::size_of, ops::Range, thread::sleep_ms};
 
 use common::*;
 use crate::{triangulate, OutputGeometry};
@@ -56,13 +56,17 @@ There are three (builtin) renderers that can be used by widgets:
 
 pub struct CurveGeometry {
     pub points: Vec<CurvePoint>,
-    pub shapes: Vec<CurveShape>,
+    pub shapes: Vec<Shape>,
+    pub singular: Vec<Instance>,
+    pub instances: Vec<Instance>,
 }
 
 impl CurveGeometry {
     pub fn clear(&mut self) {
         self.points.clear();
         self.shapes.clear();
+        self.singular.clear();
+        self.instances.clear();
     }
 }
 
@@ -70,8 +74,8 @@ impl CurveGeometry {
 #[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct GlPoint {
-    x: f32,
-    y: f32,
+    pub x: f32,
+    pub y: f32,
 }
 
 impl GlPoint {
@@ -88,13 +92,14 @@ impl GlPoint {
 pub struct CurvePoint {
     // positive values: the point is a base point (on-curve)
     // negative values: the point is a control point (off-curve)
-    x: i16,
+    // zero is represented by i16::MAX or respectively -i16::MAX
+    x: i16, // TODO: make pub and document the workings of this; that would be really nice
     y: i16,
 }
 
 impl fmt::Debug for CurvePoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.basic() {
+        if self.kind() {
             write!(f, "Point {{{}, {}}}", self.x(), self.y())
         } else {
             write!(f, "ControlPoint {{{}, {}}}", self.x(), self.y())
@@ -105,39 +110,50 @@ impl fmt::Debug for CurvePoint {
 impl CurvePoint {
 
     /// Construct a new base point.
-    /// ### Panic
-    /// Cannot accept values below zero.
+    ///
+    /// ### Panics
+    /// Only accepts positive values that are not i16::MAX.
     #[track_caller]
-    pub fn base(x: i16, y: i16) -> Self {
-        debug_assert!(x >= 0 && y >= 0);
+    pub fn base(mut x: i16, mut y: i16) -> Self {
+        debug_assert!(
+            x >= 0 && x < i16::MAX && y >= 0 && y < i16::MAX,
+            "coordinates must be positive and not i16::MAX"
+        ); // TODO: document that this is only enforced in debug
+        if x == 0 { x = i16::MAX };
+        if y == 0 { y = i16::MAX };
         Self { x, y }
     }
 
     /// Construct a new control point.
-    /// ### Panic
-    /// Cannot accept values below zero.
+    ///
+    /// ### Panics
+    /// Only accepts positive values that are not i16::MAX.
     #[track_caller]
-    pub fn control(x: i16, y: i16) -> Self {
-        // TODO: right now you can't have a control point with x or y = 0, bc there is no -0 (i checked it)
-        //         is this a problem?
-        debug_assert!(x > 0 && y > 0); // TODO: was changed to > 0 bc of ^^
+    pub fn control(mut x: i16, mut y: i16) -> Self {
+        debug_assert!(
+            x >= 0 && x < i16::MAX && y >= 0 && y < i16::MAX,
+            "coordinates must be positive and not i16::MAX"
+        ); // TODO: document that this is only enforced in debug
+        if x == 0 { x = i16::MAX };
+        if y == 0 { y = i16::MAX };
         Self { x: -x, y: -y }
     }
 
     #[inline(always)]
     pub fn x(&self) -> i16 {
-        self.x.abs()
+        self.x.abs() % i16::MAX
     }
 
     #[inline(always)]
     pub fn y(&self) -> i16 {
-        self.y.abs()
+        self.y.abs() % i16::MAX
     }
 
-    /// Returns `true` if base point, `false` if control point.
+    /// `true`: base point
+    /// `false`: control point
     #[inline(always)]
-    pub fn basic(&self) -> bool {
-        !self.x.is_negative()
+    pub fn kind(&self) -> bool {
+        self.x > 0
     }
 
     /// Convert to normalized device coordinates using the given window size.
@@ -150,19 +166,53 @@ impl CurvePoint {
 
 }
 
-#[derive(Debug, Clone, Copy,PartialEq, Eq)]
-pub struct CurveShape {
-    /// index into `points`
     // TODO: ^^^ add doc links to "points"
-    pub idx: u16,
-    /// how many points after `idx` this contains
-    pub len: u16,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape { // TODO: make this behave more similar to CurvePoint
+    // positive values: the shape is singlular
+    // negative values: the shape is instanced
+    start: i16,
+    range: i16, // TODO: make pub and document behaviour!!! we need pub so we can just do range += 1 and stuff
+    // singular: index into `singular` list
+    // instanced: lowest index in `instances`, we linear search after this index
+    instance: u16,
 }
 
-impl CurveShape { // TODO: just use a Range<u16>
-    pub fn new(idx: u16, len: u16) -> Self {
-        Self { idx, len }
+impl Shape {
+
+    /// `start..range` is exlusive
+    pub fn singular(start: i16, range: i16, instance: u16) -> Self {
+        debug_assert!(start >= 0 && range > 0);
+        Self { start, range, instance }
     }
+
+    /// `start..range` is exlusive
+    pub fn instanced(start: i16, range: i16, count: u16) -> Self {
+        debug_assert!(start >= 0 && range > 0);
+        Self { start: -start, range: -range, instance: count }
+    }
+
+    pub fn start(&self) -> i16 {
+        self.start.abs()
+    }
+
+    pub fn range(&self) -> i16 {
+        self.range.abs()
+    }
+
+    /// `true`: singular
+    /// `false`: instanced
+    pub fn kind(&self) -> bool {
+        // `start` can be zero, `len` cannot and
+        // will always be positive or negative
+        self.range() > 0
+    }
+
+}
+
+pub struct Instance {
+    idx: i16,
+    // offset: 
 }
 
 pub struct CurveShared {
@@ -206,17 +256,25 @@ impl CurveShared {
     
 }
 
+pub struct SingularData {
+    vao: gl::VertexArrayObject,
+    vdata: gl::Buffer,
+}
+
+pub struct InstancedData {
+    vao: gl::VertexArrayObject,
+    vdata: gl::Buffer, // per-vertex data
+    idata: gl::Buffer, // per-instance
+}
+
 /// One-per-window render context.
 pub struct CurveRenderer {
     pub size: Size,
-    ctx: egl::Context,
+    pub ctx: egl::Context, // TODO: remove pub(crate)
     triangulator: triangulate::Triangulator,
-    vao1: gl::VertexArrayObject, // mode without uv's
-    vao2: gl::VertexArrayObject, // mode with uv's
-    vbo: gl::Buffer,
-    ebo: gl::Buffer,
+    singular: SingularData,
+    instanced: InstancedData,
     program: gl::LinkedProgram,
-    mode: gl::UniformLocation,
 }
 
 impl CurveRenderer {
@@ -239,49 +297,39 @@ impl CurveRenderer {
 
         let triangulator = triangulate::Triangulator::new(size);
 
-        let vbo = gl::gen_buffer(gl::BufferType::ArrayBuffer);
-        let ebo = gl::gen_buffer(gl::BufferType::ElementBuffer);
-        
-        let vao1 = gl::gen_vertex_array();
-        
-        gl::vertex_attrib_pointer(&vao1, &vbo, gl::VertexAttribs {
-            location: 0,
-            count: 2,
-            stride: 2 * size_of::<f32>(),
-            start:  0 * size_of::<f32>(),
-            ..Default::default()
-        });
+        let singular = {
+            let vdata = gl::gen_buffer(gl::BufferType::ArrayBuffer);
+            let vao = gl::gen_vertex_array();
+            let f = size_of::<f32>();
+            gl::vertex_attrib_pointer(&vao, &vdata,
+                gl::VertexAttribs::floats(0, 2, 4*f, 0*f));
+            gl::vertex_attrib_pointer(&vao, &vdata,
+                gl::VertexAttribs::floats(1, 2, 4*f, 2*f));
+            SingularData { vao, vdata }
+        };
 
-        let vao2 = gl::gen_vertex_array();
-
-        gl::vertex_attrib_pointer(&vao2, &vbo, gl::VertexAttribs {
-            location: 0,
-            count: 2,
-            stride: 4 * size_of::<f32>(),
-            start:  0 * size_of::<f32>(),
-            ..Default::default()
-        });
-
-        gl::vertex_attrib_pointer(&vao2, &vbo, gl::VertexAttribs {
-            location: 1,
-            count: 2,
-            stride: 4 * size_of::<f32>(),
-            start:  2 * size_of::<f32>(),
-            ..Default::default()
-        });
-
-        let mode = gl::uniform_location(&program, "mode").expect("FUCK TODO");
+        let instanced = {
+            let vdata = gl::gen_buffer(gl::BufferType::ArrayBuffer);
+            let idata = gl::gen_buffer(gl::BufferType::ArrayBuffer);
+            let vao = gl::gen_vertex_array();
+            let f = size_of::<f32>();
+            gl::vertex_attrib_pointer(&vao, &vdata,
+                gl::VertexAttribs::floats(0, 2, 4*f, 0*f));
+            gl::vertex_attrib_pointer(&vao, &vdata,
+                gl::VertexAttribs::floats(1, 2, 4*f, 2*f));
+            // gl::vertex_attrib_pointer(&vao, &idata, // TODO: layout instance data
+            //     gl::VertexAttribs::floats(0, 2, 4 * size, 2 * size));
+            // gl::Divisor...
+            InstancedData { vao, vdata, idata }
+        };
 
         Ok(Self {
             size,
             ctx,
             triangulator,
-            vao1,
-            vao2,
-            vbo,
-            ebo,
+            singular,
+            instanced,
             program,
-            mode,
         })
 
     }
@@ -298,24 +346,18 @@ impl CurveRenderer {
 
         // TODO: bind correct gl CTX
 
-        const FILLED:  u32 = 1;
-        const CONVEX:  u32 = 2;
-        const CONCAVE: u32 = 3;
+        let result = self.triangulator.process(geometry);
+        result.check().map_err(RenderError::InvalidPolygons)?;
 
-        self.ctx.swap_buffers(None).expect("TODO REMOVE THIS"); // TODO only there for test.rs to work
-
-        let result = self.triangulator.process(geometry)?;
-
-        // upload the vertices & indices to the gpu
-        gl::buffer_data(&self.vbo, result.vertices, gl::DrawHint::Dynamic);
-        gl::buffer_data(&self.ebo, result.indices,  gl::DrawHint::Dynamic);
+        // upload the vertices to the gpu
+        gl::buffer_data(&self.singular.vdata, result.singular, gl::DrawHint::Dynamic);
+        gl::draw_arrays(&self.program, &self.singular.vao, gl::Primitive::Triangles, 0, result.singular.len() / 4); // TODO: update to vertex size not just len / 4
 
         // draw the basic triangles
-        if result.basic.len() > 0 {
+        // if result.basic.len() > 0 {
          // println!("{:?}", data.basic);
-            gl::uniform_1ui(&self.program, self.mode, FILLED);
-            gl::draw_elements(&self.program, &self.vao1, gl::Primitive::Triangles, result.basic.start as usize, result.basic.len());
-        }
+        //     gl::draw_arrays(&self.program, &self.vao1, gl::Primitive::Triangles, result.basic.start as usize, result.basic.len());
+        // }
 
         /*
 
@@ -354,7 +396,7 @@ impl CurveRenderer {
 #[derive(Debug)] // TODO: impl StdError
 pub enum RenderError {
     Fatal(String),
-    InvalidPolygons(triangulate::TriagError),
+    InvalidPolygons(&'static str), // TODO: call it shapes or polygons? right now I have both
 }
 
 impl From<egl::EglError> for RenderError {
@@ -378,11 +420,5 @@ impl From<gl::LinkError> for RenderError {
 impl From<gl::UniformUnknown> for RenderError {
     fn from(_: gl::UniformUnknown) -> Self {
         Self::Fatal(format!("cannot query uniform"))
-    }
-}
-
-impl From<triangulate::TriagError> for RenderError {
-    fn from(value: triangulate::TriagError) -> Self {
-        Self::InvalidPolygons(value)
     }
 }

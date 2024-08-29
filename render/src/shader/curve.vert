@@ -1,13 +1,9 @@
 
-// This is the vertex shader for the curve renderer.
-// The vertex shader is the same for every kind of triangle.
-
 #version 320 es
-// #version 440 core
 precision mediump float;
 
 layout (location = 0) in vec2 pos; // TODO: remove location = N and use gl::attrib_location(name)
-layout (location = 1) in vec2 uvIn;
+layout (location = 1) in vec2 uvIn; // TODO: rename all occurences of "uv" to curveCoords or smth
 
 out vec2 uv;
 

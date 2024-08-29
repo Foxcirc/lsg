@@ -1,76 +1,58 @@
 
 //! Ear-clipping triangulation on the cpu.
 
-use std::{error::Error as StdError, f32::consts::PI, fmt, ops::Range};
+use std::f32::consts::PI;
 use bv::BitVec;
 use common::Size;
 
 use crate::{CurveGeometry, CurvePoint, GlPoint};
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum TriagError {
-    TooShort,
-    TwoControl,
-    Invalid,
+// TODO: make all u16 be i16 and enforce it to pe positive or enforce all u16's to be in range 0..32K (i16::MAX) or use another type
+
+/// Output after processing a polygon.
+pub struct OutputGeometry<'a> {
+    pub singular: &'a [f32],
+    pub instanced: &'a [f32],
+    pub errornous: bool,
 }
 
-impl fmt::Display for TriagError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooShort => write!(f, "input too short, need at least 3 points to triangulate"),
-            Self::TwoControl=> write!(f, "two control points next to each other are not allowed"),
-            Self::Invalid => write!(f, "invalid input, only non self-intersecting, counter-clockwise ordered polygons are accepted"),
+impl<'a> OutputGeometry<'a> {
+    pub fn check(&self) -> Result<(), &'static str> {
+        match self.errornous {
+            false => Ok(()),
+            true => Err("prepocesor input contained invalid shapes"),
         }
     }
 }
 
-impl StdError for TriagError {}
+// /// The position is in normalized device coordinates.
+// #[derive(Debug, Clone)]
+// #[repr(packed)]
+// pub struct Triangle {
+//     // vertex 1
+//     pub a: GlPoint,
+//     // vertex 2
+//     pub b: GlPoint,
+//     // vertex 3
+//     pub c: GlPoint,
+// }
 
-/// Output after processing a polygon.
-pub struct OutputGeometry<'a> {
-    /// raw vertices of different kinds, described by `indices`
-    pub vertices: &'a [f32],
-    /// raw indices of different kinds, described by the other fields
-    pub indices: &'a [u32],
-    /// index into indices,
-    /// fully filled triangles, vertex layout is `{ x: f32, y: f32 }`
-    pub basic: Range<u16>,
-    /// index into indicesj,
-    /// triangles to render as a convex beziér curve, vertex layout is `{ x: f32, y: f32, u: f32, v: f32 }`
-    pub convex: Range<u16>,
-    /// index into indices,
-    /// triangles to render as a convex beziér curve, vertex layout is `{ x: f32, y: f32, u: f32, v: f32 }`
-    pub concave: Range<u16>,
-}
+// /// The position is in normalized device coordinates.
+// /// Also stores uv coordinates that are used to render it as a curve.
+// #[derive(Debug, Clone)]
+// #[repr(packed)]
+// pub struct CurveTriangle {
+//     // vertex 1
+//     pub a: GlPoint,
+//     pub uva: GlPoint,
+//     // vertex 2
+//     pub b: GlPoint,
+//     pub uvb: GlPoint,
+//     // vertex 3
+//     pub c: GlPoint,
+//     pub uvc: GlPoint,
 
-/// The position is in normalized device coordinates.
-#[derive(Debug, Clone)]
-#[repr(packed)]
-pub struct Triangle {
-    // vertex 1
-    pub a: GlPoint,
-    // vertex 2
-    pub b: GlPoint,
-    // vertex 3
-    pub c: GlPoint,
-}
-
-/// The position is in normalized device coordinates.
-/// Also stores uv coordinates that are used to render it as a curve.
-#[derive(Debug, Clone)]
-#[repr(packed)]
-pub struct CurveTriangle {
-    // vertex 1
-    pub a: GlPoint,
-    pub uva: GlPoint,
-    // vertex 2
-    pub b: GlPoint,
-    pub uvb: GlPoint,
-    // vertex 3
-    pub c: GlPoint,
-    pub uvc: GlPoint,
-
-}
+// }
 
 pub struct Triangulator { // TODO: make pub(crate)
     // window size
@@ -79,9 +61,9 @@ pub struct Triangulator { // TODO: make pub(crate)
     ears: BitVec<usize>,
     removed: BitVec<usize>,
     // outputs
-    basic: Vec<Triangle>,
-    convex: Vec<CurveTriangle>,
-    concave: Vec<CurveTriangle>,
+    singular: Vec<f32>,
+    instanced: Vec<f32>,
+    errornous: bool,
 }
 
 impl Triangulator { // TODO: rename (maybe) since it does more then triangulating
@@ -91,9 +73,9 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
             size,
             ears: BitVec::new(),
             removed: BitVec::new(),
-            basic: Vec::new(),
-            convex: Vec::new(),
-            concave: Vec::new(),
+            singular: Vec::new(),
+            instanced: Vec::new(),
+            errornous: false,
         }
     }
 
@@ -107,35 +89,50 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
     /// - Convert coordinates to OpenGl screen space.
     /// - Triangulate the polygon using ear-clipping, with some restrictions.
     /// - Output extra triangles for the curved parts.
-    pub fn process<'s>(&'s mut self, geometry: &CurveGeometry) -> Result<OutputGeometry, TriagError> {
+    pub fn process<'s>(&'s mut self, geometry: &CurveGeometry) -> OutputGeometry<'s> {
 
         // reset our state
-        self.basic.clear();
-        self.convex.clear();
-        self.concave.clear();
+        self.singular.clear();
+        self.instanced.clear();
+        self.errornous = false;
 
+        // append basic triangles
         for shape in &geometry.shapes {
-            let points = &geometry.points[shape.idx as usize..shape.len as usize];
-            if points.len() < 3 { return Err(TriagError::TooShort) }
-            self.triangulate(points)?; // writes to self.basic
-            self.curves(points)?; // writes to self.curved
+
+            let start = shape.start();
+            let end = start + shape.range();
+            let points = &geometry.points[start as usize .. end as usize];
+
+            if let Err(..) = self.shape(points, shape.kind()) {
+                self.errornous = true;
+            }
+
         }
 
-        Ok(OutputGeometry {
-            basic: &self.basic,
-            convex: &self.convex,
-            concave: &self.concave,
-        })
+        OutputGeometry {
+            singular: &self.singular,
+            instanced: &self.instanced,
+            errornous: self.errornous,
+        }
         
+    }
+
+    pub fn shape(&mut self, points: &[CurvePoint], singular: bool) -> Result<(), ()> {
+        if points.len() < 3 {
+            Err(())
+        } else {
+            self.triangulate(points, singular)?;
+            self.curves(points, singular)?;
+            Ok(())
+        }
     }
 
     /// Calculate patch-on triangles that should be rendered as curves.
     ///
-    /// Appends to `self.curved`.
     /// Accepts window- and returns normalized device coordinates.
-    pub fn curves(&mut self, points: &[CurvePoint]) -> Result<(), TriagError> {
+    pub fn curves(&mut self, polygon: &[CurvePoint], singular: bool) -> Result<(), ()> {
 
-        let len = points.len();
+        let len = polygon.len();
         debug_assert!(len >= 3);
 
         // find all pairs which look like (basic - control - basic)
@@ -152,35 +149,43 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
                 [idx - 1, idx, idx + 1]
             };
 
-            // println!("{}, {}, {}", points[ia].basic(), points[ib].basic(), points[ic].basic());
-
             // can't have two control points next to each other
-            if (!points[ia].basic() && !points[ib].basic()) ||
-               (!points[ib].basic() && !points[ic].basic()) {
-                return Err(TriagError::TwoControl)
+            if (!polygon[ia].kind() && !polygon[ib].kind()) ||
+               (!polygon[ib].kind() && !polygon[ic].kind()) {
+                return Err(())
             }
 
             // find the relevant pairs
-            else if  points[ia].basic() &&
-                    !points[ib].basic() &&
-                     points[ic].basic() {
+            else if  polygon[ia].kind() &&
+                    !polygon[ib].kind() &&
+                     polygon[ic].kind() {
 
-                let [a, b, c] = [points[ia], points[ib], points[ic]];
+                let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
+                let [ga, gb, gc] = [a.gl(self.size), b.gl(self.size), c.gl(self.size)];
 
-                let triangle = CurveTriangle {
-                    a: points[ia].gl(self.size),
-                    b: points[ib].gl(self.size),
-                    c: points[ic].gl(self.size),
-                    uva: GlPoint::new(0.0, 0.0),
-                    uvb: GlPoint::new(0.5, 0.0),
-                    uvc: GlPoint::new(1.0, 1.0),
+                let convex = Self::convex([a, b, c]);
+                let triangle = if convex {
+                    // range 0.5 to 1.0 means convex
+                    [ga.x, ga.y, 0.5, 0.5, // A (x, y, u, v)
+                     gb.x, gb.y, 0.75, 0.5, // B
+                     gc.x, gc.y, 1.0, 1.0] // C
+                } else {
+                    // range 0.0 to 0.5 means concave
+                    [ga.x, ga.y, 0.0, 0.0, // A (x, y, u, v)
+                     gb.x, gb.y, 0.25, 0.0, // B
+                     gc.x, gc.y, 0.5, 0.5] // C
                 };
 
-                if Self::convex([a, b, c]) {
-                    self.convex.push(triangle);
-                } else {
-                    self.concave.push(triangle);
+                match singular {
+                    true => self.singular.extend(triangle),
+                    false => self.instanced.extend(triangle),
                 }
+
+                // if convex && kind == CurvedTriangleKind::Convex {
+                //     self.convex.push(triangle);
+                // } else if !convex && kind == CurvedTriangleKind::Concave {
+                //     self.concave.push(triangle);
+                // } TODO ^^ reimplement
 
             }
             
@@ -195,13 +200,12 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
 
     /// Ear-clipping triangulation for a single polygon.
     ///
-    /// Appends to `self.basic`.
     /// Accepts window- and returns normalized device coordinates.
     ///
     /// The algorithms is purposely written in a way that is similar to the
     /// compute shader implementation.
     // TODO(DOC): link to docs on the triangulation compute shader
-    fn triangulate(&mut self, points: &[CurvePoint]) -> Result<(), TriagError> {
+    fn triangulate(&mut self, points: &[CurvePoint], singular: bool) -> Result<(), ()> {
         
         // TODO: split polygons with > 1000 vertices into sub-polygons for the gpu
 
@@ -240,15 +244,15 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
             let [a, b, c] = [points[ia], points[ib], points[ic]];
 
             // can't have two control points next to each other
-            if (!a.basic() && !b.basic()) ||
-               (!b.basic() && !c.basic()) {
-                return Err(TriagError::TwoControl)
+            if (!a.kind() && !b.kind()) ||
+               (!b.kind() && !c.kind()) {
+                return Err(())
             }
 
             // find the relevant pairs
-            else if  points[ia].basic() &&
-                    !points[ib].basic() &&
-                     points[ic].basic() && 
+            else if  points[ia].kind() &&
+                    !points[ib].kind() &&
+                     points[ic].kind() && 
                      Self::convex([a, b, c]) {
 
                 self.removed.set(ib as u64, true);
@@ -269,7 +273,7 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
             if counter < len {
                 counter += 1;
             } else {
-                if !changes { return Err(TriagError::Invalid) };
+                if !changes { return Err(()) };
                 changes = false;
                 counter = 1;
             }
@@ -289,11 +293,22 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
                     break
                 };
 
-                self.basic.push(Triangle {
-                    a: points[ia].gl(self.size),
-                    b: points[ib].gl(self.size),
-                    c: points[ic].gl(self.size),
-                });
+                let [ga, gb, gc] = [
+                    points[ia].gl(self.size),
+                    points[ib].gl(self.size),
+                    points[ic].gl(self.size),
+                ];
+
+                let triangle = [
+                    ga.x, ga.y, 1.0, 1.0, // A (x, y, u, v)
+                    gb.x, gb.y, 1.0, 1.0, // B
+                    gc.x, gc.y, 1.0, 1.0, // C
+                ];
+
+                match singular {
+                    true => self.singular.extend(triangle),
+                    false => self.instanced.extend(triangle),
+                }
 
                 // mark the point as self.removed
                 self.removed.set(ib as u64, true);
@@ -477,9 +492,9 @@ fn convex() {
     points.reverse();
 
     let mut state = Triangulator::new(Size { width: 20, height: 20 });
-    state.triangulate(points).unwrap();
+    state.triangulate(points, true).unwrap();
 
-    dbg!(&state.basic);
+    dbg!(&state.singular);
 
 }
 
@@ -494,11 +509,11 @@ fn curves() {
     ];
 
     let mut state = Triangulator::new(Size { width: 20, height: 20 });
-    let result = state.curves(points);
+    let result = state.curves(points, true);
 
     assert_eq!(
         result,
-        Err(TriagError::TwoControl)
+        Err(())
     );
 
 
