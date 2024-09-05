@@ -14,8 +14,8 @@ TODO: verify thread safety and add more constraints
  */
 
 /// ### Safety
-/// You must always return valid pointer.
-pub unsafe trait Display {
+/// You must always return a valid pointer.
+pub unsafe trait IsDisplay {
     /// ### Platforms
     /// **On Wayland,**
     /// should return a pointer to the `wl-display` proxy object.
@@ -24,8 +24,9 @@ pub unsafe trait Display {
 }
 
 /// ### Safety
-/// You must always return valid pointer.
-pub unsafe trait Surface {
+/// You must always return a valid pointer.
+// TODO: when can the surface wayland object be dropped?
+pub unsafe trait IsSurface {
     /// ### Platforms
     /// **On Wayland,**
     /// should return a pointer to a `wl-surface` proxy object.
@@ -63,6 +64,8 @@ impl From<egl::Error> for EglError {
     }
 }
 
+type FnBindApi = fn(u32);
+
 type FnSwapBuffersWithDamage = fn(
     egl::EGLDisplay,
     egl::EGLSurface,
@@ -73,6 +76,7 @@ type FnSwapBuffersWithDamage = fn(
 #[derive(Clone)]
 pub struct Instance {
     lib: Arc<egl::DynamicInstance<egl::EGL1_5>>,
+    bind_api: FnBindApi,
     swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
     display: egl::Display,
 }
@@ -80,7 +84,7 @@ pub struct Instance {
 impl Instance {
 
     /// Should be only be called once.
-    pub fn new<D: Display>(display: &D) -> Result<Self, EglError> {
+    pub fn new<D: IsDisplay>(display: &D) -> Result<Self, EglError> {
         
         let lib = unsafe {
             let loaded = egl::DynamicInstance::<egl::EGL1_5>::load_required()
@@ -94,20 +98,25 @@ impl Instance {
 
         lib.initialize(egl_display)?;
 
+        // load the eglBindApi function
+        let func = lib.get_proc_address("eglBindAPI").expect("cannot load fn eglBindAPI");
+        let bind_api: FnBindApi =
+            unsafe { mem::transmute(func) };
+
+        // load the eglSwapBufferWithDamage extension function
         let func = lib.get_proc_address("eglSwapBuffersWithDamageKHR");
         let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
             unsafe { mem::transmute(func) };
 
-        {
-            let _span = tracing::span!(tracing::Level::TRACE, "EglNewInstance").entered();
-            tracing::trace!(
-                "swap_buffers_with_damage extension present: {}",
-                swap_buffers_with_damage.is_some()
-            );
-        }
+        let _span = tracing::span!(tracing::Level::TRACE, "EglNewInstance").entered();
+        tracing::trace!(
+            "swap_buffers_with_damage extension present: {}",
+            swap_buffers_with_damage.is_some()
+        );
 
         Ok(Self {
             lib,
+            bind_api,
             swap_buffers_with_damage,
             display: egl_display,
         })
@@ -116,6 +125,275 @@ impl Instance {
 
     pub fn get_proc_address(&self, name: &str) -> Option<extern "system" fn()> {
         self.lib.get_proc_address(name)
+    }
+    
+}
+
+pub mod v2 {
+
+    use super::*;
+
+    #[derive(Default)]
+    pub enum Api {
+        #[default]
+        OpenGl,
+        Es3,
+    }
+
+    #[derive(Default)]
+    pub enum Profile {
+        #[default]
+        Core,
+        Compat,
+    }
+
+    #[derive(Default)]
+    pub struct ConfigBuilder {
+        pub api: Api,
+        pub profile: Profile,
+        pub version: [usize; 2],
+        pub debug: bool,
+    }
+
+    impl ConfigBuilder {
+
+        pub fn api(mut self, api: Api) -> Self {
+            self.api = api;
+            self
+        }
+
+        pub fn profile(mut self, profile: Profile) -> Self {
+            self.profile = profile;
+            self
+        }
+
+        pub fn version(mut self, major: usize, minor: usize) -> Self {
+            self.version = [major, minor];
+            self
+        }
+        
+        pub fn debug(mut self, value: bool) -> Self {
+            self.debug = value;
+            self
+        }
+
+        pub fn finish(self, instance: &Instance) -> Result<Config, EglError> {
+        
+            let attribs = [
+
+                // surface attribs
+
+                egl::SURFACE_TYPE, egl::WINDOW_BIT, // only window surfaces are supported for now
+
+                egl::RENDERABLE_TYPE, match self.api {
+                    Api::OpenGl => egl::OPENGL_BIT,
+                    Api::Es3    => egl::OPENGL_ES3_BIT,
+                },
+
+                egl::RED_SIZE, 8,
+                egl::GREEN_SIZE, 8,
+                egl::BLUE_SIZE, 8,
+                egl::ALPHA_SIZE, 8,
+                egl::DEPTH_SIZE, 24,
+                egl::STENCIL_SIZE, 8,
+
+                egl::NONE
+
+            ];
+
+            let config = instance.lib.choose_first_config(instance.display, &attribs)?
+                .ok_or("failed to choose an egl config (normal context)")?;
+
+            let context_attrs = [
+                egl::CONTEXT_CLIENT_VERSION, self.version[0] as i32,
+                egl::CONTEXT_MAJOR_VERSION, self.version[0] as i32,
+                egl::CONTEXT_MINOR_VERSION, self.version[1] as i32,
+                egl::CONTEXT_OPENGL_DEBUG, self.debug as i32,
+                egl::CONTEXT_OPENGL_PROFILE_MASK, match self.profile {
+                    Profile::Core => egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                    Profile::Compat => egl::CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+                },
+                egl::NONE,
+            ];
+
+            let surface_attrs = [
+                egl::RENDER_BUFFER, egl::BACK_BUFFER,
+                egl::NONE,
+            ];
+
+            Ok(Config {
+                inner: config,
+                api: self.api,
+                context_attrs,
+                surface_attrs,
+            })
+
+        }
+        
+    }
+
+    pub struct Config {
+        inner: egl::Config,
+        context_attrs: [i32; 11],
+        surface_attrs: [i32; 3],
+        api: Api,
+    }
+
+    impl Config {
+
+        pub fn build() -> ConfigBuilder {
+            ConfigBuilder::default()
+        }
+        
+    }
+
+    pub struct Context {
+        instance: Instance,
+        inner: egl::Context,
+        damage_rects: Vec<Rect>, // only here to amortize some allocations, used in `resize`
+    }
+
+    impl Drop for Context {
+        fn drop(&mut self) {
+            self.instance.lib.destroy_context(
+                self.instance.display,
+                self.inner
+            ).expect("failed to destroy egl context");
+        }
+    }
+
+    impl Context {
+        
+        pub fn new(instance: &Instance, config: &Config) -> Result<Self, EglError> {
+
+            // opengl (and related) has the by far worst api i've seen... ever
+            // like what the fuck is this, why is this not part of the attributes?!
+            match config.api {
+                Api::OpenGl => (instance.bind_api)(egl::OPENGL_API),
+                Api::Es3    => (instance.bind_api)(egl::OPENGL_ES_API),
+            }
+
+            let context = instance.lib.create_context(
+                instance.display,
+                config.inner,
+                None,
+                &config.context_attrs
+            )?;
+           
+            Ok(Self {
+                instance: instance.clone(),
+                inner: context,
+                damage_rects: Vec::new(),
+            })
+            
+        }
+
+        /// Make this context current, and set the target surface.
+        pub fn bind<'d, S>(&self, surface: S) -> Result<(), EglError>
+          where S: Into<Option<&'d Surface>> {
+
+            let it = surface.into();
+            self.instance.lib.make_current(
+                self.instance.display,
+                it.map(|it| it.inner), // NOTE: it is an error to only specify one of the two (read/draw) surfaces
+                it.map(|it| it.inner),
+                Some(self.inner)
+            )?;
+            Ok(())
+
+        }
+
+        /// Clear the current context.
+        pub fn unbind(&self) -> Result<(), EglError> {
+            self.instance.lib.make_current(
+                self.instance.display,
+                None, None, None
+            )?;
+            Ok(())
+        }
+
+        /// Swap the back and front buffers.
+        ///
+        /// `surface` must be the same surface that was specifified in `bind`.
+        /// If `damage` is an empty slice, everything will be redrawn.
+        pub fn swap(&mut self, surface: &Surface, damage: Damage) -> Result<(), EglError> {
+
+            // recalculate the origin of the rects to be in the top left
+            self.damage_rects.clear();
+            self.damage_rects.extend_from_slice(damage.rects);
+            for rect in self.damage_rects.iter_mut() {
+                rect.y = surface.size.h as i32 - rect.y - rect.h;
+            }
+
+            if let Some(func) = self.instance.swap_buffers_with_damage {
+                // swap with damage, if the fn could be found
+                (func)(self.instance.display.as_ptr(), surface.inner.as_ptr(), self.damage_rects.as_ptr().cast(), damage.rects.len() as i32);
+            } else {
+                // normal swap (if the extension is unsupported)
+                self.instance.lib.swap_buffers(self.instance.display, surface.inner)?;
+            }
+
+            Ok(())
+
+        }
+   
+    }
+
+    /// A double-buffered window surface.
+    pub struct Surface {
+        inner: egl::Surface,
+        size: Size,
+        #[cfg(unix)]
+        wl_egl_surface: wayland_egl::WlEglSurface,
+    }
+
+    impl Surface {
+
+        pub fn new<I: IsSurface>(instance: &Instance, config: &Config, inner: &I, size: Size) -> Result<Self, EglError> {
+
+            #[cfg(unix)] // unix means wayland, as far as we are concerned
+            let wl_egl_surface = unsafe {
+                wayland_egl::WlEglSurface::new_from_raw(
+                    inner.ptr().cast(),
+                    size.w as i32,
+                    size.h as i32
+                ).map_err(|_| "cannot create WlEglSurface")?
+            };
+
+            #[cfg(unix)]
+            let target = wl_egl_surface.ptr().cast_mut();
+
+            #[cfg(not(unix))]
+            let target = inner.ptr();
+
+            let surface = unsafe {
+                instance.lib.create_window_surface(
+                    instance.display,
+                    config.inner,
+                    target,
+                    Some(&config.surface_attrs),
+                )?
+            };
+
+            Ok(Self {
+                inner: surface,
+                size,
+                #[cfg(unix)]
+                wl_egl_surface
+            })
+            
+        }
+
+        pub fn resize(&mut self, size: Size) {
+            self.size = size;
+            let (w, h) = (size.w as i32, size.h as i32);
+            self.wl_egl_surface.resize(w, h, 0, 0);
+        }
+
+        pub fn size(&self) -> Size {
+            self.size
+        }
+        
     }
     
 }
@@ -211,7 +489,7 @@ impl BaseContext {
         self.damage_rects.extend_from_slice(damage);
 
         for rect in self.damage_rects.iter_mut() {
-            rect.y = self.size.height as i32 - rect.y - rect.h;
+            rect.y = self.size.h as i32 - rect.y - rect.h;
         }
 
         if let Some(func) = self.instance.swap_buffers_with_damage {
@@ -340,7 +618,7 @@ pub struct Context {
 
 impl Context {
 
-    pub fn new<S: Surface>(instance: &Instance, window: &S, size: Size, share: Option<&ShareContext>) -> Result<Self, EglError> {
+    pub fn new<S: IsSurface>(instance: &Instance, window: &S, size: Size, share: Option<&ShareContext>) -> Result<Self, EglError> {
 
         // TODO: add the ability to use not opengl ES
         // TODO: add the ability to use a custom config
@@ -366,8 +644,8 @@ impl Context {
         let wl_egl_surface = unsafe {
             wayland_egl::WlEglSurface::new_from_raw(
                 window.ptr().cast(),
-                size.width as i32,
-                size.height as i32
+                size.w as i32,
+                size.h as i32
             ).map_err(|_| "cannot create WlEglSurface")?
         };
 
@@ -421,7 +699,7 @@ impl Context {
     /// Don't forget to also resize your opengl viewport!
     pub fn resize(&mut self, size: Size) {
         self.inner.size = size;
-        self.wl_egl_surface.resize(size.width as i32, size.height as i32, 0, 0);
+        self.wl_egl_surface.resize(size.w as i32, size.h as i32, 0, 0);
     }
 
 }

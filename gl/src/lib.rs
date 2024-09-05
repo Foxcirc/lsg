@@ -5,8 +5,25 @@ use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, n
 use num_enum::TryFromPrimitive;
 use common::Size;
 
-pub fn load_with<F: FnMut(&'static str) -> *const void>(f: F) {
-    gl::load_with(f)
+#[derive(Debug)]
+pub struct FnsUnknown;
+
+pub fn load_with<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: F) -> Result<(), FnsUnknown> {
+
+    let mut result = Ok(());
+
+    gl::load_with(|name| // TODO: try returning null here and see if it is caught by gl or if it is undefined behaviour
+        match f(name) {
+            Some(ptr) => ptr as *const void,
+            None => {
+                result = Err(FnsUnknown);
+                null()
+            },
+        }
+    );
+
+    result
+
 }
     
 pub trait DebugCallback: Fn(DebugSource, DebugType, DebugSeverity, u32, &str) {}
@@ -349,6 +366,21 @@ pub struct Buffer {
     kind: BufferType,
 }
 
+pub fn vertex_attrib_1f(vao: &VertexArrayObject, location: u32, x: f32) {
+    bind_vertex_array(vao);
+    unsafe { gl::VertexAttrib1f(location, x) };
+}
+
+pub fn vertex_attrib_2f(vao: &VertexArrayObject, location: u32, x: f32, y: f32) {
+    bind_vertex_array(vao);
+    unsafe { gl::VertexAttrib2f(location, x, y) };
+}
+
+pub fn vertex_attrib_3f(vao: &VertexArrayObject, location: u32, x: f32, y: f32, z: f32) {
+    bind_vertex_array(vao);
+    unsafe { gl::VertexAttrib3f(location, x, y, z) };
+}
+
 #[derive(Default)]
 pub struct VertexAttribs {
     pub location: u32,
@@ -359,34 +391,60 @@ pub struct VertexAttribs {
     pub start: usize,
 }
 
-impl VertexAttribs {
-    pub fn floats(location: u32, count: usize, stride: usize, start: usize) -> Self {
-        Self { location, count, stride, start, ..Default::default() }
-    }
-}
-
 // TODO: implement buffer deleting (cleanup in the destructors)
 
-/// The array will also be enabled.
-pub fn vertex_attrib_pointer(vao: &VertexArrayObject, vbo: &Buffer, attribs: VertexAttribs) {
+/// The array will also be enabled immediatly using `EnableVertexAttribArray`.
+/// There is also a more concise version [`vertex_attrib_pointer2`].
+#[track_caller]
+pub fn vertex_attrib_pointer(vao: &VertexArrayObject, vbo: &Buffer, location: u32, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
-    assert_eq!(vbo.kind, BufferType::ArrayBuffer);
+    // TODO: rename all "attribs" to "attrs"
+
+    assert_eq!(vbo.kind, BufferType::Array);
 
     bind_vertex_array(vao);
     bind_buffer(vbo);
 
     unsafe { gl::VertexAttribPointer(
-        attribs.location as u32,
-        attribs.count as i32,
-        attribs.kind as u32,
-        attribs.normalize as u8,
-        attribs.stride as i32,
-        attribs.start as *const _,
+        location as u32,
+        count as i32,
+        kind as u32,
+        normalize as u8,
+        stride as i32,
+        start as *const _,
     ) };
 
-    unsafe { gl::EnableVertexAttribArray(attribs.location) };
+    unsafe { gl::EnableVertexAttribArray(location) };
 
 }
+
+/// Same as the other one, but accepts named arguments as a struct.
+#[track_caller]
+pub fn vertex_attrib_pointer2(vao: &VertexArrayObject, vbo: &Buffer, attribs: VertexAttribs) {
+    vertex_attrib_pointer(
+        vao, vbo,
+        attribs.location, attribs.count, attribs.kind,
+        attribs.normalize, attribs.stride, attribs.start
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Divisor {
+    PerVertex,
+    PerInstances(u32),
+}
+
+#[track_caller]
+pub fn vertex_attrib_divisor(vao: &VertexArrayObject, location: u32, divisor: Divisor) {
+    bind_vertex_array(vao);
+    let value = match divisor {
+        Divisor::PerVertex => 0,
+        Divisor::PerInstances(0) => panic!("Divisor::PerInstances can't be 0"),
+        Divisor::PerInstances(n) => n,
+    };
+    unsafe { gl::VertexAttribDivisor(location, value) };
+}
+
 
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(u32)]
@@ -406,8 +464,9 @@ pub enum DrawHint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum BufferType {
-    ArrayBuffer   = gl::ARRAY_BUFFER,
-    ElementBuffer = gl::ELEMENT_ARRAY_BUFFER,
+    Array        = gl::ARRAY_BUFFER,
+    Element      = gl::ELEMENT_ARRAY_BUFFER,
+    DrawIndirect = gl::DRAW_INDIRECT_BUFFER,
 }
 
 
@@ -451,10 +510,9 @@ pub fn uniform_4f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: 
 }
 
 pub fn resize_viewport(size: Size) {
-    unsafe { gl::Viewport(0, 0, size.width as i32, size.height as i32) }
+    unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
 }
 
-/// Remember,
 /// `count` is the number of vertices not primitives.
 pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {
     bind_program(program);
@@ -469,6 +527,36 @@ pub fn draw_elements(program: &LinkedProgram, vao: &VertexArrayObject, primitive
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawElements(primitive as u32, count as i32, gl::UNSIGNED_INT, (start * size_of::<u32>()) as *const void) }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct DrawArraysIndirectCommand {
+    pub vertices: u32,
+    pub instances: u32,
+    pub first: u32,
+    // SAFETY: reserved must be initialized to 0
+    reserved: u32,
+}
+
+impl DrawArraysIndirectCommand {
+    pub fn new(vertices: usize, instances: usize, first: usize) -> Self {
+        Self {
+            vertices: vertices as u32,
+            instances: instances as u32,
+            first: first as u32,
+            reserved: 0
+        }
+    }
+}
+
+#[track_caller]
+pub fn draw_arrays_indirect(program: &LinkedProgram, vao: &VertexArrayObject, commands: &Buffer, primitive: Primitive, start: usize) {
+    assert_eq!(commands.kind, BufferType::DrawIndirect);
+    bind_program(program);
+    bind_vertex_array(vao);
+    bind_buffer(commands);
+    unsafe { gl::DrawArraysIndirect(primitive as u32, start as *const void) }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -450,8 +450,8 @@ impl<T: 'static + Send> BaseWindow<T> {
 
         let shared = Arc::new(Mutex::new(WindowShared {
             id,
-            new_width:  size.width,
-            new_height: size.height,
+            new_width:  size.w,
+            new_height: size.h,
             flags: ConfigureFlags::default(),
             redraw_requested: false,
             frame_callback_registered: false,
@@ -519,7 +519,7 @@ impl<T: 'static + Send> BaseWindow<T> {
     
 }
 
-unsafe impl<T: Send + 'static> egl::Surface for BaseWindow<T> {
+unsafe impl<T: Send + 'static> egl::IsSurface for BaseWindow<T> {
     fn ptr(&self) -> *mut void {
         self.wl_surface.id().as_ptr().cast()
     }
@@ -638,20 +638,20 @@ impl<T: 'static + Send> Window<T> {
 
     pub fn min_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
-        self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
+        self.xdg_toplevel.set_min_size(size.w as i32, size.h as i32);
         self.base.wl_surface.commit();
     }
 
     pub fn max_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
-        self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
+        self.xdg_toplevel.set_max_size(size.w as i32, size.h as i32);
         self.base.wl_surface.commit();
     }
 
     pub fn fixed_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
-        self.xdg_toplevel.set_max_size(size.width as i32, size.height as i32);
-        self.xdg_toplevel.set_min_size(size.width as i32, size.height as i32);
+        self.xdg_toplevel.set_max_size(size.w as i32, size.h as i32);
+        self.xdg_toplevel.set_min_size(size.w as i32, size.h as i32);
         self.base.wl_surface.commit();
     }
 
@@ -1004,7 +1004,7 @@ impl CustomIcon {
         // some basic checks that the dimensions of the data match the specified size
 
         debug_assert!(
-            data.len() as u32 == size.width * size.height * bytes_per_pixel as u32,
+            data.len() as u32 == size.w * size.h * bytes_per_pixel as u32,
             "length of data doesn't match specified dimensions and format"
         );
 
@@ -1015,8 +1015,8 @@ impl CustomIcon {
 
         let wl_shm_pool = evb.globals.shm.create_pool(file.as_fd(), len as i32, &evb.qh, ());
         let wl_buffer = wl_shm_pool.create_buffer(
-            0, size.width as i32, size.height as i32,
-            size.width as i32 * bytes_per_pixel, wl_format,
+            0, size.w as i32, size.h as i32,
+            size.w as i32 * bytes_per_pixel, wl_format,
             &evb.qh, ()
         );
 
@@ -1073,7 +1073,7 @@ impl<T: 'static + Send> PopupWindow<T> {
         let xdg_positioner = evb.globals.wm.create_positioner(&evb.qh, ());
 
         let parent_guard = parent.shared.lock().unwrap();
-        xdg_positioner.set_size(size.width as i32, size.height as i32);
+        xdg_positioner.set_size(size.w as i32, size.h as i32);
         xdg_positioner.set_anchor_rect(0, 0, parent_guard.new_width as i32, parent_guard.new_height as i32);
         drop(parent_guard);
 
@@ -1143,7 +1143,7 @@ impl<T: 'static + Send> LayerWindow<T> {
             &evb.qh, Arc::clone(&base.shared)
         );
 
-        zwlr_surface.set_size(size.width, size.height);
+        zwlr_surface.set_size(size.w, size.h);
 
         base.wl_surface.commit();
 
@@ -1455,7 +1455,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> f
             },
             WlOutputEvent::Mode { flags, width, height, refresh } => {
                 if flags.into_result().is_ok_and(|it| it.contains(WlOutputMode::Current)) {
-                        guard.size = Size { width: width as u32, height: height as u32 };
+                        guard.size = Size { w: width as u32, h: height as u32 };
                     guard.refresh = refresh as u32;
                 }
             },
@@ -1922,7 +1922,7 @@ fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, guard: MutexG
 
     // foreward the final configuration state to the user
     evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
-        size: Size { width, height },
+        size: Size { w: width, h: height },
         flags: guard.flags
     } });
 

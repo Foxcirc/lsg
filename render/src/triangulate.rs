@@ -5,14 +5,17 @@ use std::f32::consts::PI;
 use bv::BitVec;
 use common::Size;
 
-use crate::{CurveGeometry, CurvePoint, GlPoint};
+use crate::{CurveGeometry, CurvePoint, Instance};
 
 // TODO: make all u16 be i16 and enforce it to pe positive or enforce all u16's to be in range 0..32K (i16::MAX) or use another type
 
 /// Output after processing a polygon.
 pub struct OutputGeometry<'a> {
-    pub singular: &'a [f32],
-    pub instanced: &'a [f32],
+    pub singular: SingularOutputGeometry<'a>,
+    pub instanced: InstancedOutputGeometry<'a>,
+    /// if there was an error in any of the input shapes.
+    /// shapes with an error are discarded, but all others are still
+    /// processed normally
     pub errornous: bool,
 }
 
@@ -25,62 +28,48 @@ impl<'a> OutputGeometry<'a> {
     }
 }
 
-// /// The position is in normalized device coordinates.
-// #[derive(Debug, Clone)]
-// #[repr(packed)]
-// pub struct Triangle {
-//     // vertex 1
-//     pub a: GlPoint,
-//     // vertex 2
-//     pub b: GlPoint,
-//     // vertex 3
-//     pub c: GlPoint,
-// }
+pub struct SingularOutputGeometry<'a> {
+    pub vertices: &'a [f32],
+}
 
-// /// The position is in normalized device coordinates.
-// /// Also stores uv coordinates that are used to render it as a curve.
-// #[derive(Debug, Clone)]
-// #[repr(packed)]
-// pub struct CurveTriangle {
-//     // vertex 1
-//     pub a: GlPoint,
-//     pub uva: GlPoint,
-//     // vertex 2
-//     pub b: GlPoint,
-//     pub uvb: GlPoint,
-//     // vertex 3
-//     pub c: GlPoint,
-//     pub uvc: GlPoint,
+pub struct InstancedOutputGeometry<'a> {
+    pub vertices:  &'a [f32],
+    pub instances: &'a [f32],
+    pub commands:  &'a [gl::DrawArraysIndirectCommand],
+}
 
-// }
+pub struct SingularData {
+    pub vertices: Vec<f32>,
+}
+
+pub struct InstancedData {
+    pub vertices:  Vec<f32>,
+    pub instances: Vec<f32>,
+    pub commands:  Vec<gl::DrawArraysIndirectCommand>,
+}
 
 pub struct Triangulator { // TODO: make pub(crate)
-    // window size
     size: Size,
     // state during triangulation
     ears: BitVec<usize>,
     removed: BitVec<usize>,
     // outputs
-    singular: Vec<f32>,
-    instanced: Vec<f32>,
+    singular: SingularData,
+    instanced: InstancedData,
     errornous: bool,
 }
 
-impl Triangulator { // TODO: rename (maybe) since it does more then triangulating
+impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more then triangulating
 
-    pub fn new(size: Size) -> Self {
+    pub fn new() -> Self {
         Self {
-            size,
+            size: Size { w: 0, h: 0 },
             ears: BitVec::new(),
             removed: BitVec::new(),
-            singular: Vec::new(),
-            instanced: Vec::new(),
+            singular: SingularData { vertices: Vec::new() },
+            instanced: InstancedData { vertices: Vec::new(), instances: Vec::new(), commands: Vec::new() },
             errornous: false,
         }
-    }
-
-    pub fn resize(&mut self, size: Size) {
-        self.size = size;
     }
 
     /// Prepares the polygons for rendering.
@@ -89,40 +78,78 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
     /// - Convert coordinates to OpenGl screen space.
     /// - Triangulate the polygon using ear-clipping, with some restrictions.
     /// - Output extra triangles for the curved parts.
-    pub fn process<'s>(&'s mut self, geometry: &CurveGeometry) -> OutputGeometry<'s> {
+    pub fn process<'s>(&'s mut self, size: Size, geometry: &CurveGeometry) -> OutputGeometry<'s> {
+
+        self.size = size;
 
         // reset our state
-        self.singular.clear();
-        self.instanced.clear();
+        self.singular.vertices.clear();
+        self.instanced.vertices.clear();
+        self.instanced.instances.clear();
+        self.instanced.commands.clear();
         self.errornous = false;
 
         // append basic triangles
         for shape in &geometry.shapes {
 
-            let start = shape.start();
-            let end = start + shape.range();
-            let points = &geometry.points[start as usize .. end as usize];
+            // geometry is valid up to this index
+            let start = [
+                self.singular.vertices.len(),
+                self.instanced.vertices.len(),
+            ];
 
-            if let Err(..) = self.shape(points, shape.kind()) {
+            let range = shape.polygon();
+            let points = geometry.points.get(range.start as usize .. range.end as usize)
+                .unwrap_or_default();
+
+            let range = shape.instances();
+            let instances = geometry.instances.get(range.start as usize .. range.end as usize)
+                .unwrap_or_default();
+
+            let singular = shape.kind();
+            if let Ok(..) = self.shape(points, instances, singular) {
+                if !singular {
+                    for it in instances {
+                        self.instanced.instances.extend([
+                            it.pos[0], it.pos[1], it.pos[2], // offsetX, offsetY, z
+                            it.texture[0], it.texture[1], it.texture[2],
+                        ]);
+                        self.instanced.commands.push(gl::DrawArraysIndirectCommand::new(
+                            (self.instanced.vertices.len() - start[1]) / 4, // vertex count
+                            instances.len(), // instance count
+                            start[1] / 4, // start index
+                        ))
+                    }
+                }
+            } else {
+                // restore the valid geometry
+                self.singular.vertices.truncate(start[0]);
+                self.instanced.vertices.truncate(start[1]);
+                // set the flag
                 self.errornous = true;
             }
-
         }
 
         OutputGeometry {
-            singular: &self.singular,
-            instanced: &self.instanced,
+            singular: SingularOutputGeometry {
+                vertices: &self.singular.vertices,
+            },
+            instanced: InstancedOutputGeometry {
+                vertices: &self.instanced.vertices,
+                instances: &self.instanced.instances,
+                commands: &self.instanced.commands,
+            },
             errornous: self.errornous,
         }
         
     }
 
-    pub fn shape(&mut self, points: &[CurvePoint], singular: bool) -> Result<(), ()> {
-        if points.len() < 3 {
+    pub fn shape(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), ()> {
+        if points.len() < 3 || instances.len() == 0 {
             Err(())
         } else {
-            self.triangulate(points, singular)?;
-            self.curves(points, singular)?;
+            self.triangulate(points, instances, singular)?;
+            self.curves(points, instances, singular)?;
             Ok(())
         }
     }
@@ -130,9 +157,9 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
     /// Calculate patch-on triangles that should be rendered as curves.
     ///
     /// Accepts window- and returns normalized device coordinates.
-    pub fn curves(&mut self, polygon: &[CurvePoint], singular: bool) -> Result<(), ()> {
+    pub fn curves(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), ()> {
 
-        let len = polygon.len();
+        let len = points.len();
         debug_assert!(len >= 3);
 
         // find all pairs which look like (basic - control - basic)
@@ -150,42 +177,40 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
             };
 
             // can't have two control points next to each other
-            if (!polygon[ia].kind() && !polygon[ib].kind()) ||
-               (!polygon[ib].kind() && !polygon[ic].kind()) {
+            if (!points[ia].kind() && !points[ib].kind()) ||
+               (!points[ib].kind() && !points[ic].kind()) {
                 return Err(())
             }
 
             // find the relevant pairs
-            else if  polygon[ia].kind() &&
-                    !polygon[ib].kind() &&
-                     polygon[ic].kind() {
+            else if  points[ia].kind() &&
+                    !points[ib].kind() &&
+                     points[ic].kind() {
 
-                let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
+                let [a, b, c] = [points[ia], points[ib], points[ic]];
                 let [ga, gb, gc] = [a.gl(self.size), b.gl(self.size), c.gl(self.size)];
 
                 let convex = Self::convex([a, b, c]);
-                let triangle = if convex {
-                    // range 0.5 to 1.0 means convex
-                    [ga.x, ga.y, 0.5, 0.5, // A (x, y, u, v)
-                     gb.x, gb.y, 0.75, 0.5, // B
-                     gc.x, gc.y, 1.0, 1.0] // C
-                } else {
-                    // range 0.0 to 0.5 means concave
-                    [ga.x, ga.y, 0.0, 0.0, // A (x, y, u, v)
-                     gb.x, gb.y, 0.25, 0.0, // B
-                     gc.x, gc.y, 0.5, 0.5] // C
+                let uvs = if convex { // range 0.5 to 1.0 means convex (for the shader)
+                    [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]
+                } else { // range 0.0 to 0.5 means concave (for the shader)
+                    [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]
                 };
 
-                match singular {
-                    true => self.singular.extend(triangle),
-                    false => self.instanced.extend(triangle),
+                if singular {
+                    let i = &instances[0];
+                    self.singular.vertices.extend([
+                        ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2],
+                        gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2],
+                        gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]
+                    ]);
+                } else {
+                    self.instanced.vertices.extend([
+                        ga.x, ga.y, uvs[0], uvs[1],
+                        gb.x, gb.y, uvs[2], uvs[3],
+                        gc.x, gc.y, uvs[4], uvs[5]
+                    ]);
                 }
-
-                // if convex && kind == CurvedTriangleKind::Convex {
-                //     self.convex.push(triangle);
-                // } else if !convex && kind == CurvedTriangleKind::Concave {
-                //     self.concave.push(triangle);
-                // } TODO ^^ reimplement
 
             }
             
@@ -205,7 +230,7 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
     /// The algorithms is purposely written in a way that is similar to the
     /// compute shader implementation.
     // TODO(DOC): link to docs on the triangulation compute shader
-    fn triangulate(&mut self, points: &[CurvePoint], singular: bool) -> Result<(), ()> {
+    fn triangulate(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), ()> {
         
         // TODO: split polygons with > 1000 vertices into sub-polygons for the gpu
 
@@ -299,15 +324,19 @@ impl Triangulator { // TODO: rename (maybe) since it does more then triangulatin
                     points[ic].gl(self.size),
                 ];
 
-                let triangle = [
-                    ga.x, ga.y, 1.0, 1.0, // A (x, y, u, v)
-                    gb.x, gb.y, 1.0, 1.0, // B
-                    gc.x, gc.y, 1.0, 1.0, // C
-                ];
-
-                match singular {
-                    true => self.singular.extend(triangle),
-                    false => self.instanced.extend(triangle),
+                if singular {
+                    let i = &instances[0];
+                    self.singular.vertices.extend([
+                        /* pos */ ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], /* curve */ 1.0, 1.0, /* texture */ i.texture[0], i.texture[1], i.texture[2],
+                        /* pos */ gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], /* curve */ 1.0, 1.0, /* texture */ i.texture[0], i.texture[1], i.texture[2],
+                        /* pos */ gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], /* curve */ 1.0, 1.0, /* texture */ i.texture[0], i.texture[1], i.texture[2]
+                    ]);
+                } else {
+                    self.instanced.vertices.extend([
+                        /* pos */ ga.x, ga.y, /* curve */ 1.0, 1.0,
+                        /* pos */ gb.x, gb.y, /* curve */ 1.0, 1.0,
+                        /* pos */ gc.x, gc.y, /* curve */ 1.0, 1.0,
+                    ]);
                 }
 
                 // mark the point as self.removed
@@ -491,10 +520,15 @@ fn convex() {
 
     points.reverse();
 
-    let mut state = Triangulator::new(Size { width: 20, height: 20 });
-    state.triangulate(points, true).unwrap();
+    let instances = &[
+        Instance { pos: [0.0, 0.0, 0.0], texture: [1.0, 1.0, 1.0] },
+    ];
 
-    dbg!(&state.singular);
+    let mut state = Triangulator::new();
+    state.size = Size { w: 20, h: 20 };
+    state.triangulate(points, instances, true).unwrap();
+
+    dbg!(&state.singular.vertices);
 
 }
 
@@ -508,8 +542,13 @@ fn curves() {
         CurvePoint::base(10, 10),
     ];
 
-    let mut state = Triangulator::new(Size { width: 20, height: 20 });
-    let result = state.curves(points, true);
+    let instances = &[
+        Instance { pos: [0.0, 0.0, 0.0], texture: [1.0, 1.0, 1.0] },
+    ];
+
+    let mut state = Triangulator::new();
+    state.size = Size { w: 20, h: 20 };
+    let result = state.curves(points, instances, true);
 
     assert_eq!(
         result,

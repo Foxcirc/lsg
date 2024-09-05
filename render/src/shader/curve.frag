@@ -2,15 +2,17 @@
 #version 320 es
 precision mediump float;
 
-in vec2 uv;
+in vec2 curvePos;
+in vec3 texture;
+
 out vec4 final;
 
 void main() {
 
-    // extract convexity information out of the uv's
+    // extract convexity information out of the curvePos
 
-    float curveX = uv.x;
-    float curveY = uv.y;
+    float curveX = curvePos.x;
+    float curveY = curvePos.y;
 
     bool convex;
     if (curveX > 0.5) {
@@ -23,13 +25,18 @@ void main() {
         convex = false;
     }
 
-    bool inside;
-    if (convex) { // convex
-        inside = curveY >= pow(curveX, 2.0);
-    } else { // concave
-        inside = curveY <= pow(curveX, 2.0);
+    bool inside = convex
+        ? curveY >= pow(curveX, 2.0)
+        : curveY <= pow(curveX, 2.0);
+
+    if (inside) {
+        final = vec4(texture, 1.0);
+    } else {
+        discard;
     }
 
-    final = vec4(0.3, 0.0, 0.8, float(inside));
+    // final = inside
+    //     ? vec4(texture, 1.0)
+    //     : vec4(0.0, 0.0, 0.0, 0.0);
 
 }

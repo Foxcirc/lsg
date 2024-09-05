@@ -1,10 +1,9 @@
 
 use futures_lite::future::block_on;
-use render::{CurvePoint, Shape};
-use tracing::{debug, trace, warn};
+use render::{CurvePoint, Instance, Shape, PerWindow};
+use tracing::debug;
 
 use desktop::*;
-use egl::*;
 use common::*;
 
 // TODO: this test should only test the desktop event handling etc.
@@ -23,16 +22,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
-
-    let egl = Instance::new(&evl)?;
-
-    gl::load_with(|name|
-        egl.get_proc_address(name).unwrap() as *const _
-    );
-
-    gl::debug_message_callback(gl::debug_message_tracing_handler);
     
-    let size = Size { width: 500 , height: 500 };
+    let size = Size { w: 500 , h: 500 };
     let mut window = Window::new(&mut evl, size);
 
     // let mut ctx = Context::new(&egl, &*window, size, None)?; // create an egl context for our window
@@ -40,7 +31,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     window.set_title("lsg/test");
     window.set_transparency(true);
-    window.set_input_mode(&mut evl, InputMode::SingleKey);
+    window.set_input_mode(&mut evl, InputMode::SingleKey); // TODO: Always emit both events!!! Remove set_input_mode
 
     // let points: &mut [[i32; 2]] = &mut [
     //     [0, 0],
@@ -67,46 +58,35 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     //     Vertex { x: 0, y:  20 },
     // ];
 
-    let shared = render::CurveShared::new(&evl).unwrap();
-    let mut renderer = render::CurveRenderer::new(&shared, &*window, Size { width: 500, height: 500 }).unwrap();
+    let mut renderer = render::GlRenderer::<render::BuiltinRenderer>::new(&evl).unwrap();
+    let mut perwindow = PerWindow::new(&renderer, &*window, Size::new(500, 500)).unwrap();
 
-    let mut geometry = render::CurveGeometry {
-        points: Vec::new(),
-        shapes: Vec::new(),
-        singular: Vec::new(),
-        instances: Vec::new(),
-    };
+    renderer.inner.geometry.points.extend([
+        CurvePoint::base(0, 0),
+        CurvePoint::base(0, 500),
+        CurvePoint::base(500, 500),
+        CurvePoint::base(500, 0),
+    ]);
+    renderer.inner.geometry.shapes.push(Shape::singular(0..4, 0));
+    renderer.inner.geometry.instances.push(Instance {
+        pos: [0.0, 0.0, 0.0],
+        texture: [0.1, 0.1, 0.14],
+    });
 
-    // geometry.points.extend([
-    //     CurvePoint::base(0, 0),
-    //     CurvePoint::base(0, size.height as i16),
-    //     CurvePoint::base(size.width as i16, size.height as i16),
-    //     CurvePoint::base(size.width as i16, 0),
-    // ]);
-
-    // geometry.shapes.push(Shape::singular(0, 3));
-
-    geometry.points.push(CurvePoint::base(0, 0));
-    geometry.shapes.push(Shape::singular(0, 1, 0));
+    // initial render
     
-    // let points: &mut [CurvePoint] = &mut [
-    //     CurvePoint::base(0, 0),
-    //     CurvePoint::base(10, 0),
-    //     CurvePoint::base(15, 5),
-    //     CurvePoint::base(20, 10),
-    //     CurvePoint::base(15, 15),
-    //     CurvePoint::base(10, 20),
-    //     CurvePoint::base(0, 20),
-    // ];
-
-    // points.reverse();
-
-    // geometry.points.extend_from_slice(points);
-
-    gl::clear(0.0, 0.0, 0.0, 0.2);
     window.pre_present_notify();
-    renderer.ctx.swap_buffers(None).unwrap();
+    renderer.draw(&perwindow).expect("first render should be error-free");
     window.redraw();
+
+    // add movable point
+
+    renderer.inner.geometry.points.push(CurvePoint::base(0, 0));
+    renderer.inner.geometry.shapes.push(Shape::instanced(4..5, 1..3));
+    renderer.inner.geometry.instances.extend([
+        Instance { pos: [0.0, 0.0, 0.0], texture: [0.86, 0.85, 0.8] },
+        Instance { pos: [1.0, 0.0, 0.0], texture: [0.8, 0.0, 0.2] },
+    ]);
 
     // run the event loop
     block_on(async {
@@ -115,23 +95,26 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
             match event {
 
+                Event::Resume => {
+                    debug!("resuming, initial render");
+                    // render on resume, to make wayland accept our
+                    // window size 
+                    // window.pre_present_notify();
+                    // renderer.draw(&perwindow).expect("first render should be error-free");
+                    // TODO: why does rendering here cause a complete freeze?? i hate wayland
+                    // window.redraw();
+                }
+
                 Event::Window { event, .. } => match event {
 
                     WindowEvent::Redraw => {
-
-                        gl::clear(0.0, 0.0, 0.0, 0.2);
                         window.pre_present_notify();
-                        renderer.draw(&geometry).ok();
+                        renderer.draw(&perwindow).ok();
                         window.redraw();
-
                     },
 
                     WindowEvent::Resize { size, .. } => {
-                        // ctx.resize(size);
-                        renderer.resize(size);
-                        // ctx.resize(size);
-                        gl::resize_viewport(size);
-                        // current_size = size;
+                        perwindow.resize(size);
                     },
 
                     WindowEvent::MouseMotion { x, y } => {
@@ -139,7 +122,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         if x < 0.0 || y < 0.0 { continue }; // TODO: sometimes -1.0, handle this by default
 
                         // TODO: i think on wayland x, y can be negative .-. try clicking and then moving the mouse out the upper window boundry
-                        if let Some(point) = geometry.points.last_mut() {
+                        if let Some(point) = renderer.inner.geometry.points.last_mut() {
                             if point.kind() {
                                 *point = CurvePoint::base(x as i16, y as i16);
                             } else {
@@ -151,29 +134,35 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
 
-                        geometry.points.push(
+                        renderer.inner.geometry.points.push(
                             CurvePoint::base(x as i16, y as i16)
                         );
 
-                        if let Some(shape) = geometry.shapes.last_mut() {
-                            *shape = Shape::singular(shape.start(), shape.range() + 1, 0);
+                        if let Some(shape) = renderer.inner.geometry.shapes.last_mut() {
+                            match shape.kind() {
+                                true => shape.polygon.end += 1,
+                                false => shape.polygon.end -= 1,
+                            }
                         }
 
-                        debug!("add point {:?}", geometry.points.last().unwrap());
+                        debug!("add point {:?}", renderer.inner.geometry.points.last().unwrap());
                     },
 
 
                     WindowEvent::MouseDown { button: MouseButton::Right, x, y } => {
 
-                        geometry.points.push(
+                        renderer.inner.geometry.points.push(
                             CurvePoint::control(x as i16, y as i16)
                         );
 
-                        if let Some(shape) = geometry.shapes.last_mut() {
-                            *shape = Shape::singular(shape.start(), shape.range() + 1, 0);
+                        if let Some(shape) = renderer.inner.geometry.shapes.last_mut() {
+                            match shape.kind() {
+                                true => shape.polygon.end += 1,
+                                false => shape.polygon.end -= 1,
+                            }
                         }
 
-                        debug!("add control point {:?}", geometry.points.last().unwrap());
+                        debug!("add control point {:?}", renderer.inner.geometry.points.last().unwrap());
 
                     },
 
@@ -210,12 +199,14 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     // },
                     
-                    WindowEvent::Close => evl.quit(),
+                    WindowEvent::Close => {
+                        debug!("quitting...");
+                        evl.quit();
+                    },
                     other => debug!("unhandeled window event '{:?}'", other),
                     
                 },
 
-                Event::Resume => debug!("resuming"),
                 Event::Quit { reason } => {
                     debug!("quitting: {:?}", reason);
                     break

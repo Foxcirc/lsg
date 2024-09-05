@@ -24,10 +24,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let egl = egl::Instance::new(&mut evl)?;
 
     gl::load_with(|name|
-        egl.get_proc_address(name).unwrap() as *const _
-    );
+        egl.get_proc_address(name)
+    ).expect("could not load gl functions");
     
-    let size = Size { width: 500 , height: 500 };
+    let size = Size { w: 500 , h: 500 };
     let mut window = Window::new(&mut evl, size);
 
     let mut ctx = egl::Context::new(&egl, &*window, size, None)?; // create an egl context for our window
@@ -76,9 +76,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let mut points: Vec<f32> = Vec::with_capacity(resolution);
 
     let vertex_array = gl::gen_vertex_array();
-    let curve_buffer = gl::gen_buffer(gl::BufferType::ArrayBuffer);
-    gl::vertex_attrib_pointer(&vertex_array, &curve_buffer, gl::VertexAttribs { location: 0, count: 3, kind: gl::DataType::Float, normalize: false, stride: 4 * 5, start: 0 }); // pos
-    gl::vertex_attrib_pointer(&vertex_array, &curve_buffer, gl::VertexAttribs { location: 1, count: 2, kind: gl::DataType::Float, normalize: false, stride: 4 * 5, start: 4 * 3 }); // UV
+    let curve_buffer = gl::gen_buffer(gl::BufferType::Array);
+    gl::vertex_attrib_pointer2(&vertex_array, &curve_buffer, gl::VertexAttribs { location: 0, count: 3, kind: gl::DataType::Float, normalize: false, stride: 4 * 5, start: 0 }); // pos
+    gl::vertex_attrib_pointer2(&vertex_array, &curve_buffer, gl::VertexAttribs { location: 1, count: 2, kind: gl::DataType::Float, normalize: false, stride: 4 * 5, start: 4 * 3 }); // UV
 
     const VERT: &str = "#version 320 es
         precision mediump float;
@@ -119,7 +119,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let mut middle_down = false;
     let mut right_down = false;
 
-    let mut current_size = Size { width: 500, height: 500 };
+    let mut current_size = Size { w: 500, h: 500 };
 
     // run the event loop
     block_on(async {
@@ -164,9 +164,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
 
                         // convert to opengl coords
-                        let x = (x / current_size.width as f64) * 2.0 - 1.0;
-                        let y = current_size.height as f64 - y; // flip y
-                        let y = (y / current_size.height as f64) * 2.0 - 1.0;
+                        let x = (x / current_size.w as f64) * 2.0 - 1.0;
+                        let y = current_size.h as f64 - y; // flip y
+                        let y = (y / current_size.h as f64) * 2.0 - 1.0;
 
                         if left_down {
                             p0 = [x as f32, y as f32];
