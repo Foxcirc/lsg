@@ -76,13 +76,25 @@ pub fn debug_message_control(severity: Option<DebugSeverity>, source: Option<Deb
     ) }
 }
 
-pub fn debug_message_tracing_handler(source: DebugSource, kind: DebugType, severity: DebugSeverity, id: u32, msg: &str) {
+/// `msg` can't be longer then 1024 bytes
+pub fn debug_message_insert(severity: DebugSeverity, source: DebugSource, id: u32, msg: &str) {
+    let mut buf = [0; 1024];
+    let text = to_small_cstr(&mut buf, msg);
+    unsafe { gl::DebugMessageInsert(
+        source as u32,
+        gl::DEBUG_TYPE_OTHER,
+        id,
+        severity as u32,
+        msg.len() as i32,
+        text.as_ptr(),
+    ) }
+}
+
+pub fn debug_message_tracing_handler(source: DebugSource, kind: DebugType, severity: DebugSeverity, _id: u32, msg: &str) {
 
     use DebugSeverity::*;
 
-    let _span = tracing::span!(tracing::Level::INFO, "GlMessage").entered();
-
-    let message = format!("gl {}, from {:?}, of kind {:?}, '{:?}'", id, source, kind, msg.trim_end_matches("\n"));
+    let message = format!("from {:?}, {:?}: {}", source, kind, msg.trim_end_matches("\n"));
 
     if severity == Notification || severity == Low {
         tracing::debug!("{}", message);
@@ -126,6 +138,24 @@ pub enum DebugSource {
     ShaderCompiler = gl::DEBUG_SOURCE_SHADER_COMPILER,
     ThirdParty     = gl::DEBUG_SOURCE_THIRD_PARTY,
     WindowSystem   = gl::DEBUG_SOURCE_WINDOW_SYSTEM
+}
+
+pub fn get_integerv(property: Property) -> Result<usize, PropertyUnknown> {
+    let mut out = -1;
+    unsafe { gl::GetIntegerv(property as u32, &mut out) };
+    match out {
+        -1 => Err(PropertyUnknown),
+        val => Ok(val as usize),
+    }
+}
+
+#[derive(Debug)]
+pub struct PropertyUnknown;
+
+#[repr(u32)]
+pub enum Property {
+    MajorVersion  = gl::MAJOR_VERSION,
+    MinorVersion  = gl::MINOR_VERSION,
 }
 
 pub struct Shader {
@@ -583,7 +613,7 @@ pub enum PolygonMode {
     Line = gl::LINE
 }
 
-pub fn to_small_cstr<'d>(buf: &'d mut [u8; 1024], text: &str) -> &'d CStr {
+pub fn to_small_cstr<'d>(buf: &'d mut [u8], text: &str) -> &'d CStr {
 
     let len = text.len();
 

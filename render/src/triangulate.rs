@@ -13,17 +13,17 @@ use crate::{CurveGeometry, CurvePoint, Instance};
 pub struct OutputGeometry<'a> {
     pub singular: SingularOutputGeometry<'a>,
     pub instanced: InstancedOutputGeometry<'a>,
-    /// if there was an error in any of the input shapes.
+    /// contains a message if there was an error in any of the input shapes.
     /// shapes with an error are discarded, but all others are still
     /// processed normally
-    pub errornous: bool,
+    pub error: &'static str,
 }
 
 impl<'a> OutputGeometry<'a> {
     pub fn check(&self) -> Result<(), &'static str> {
-        match self.errornous {
-            false => Ok(()),
-            true => Err("prepocesor input contained invalid shapes"),
+        match self.error {
+            "" => Ok(()),
+            msg => Err(msg),
         }
     }
 }
@@ -56,7 +56,7 @@ pub struct Triangulator { // TODO: make pub(crate)
     // outputs
     singular: SingularData,
     instanced: InstancedData,
-    errornous: bool,
+    error: &'static str,
 }
 
 impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more then triangulating
@@ -68,7 +68,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             removed: BitVec::new(),
             singular: SingularData { vertices: Vec::new() },
             instanced: InstancedData { vertices: Vec::new(), instances: Vec::new(), commands: Vec::new() },
-            errornous: false,
+            error: "",
         }
     }
 
@@ -87,7 +87,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         self.instanced.vertices.clear();
         self.instanced.instances.clear();
         self.instanced.commands.clear();
-        self.errornous = false;
+        self.error = "";
 
         // append basic triangles
         for shape in &geometry.shapes {
@@ -106,27 +106,31 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             let instances = geometry.instances.get(range.start as usize .. range.end as usize)
                 .unwrap_or_default();
 
+            // this determines which kind of vertices are generated
             let singular = shape.kind();
-            if let Ok(..) = self.shape(points, instances, singular) {
-                if !singular {
-                    for it in instances {
-                        self.instanced.instances.extend([
-                            it.pos[0], it.pos[1], it.pos[2], // offsetX, offsetY, z
-                            it.texture[0], it.texture[1], it.texture[2],
-                        ]);
-                        self.instanced.commands.push(gl::DrawArraysIndirectCommand::new(
-                            (self.instanced.vertices.len() - start[1]) / 4, // vertex count
-                            instances.len(), // instance count
-                            start[1] / 4, // start index
-                        ))
-                    }
+
+            // generate the mesh now
+            match self.shape(points, instances, singular) {
+                // for instances, we have to populate the instance data now
+                Ok(..) if !singular => for it in instances {
+                    self.instanced.instances.extend([
+                        it.pos[0], it.pos[1], it.pos[2], // offsetX, offsetY, z
+                        it.texture[0], it.texture[1], it.texture[2],
+                    ]);
+                    self.instanced.commands.push(gl::DrawArraysIndirectCommand::new(
+                        (self.instanced.vertices.len() - start[1]) / 4, // vertex count
+                        instances.len(), // instance count
+                        start[1] / 4, // start index
+                    ))
+                },
+                // nothing to do for singular shapes
+                Ok(..) => (),
+                // restore the valid geometry on error
+                Err(msg) => {
+                    self.singular.vertices.truncate(start[0]);
+                    self.instanced.vertices.truncate(start[1]);
+                    self.error = msg;
                 }
-            } else {
-                // restore the valid geometry
-                self.singular.vertices.truncate(start[0]);
-                self.instanced.vertices.truncate(start[1]);
-                // set the flag
-                self.errornous = true;
             }
         }
 
@@ -139,17 +143,24 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                 instances: &self.instanced.instances,
                 commands: &self.instanced.commands,
             },
-            errornous: self.errornous,
+            error: self.error,
         }
         
     }
 
-    pub fn shape(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), ()> {
+    pub fn shape(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), &'static str> {
         if points.len() < 3 || instances.len() == 0 {
-            Err(())
+            Err("not enough points or instances")
         } else {
-            self.triangulate(points, instances, singular)?;
+            let len = points.len();
+            // reset our state
+            self.ears.clear();
+            self.removed.clear();
+            self.ears.resize(len as u64, false);
+            self.removed.resize(len as u64, false);
+            // generate the triangles
             self.curves(points, instances, singular)?;
+            self.triangulate(points, instances, singular)?;
             Ok(())
         }
     }
@@ -157,40 +168,49 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     /// Calculate patch-on triangles that should be rendered as curves.
     ///
     /// Accepts window- and returns normalized device coordinates.
-    pub fn curves(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), ()> {
+    pub fn curves(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), &'static str> {
 
         let len = points.len();
         debug_assert!(len >= 3);
 
-        // find all pairs which look like (basic - control - basic)
-        // and make triangles out of then
+        // 1. make curve triangles out of quadratic curves (B-C-B)
+        // 2. split up cubic curves (B-C-C-B) into multiple quadratic ones and do the same
 
         let mut idx = 0;
         loop {
 
-            let [ia, ib, ic] = if idx == 0 {
-                [len - 1, idx, 1]
-            } else if idx == len - 1 {
-                [len - 2, idx, 0]
-            } else {
-                [idx - 1, idx, idx + 1]
-            };
+            // get the point at idx and the four points "after" it in the polygon
+            let [ia, ib, ic, id] = [
+                (idx + 0) % len,
+                (idx + 1) % len,
+                (idx + 2) % len,
+                (idx + 3) % len,
+            ];
 
-            // can't have two control points next to each other
-            if (!points[ia].kind() && !points[ib].kind()) ||
-               (!points[ib].kind() && !points[ic].kind()) {
-                return Err(())
-            }
+            let increment; // how many points to skip for the next iteration
 
-            // find the relevant pairs
-            else if  points[ia].kind() &&
-                    !points[ib].kind() &&
-                     points[ic].kind() {
+            // // can't have two control points next to each other
+            // if (!points[ia].kind() && !points[ib].kind()) ||
+            //    (!points[ib].kind() && !points[ic].kind()) {
+            //     return Err(())
+            // }
+
+            if  points[ia].kind() &&
+               !points[ib].kind() &&
+                points[ic].kind() {
+
+                // quadratic curve
+                increment = 2; // not 3 because the end base point is likely part of another curve
 
                 let [a, b, c] = [points[ia], points[ib], points[ic]];
                 let [ga, gb, gc] = [a.gl(self.size), b.gl(self.size), c.gl(self.size)];
 
                 let convex = Self::convex([a, b, c]);
+
+                // mark all convex curved triangles as removed, so they are
+                // not triangulate later
+                self.removed.set(ib as u64, convex);
+
                 let uvs = if convex { // range 0.5 to 1.0 means convex (for the shader)
                     [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]
                 } else { // range 0.0 to 0.5 means concave (for the shader)
@@ -212,10 +232,24 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                     ]);
                 }
 
+            } else if  points[ia].kind() &&
+                      !points[ib].kind() &&
+                      !points[ic].kind() &&
+                       points[id].kind() {
+
+                // cubic curve
+                increment = 3;
+
+                todo!("cubic curve");
+
+            } else {
+                // since this is an error, wrap-around cases like (C-B-B) are invalid
+                // return Err("invalid configuration of base/control points")
+                increment = 1;
             }
             
             idx += 1;
-            if idx == len { break };
+            if idx >= len { break };
             
         }
         
@@ -230,20 +264,10 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     /// The algorithms is purposely written in a way that is similar to the
     /// compute shader implementation.
     // TODO(DOC): link to docs on the triangulation compute shader
-    fn triangulate(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), ()> {
-        
-        // TODO: split polygons with > 1000 vertices into sub-polygons for the gpu
+    fn triangulate(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), &'static str> {
 
         let len = points.len();
         debug_assert!(len >= 3);
-
-        // reset our state
-
-        self.ears.clear();
-        self.removed.clear();
-
-        self.ears.resize(len as u64, false);
-        self.removed.resize(len as u64, false);
 
         // calculate initial ear state for every point
 
@@ -252,43 +276,6 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             self.ears.set(idx as u64, ear);
         }
 
-        // mark all convex triangles that include a control
-        // point as removed, as we render their triangles as `curved`
-
-        let mut idx = 0;
-        loop {
-
-            let [ia, ib, ic] = if idx == 0 {
-                [len - 1, idx, 1]
-            } else if idx == len - 1 {
-                [len - 2, idx, 0]
-            } else {
-                [idx - 1, idx, idx + 1]
-            };
-
-            let [a, b, c] = [points[ia], points[ib], points[ic]];
-
-            // can't have two control points next to each other
-            if (!a.kind() && !b.kind()) ||
-               (!b.kind() && !c.kind()) {
-                return Err(())
-            }
-
-            // find the relevant pairs
-            else if  points[ia].kind() &&
-                    !points[ib].kind() &&
-                     points[ic].kind() && 
-                     Self::convex([a, b, c]) {
-
-                self.removed.set(ib as u64, true);
-                
-            }
-            
-            idx += 1;
-            if idx == len { break };
-            
-        }
-        
         // remove ears and recalculate neightbours
         
         let mut changes = false; // used to check for errors
@@ -298,7 +285,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             if counter < len {
                 counter += 1;
             } else {
-                if !changes { return Err(()) };
+                if !changes { return Err("polygon not ccw or intersecting lines") };
                 changes = false;
                 counter = 1;
             }
@@ -539,6 +526,7 @@ fn curves() {
         CurvePoint::base(10, 10),
         CurvePoint::control(20, 20),
         CurvePoint::control(20, 20),
+        CurvePoint::control(20, 20),
         CurvePoint::base(10, 10),
     ];
 
@@ -552,7 +540,7 @@ fn curves() {
 
     assert_eq!(
         result,
-        Err(())
+        Err("invalid configuration of base/control points")
     );
 
 

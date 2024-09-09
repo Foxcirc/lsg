@@ -278,20 +278,22 @@ impl<S: SubRenderers> GlRenderer<S> {
     pub fn new<D: egl::IsDisplay>(display: &D) -> Result<Self, RenderError> {
 
         let lib = egl::Instance::new(display)?;
-
         gl::load_with(|name| lib.get_proc_address(name))?;
-        gl::debug_message_callback(gl::debug_message_tracing_handler);
 
         let config = egl::v2::Config::build()
             .api(egl::v2::Api::OpenGl)
             .version(4, 3)
-            .debug(cfg!(debug))
+            .debug(cfg!(debug_assertions))
+            .profile(egl::v2::Profile::Compat)
             .finish(&lib)?;
 
         let ctx = egl::v2::Context::new(&lib, &config)?;
 
         ctx.bind(None)?;
         let renderers = S::new()?; // setup the sub renderers
+
+        gl::debug_message_callback(gl::debug_message_tracing_handler);
+        // gl::debug_message_control(None, None, None, true); // idk how to enable the messages
 
         Ok(Self {
             lib,
@@ -424,14 +426,18 @@ impl SubRenderers for BuiltinRenderer {
         )?;
 
         // render all non-instanced shapes
-        gl::buffer_data(&self.singular.vdata, result.singular.vertices, gl::DrawHint::Dynamic);
-        gl::draw_arrays(&self.program, &self.singular.vao, gl::Primitive::Triangles, 0, result.singular.vertices.len() / 7 /* vertex size */);
+        if result.singular.vertices.len() > 0 {
+            gl::buffer_data(&self.singular.vdata, result.singular.vertices, gl::DrawHint::Dynamic);
+            gl::draw_arrays(&self.program, &self.singular.vao, gl::Primitive::Triangles, 0, result.singular.vertices.len() / 7 /* vertex size */);
+        }
 
         // render all instanced shapes
-        gl::buffer_data(&self.instanced.vdata, result.instanced.vertices, gl::DrawHint::Dynamic);
-        gl::buffer_data(&self.instanced.idata, result.instanced.instances, gl::DrawHint::Dynamic);
-        gl::buffer_data(&self.instanced.commands, result.instanced.commands, gl::DrawHint::Dynamic);
-        gl::draw_arrays_indirect(&self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
+        if result.instanced.commands.len() > 0 {
+            gl::buffer_data(&self.instanced.vdata, result.instanced.vertices, gl::DrawHint::Dynamic);
+            gl::buffer_data(&self.instanced.idata, result.instanced.instances, gl::DrawHint::Dynamic);
+            gl::buffer_data(&self.instanced.commands, result.instanced.commands, gl::DrawHint::Dynamic);
+            gl::draw_arrays_indirect(&self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
+        }
 
         Ok(Damage::all())
 
