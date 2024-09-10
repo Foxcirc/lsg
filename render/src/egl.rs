@@ -89,6 +89,29 @@ impl GlPoint {
     }
 }
 
+/// A point in window coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Point {
+
+    pub fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    /// Convert to normalized device coordinates using the given window size.
+    pub(crate) fn gl(self, size: Size) -> GlPoint {
+        GlPoint {
+            x:       2.0 * (self.x as f32 / size.w  as f32) - 1.0,
+            y: 1.0 - 2.0 * (self.y as f32 / size.h as f32)
+        }
+    }
+
+}
+
 /// A point on a curve.
 /// Can represent base (on-curve) and control (off-curve) points.
 /// The coordinates represent (0, 0) as the top-left corner of the screen,
@@ -161,8 +184,13 @@ impl CurvePoint {
         self.x > 0
     }
 
+    /// Convert to basic point. Discarding curve information.
+    pub(crate) fn point(self) -> Point {
+        Point::new(self.x() as f32, self.y() as f32)
+    }
+
     /// Convert to normalized device coordinates using the given window size.
-    pub(crate) fn gl(&self, size: Size) -> GlPoint {
+    pub(crate) fn gl(self, size: Size) -> GlPoint {
         GlPoint {
             x:       2.0 * (self.x() as f32 / size.w  as f32) - 1.0,
             y: 1.0 - 2.0 * (self.y() as f32 / size.h as f32)

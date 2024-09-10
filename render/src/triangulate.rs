@@ -5,7 +5,7 @@ use std::f32::consts::PI;
 use bv::BitVec;
 use common::Size;
 
-use crate::{CurveGeometry, CurvePoint, Instance};
+use crate::{CurveGeometry, CurvePoint, Instance, Point};
 
 // TODO: make all u16 be i16 and enforce it to pe positive or enforce all u16's to be in range 0..32K (i16::MAX) or use another type
 
@@ -110,7 +110,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             let singular = shape.kind();
 
             // generate the mesh now
-            match self.shape(points, instances, singular) {
+            match self.process_one_shape(points, instances, singular) {
                 // for instances, we have to populate the instance data now
                 Ok(..) if !singular => for it in instances {
                     self.instanced.instances.extend([
@@ -148,7 +148,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         
     }
 
-    pub fn shape(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), &'static str> {
+    pub fn process_one_shape(&mut self, points: &[CurvePoint], instances: &[Instance], singular: bool) -> Result<(), &'static str> {
         if points.len() < 3 || instances.len() == 0 {
             Err("not enough points or instances")
         } else {
@@ -187,68 +187,87 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                 (idx + 3) % len,
             ];
 
+            let [a, b, c, d] = [
+                points[ia], points[ib],
+                points[ic], points[id]
+            ];
+
             let increment; // how many points to skip for the next iteration
 
-            // // can't have two control points next to each other
-            // if (!points[ia].kind() && !points[ib].kind()) ||
-            //    (!points[ib].kind() && !points[ic].kind()) {
-            //     return Err(())
-            // }
+            if a.kind() && !b.kind() && c.kind() {
 
-            if  points[ia].kind() &&
-               !points[ib].kind() &&
-                points[ic].kind() {
+                increment = 2;
 
-                // quadratic curve
-                increment = 2; // not 3 because the end base point is likely part of another curve
+                // quadratic curve case
+                //
+                // A. render a single "curve triangle". the range of the "uvs" decides
+                //    which side of the curve get's filled by the shader
+                // B. mark all control points inside the shape as removed
 
-                let [a, b, c] = [points[ia], points[ib], points[ic]];
-                let [ga, gb, gc] = [a.gl(self.size), b.gl(self.size), c.gl(self.size)];
+                let convex = Self::is_convex([a.point(), b.point(), c.point()]);
 
-                let convex = Self::convex([a, b, c]);
-
-                // mark all convex curved triangles as removed, so they are
-                // not triangulate later
+                // mark all convex curved triangles as removed,
+                // so they are not triangulated later
                 self.removed.set(ib as u64, convex);
 
-                let uvs = if convex { // range 0.5 to 1.0 means convex (for the shader)
-                    [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]
-                } else { // range 0.0 to 0.5 means concave (for the shader)
-                    [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]
-                };
+                self.add_curve_triangle(
+                    a.point(), b.point(), c.point(),
+                    convex, singular, instances,
+                );
 
-                if singular {
-                    let i = &instances[0];
-                    self.singular.vertices.extend([
-                        ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2],
-                        gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2],
-                        gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]
-                    ]);
-                } else {
-                    self.instanced.vertices.extend([
-                        ga.x, ga.y, uvs[0], uvs[1],
-                        gb.x, gb.y, uvs[2], uvs[3],
-                        gc.x, gc.y, uvs[4], uvs[5]
-                    ]);
-                }
+            } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
 
-            } else if  points[ia].kind() &&
-                      !points[ib].kind() &&
-                      !points[ic].kind() &&
-                       points[id].kind() {
-
-                // cubic curve
                 increment = 3;
 
-                todo!("cubic curve");
+                // the cubic curve case is a little more complicated
+                //
+                // A. split the cubic curve at it's infection- and min-/max- points
+                // B. degree reduce the split out parts and generate a quadratic
+                //    curve triangle for all of them
+                // C. mark all of the original control points that are inside the
+                //    shape as removed
+
+                // let critical_points = Self::critical_points(a, b, c, d);
+
+                // println!("{:?}", critical_points);
+
+                self.removed.set(ib as u64, true);
+                self.removed.set(ic as u64, true);
+
+                let mut curve = [a.point(), b.point(), c.point(), d.point()];
+                let mut previous_t = 0.0;
+
+                let critical_points = [0.2, 0.4, 0.6];
+
+                for t in critical_points.iter().copied().chain([1.0]) { // chain 1.0 so we also get the final segment
+
+                    // calculate where the original t value would lie on the new segment
+                    let normalized_t = (t - previous_t) / (1.0 - previous_t);
+
+                    // split off one segment of the curve
+                    let [sub, rest] = Self::split_cubic(curve, normalized_t);
+
+                    // quadratic control point (degree reduction by averaging)
+                    let p2 = Point::new(
+                        -0.25*sub[0].x + 0.75*sub[1].x + 0.75*sub[2].x -0.25*sub[3].x,
+                        -0.25*sub[0].y + 0.75*sub[1].y + 0.75*sub[2].y -0.25*sub[3].y
+                    );
+                    
+                    let [p1, p3] = [sub[0], sub[3]];
+                    let convex = Self::is_convex([p1, p2, p3]);
+                    self.add_curve_triangle(p1, p2, p3, convex, singular, &instances);
+
+                    curve = rest;
+                    previous_t = t;
+                    
+                }
 
             } else {
-                // since this is an error, wrap-around cases like (C-B-B) are invalid
-                // return Err("invalid configuration of base/control points")
-                increment = 1;
+                // not a beziér curve, maybe just a line, so just continue
+                increment = 1; // TODO: check for three control points in a row, which would be invalid and rn just causes the control points to be ignored
             }
             
-            idx += 1;
+            idx += increment;
             if idx >= len { break };
             
         }
@@ -272,7 +291,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         // calculate initial ear state for every point
 
         for idx in 0..len {
-            let ear = Self::ear(points, &self.removed, idx);
+            let ear = Self::is_ear(points, &self.removed, idx);
             self.ears.set(idx as u64, ear);
         }
 
@@ -300,7 +319,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
             if self.ears[idx as u64] {
 
-                let [ia, ib, ic] = Self::neightbours(&self.removed, idx);
+                let [ia, ib, ic] = Self::alive_neightbours(&self.removed, idx);
                 if ia == ic { // only two points were left
                     break
                 };
@@ -330,9 +349,9 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                 self.removed.set(ib as u64, true);
 
                 // recalculate the neighbors
-                let ear = Self::ear(points, &self.removed, ia);
+                let ear = Self::is_ear(points, &self.removed, ia);
                 self.ears.set(ia as u64, ear);
-                let ear = Self::ear(points, &self.removed, ic);
+                let ear = Self::is_ear(points, &self.removed, ic);
                 self.ears.set(ic as u64, ear);
 
                 changes = true;
@@ -345,8 +364,35 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     }
 
+    fn add_curve_triangle(&mut self, a: Point, b: Point, c: Point, convex: bool, singular: bool, instances: &[Instance]) {
+
+        let [ga, gb, gc] = [a.gl(self.size), b.gl(self.size), c.gl(self.size)];
+
+        let uvs = if convex { // range 0.5 to 1.0 means convex (for the shader)
+            [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]
+        } else { // range 0.0 to 0.5 means concave (for the shader)
+            [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]
+        };
+
+        if singular {
+            let i = &instances[0];
+            self.singular.vertices.extend([
+                ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2],
+                gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2],
+                gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]
+            ]);
+        } else {
+            self.instanced.vertices.extend([
+                ga.x, ga.y, uvs[0], uvs[1],
+                gb.x, gb.y, uvs[2], uvs[3],
+                gc.x, gc.y, uvs[4], uvs[5]
+            ]);
+        }
+        
+    }
+
     /// Behaviour is unspecified if all indices are marked as removed.
-    pub(self) fn neightbours(removed: &BitVec, idx: usize) -> [usize; 3] {
+    pub(self) fn alive_neightbours(removed: &BitVec, idx: usize) -> [usize; 3] {
         
         let len = removed.len(); // removed.len() == polygon.len()
 
@@ -389,23 +435,21 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     /// Check if the point at `idx` is an ear, accounting for removed neightbours.
     /// Y-flipped version.
-    fn ear(polygon: &[CurvePoint], removed: &BitVec, idx: usize) -> bool {
+    fn is_ear(polygon: &[CurvePoint], removed: &BitVec, idx: usize) -> bool {
 
-        let [ia, ib, ic] = Self::neightbours(removed, idx);
-        let neightbours = [polygon[ia], polygon[ib], polygon[ic]];
+        let [ia, ib, ic] = Self::alive_neightbours(removed, idx);
+        let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
 
         // short curcuit if it is concave
-        let convex = Self::convex(neightbours);
+        let convex = Self::is_convex([a.point(), b.point(), c.point()]);
         if !convex {
             return false
         }
 
-        let [a, b, c] = neightbours;
-
         let mut intersects = false;
         for point in polygon.iter() {
             if [a, b, c].contains(point) { continue };
-            intersects |= Self::intersects([a, b, c], *point)
+            intersects |= Self::triangle_intersects_point([a, b, c], *point)
         }
 
         !intersects
@@ -415,12 +459,12 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     /// Check if the three points are convex, assuming counter clockwise orientation.
     /// Y-flipped version.
-    fn convex(neightbours: [CurvePoint; 3]) -> bool {
+    fn is_convex(neightbours: [Point; 3]) -> bool { // TODO: make all function that don't care about off/on curve take Point
 
         let [a, b, c] = neightbours;
 
-        let ba = [a.x() as i32 - b.x() as i32, -(a.y() as i32 - b.y() as i32)];
-        let bc = [c.x() as i32 - b.x() as i32, -(c.y() as i32 - b.y() as i32)];
+        let ba = [a.x as i32 - b.x as i32, -(a.y as i32 - b.y as i32)];
+        let bc = [c.x as i32 - b.x as i32, -(c.y as i32 - b.y as i32)];
         //                                     ^ this minus adjusts it for being y-flipped
     
         // calcualte the angle BA to BC
@@ -443,7 +487,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     /// Area of the triangle ABC.
     /// Y-flipped version.
-    fn area(a: CurvePoint, b: CurvePoint, c: CurvePoint) -> f32 {
+    fn triangle_area(a: CurvePoint, b: CurvePoint, c: CurvePoint) -> f32 {
         ((a.x() as f32 * (c.y() as f32 - b.y() as f32) +
           b.x() as f32 * (a.y() as f32 - c.y() as f32) +
           c.x() as f32 * (b.y() as f32 - a.y() as f32)) / 2.0).abs()
@@ -452,19 +496,94 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     /// If `point` lies within the triangle `trig`.
     /// Y-flipped version.
-    fn intersects(trig: [CurvePoint; 3], point: CurvePoint) -> bool {
+    fn triangle_intersects_point(trig: [CurvePoint; 3], point: CurvePoint) -> bool {
 
-        let abc = Self::area(trig[0], trig[1], trig[2]);
+        let abc = Self::triangle_area(trig[0], trig[1], trig[2]);
 
-        let pab = Self::area(point, trig[0], trig[1]);
-        let pbc = Self::area(point, trig[1], trig[2]);
-        let pca = Self::area(point, trig[2], trig[0]);
+        let pab = Self::triangle_area(point, trig[0], trig[1]);
+        let pbc = Self::triangle_area(point, trig[1], trig[2]);
+        let pca = Self::triangle_area(point, trig[2], trig[0]);
     
         let total = pab + pbc + pca;
 
         // using a small epsilon to account for floating-point precision errors
         (total - abc).abs() < 1e-6
 
+    }
+
+    // function to find the critical t values (inflection points and local extremes)
+    // of a cubic beziér curve
+    fn critical_points(a: CurvePoint, b: CurvePoint, c: CurvePoint, d: CurvePoint) -> Vec<f32> {
+
+        let mut t_values = Vec::new();
+
+        // find the t values where local extremes occur (solving the first derivative)
+        let ax = 3.0 * (-a.x() as f32 + 3.0 * (b.x() as f32 - c.x() as f32) + d.x() as f32);
+        let bx = 6.0 * ( a.x() as f32 - 2.0 *  b.x() as f32 + c.x() as f32);
+        let cx = 3.0 * ( b.x() as f32 - a.x() as f32);
+
+        let ay = 3.0 * (-a.y() as f32 + 3.0 * (b.y() as f32 - c.y() as f32) + d.y() as f32);
+        let by = 6.0 * ( a.y() as f32 - 2.0 *  b.y() as f32 + c.y() as f32);
+        let cy = 3.0 * ( b.y() as f32 - a.y() as f32);
+
+        // calculate discriminants for both x and y
+        let disc_x = bx * bx - 4.0 * ax * cx;
+        let disc_y = by * by - 4.0 * ay * cy;
+
+        // solve for t in the x direction
+        if disc_x >= 0.0 && ax != 0.0 {
+            let sqrt_disc = disc_x.sqrt();
+            let t1 = (-bx + sqrt_disc) / (2.0 * ax);
+            let t2 = (-bx - sqrt_disc) / (2.0 * ax);
+
+            if t1 >= 0.0 && t1 <= 1.0 {
+                t_values.push(t1);
+            }
+            if t2 >= 0.0 && t2 <= 1.0 {
+                t_values.push(t2);
+            }
+        }
+
+        // solve for t in the y direction
+        if disc_y >= 0.0 && ay != 0.0 {
+            let sqrt_disc = disc_y.sqrt();
+            let t1 = (-by + sqrt_disc) / (2.0 * ay);
+            let t2 = (-by - sqrt_disc) / (2.0 * ay);
+
+            if t1 >= 0.0 && t1 <= 1.0 {
+                t_values.push(t1);
+            }
+            if t2 >= 0.0 && t2 <= 1.0 {
+                t_values.push(t2);
+            }
+        }
+
+        // memove duplicates and sort the t values in ascending order
+        t_values.dedup();
+        t_values.sort_unstable_by(
+            |a, b| a.partial_cmp(b).unwrap()
+        ); // scuffed f32 sort
+
+        t_values
+
+    }
+
+    fn split_cubic([a, b, c, d]: [Point; 4], t: f32) -> [[Point; 4]; 2] {
+        let p1  = Self::lerp(a, b, t);
+        let p2  = Self::lerp(b, c, t);
+        let p3  = Self::lerp(c, d, t);
+        let p12 = Self::lerp(p1, p2, t);
+        let p23 = Self::lerp(p2, p3, t);
+        let p   = Self::lerp(p12, p23, t);
+        [[a, p1, p12, p], [p, p23, p3, d]]
+        // -- curve1 --   --- curve2  ---
+    }
+
+    fn lerp(p1: Point, p2: Point, t: f32) -> Point {
+        Point::new(
+            p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
+            p1.y as f32 + (p2.y as f32 - p1.y as f32) * t
+        )
     }
 
 }
@@ -476,17 +595,17 @@ fn neightbours() {
     bits.resize(10, false);
 
     assert_eq!(
-        Triangulator::neightbours(&bits, 4),
+        Triangulator::alive_neightbours(&bits, 4),
         [3, 4, 5]
     );
 
     assert_eq!(
-        Triangulator::neightbours(&bits, 0),
+        Triangulator::alive_neightbours(&bits, 0),
         [9, 0, 1]
     );
 
     assert_eq!(
-        Triangulator::neightbours(&bits, 9),
+        Triangulator::alive_neightbours(&bits, 9),
         [8, 9, 0]
     );
 
