@@ -39,10 +39,10 @@ void main() {
 
     if (value >= 0.0) {
         final = vec4(texture, 1.0);
-    } else if (value >= -0.005) {
+    // } else if (value >= -0.005) {
         // cheap antialiasing in some spots
-        value = (0.005 + value) * 200.0;
-        final = vec4(texture * value, value);
+        // value = (0.005 + value) * 200.0;
+        // final = vec4(texture * value, value);
     } else {
         discard;
     }

@@ -1,62 +1,8 @@
 
-use std::{fmt, mem::size_of, ops::Range, thread::sleep_ms};
+use std::{fmt, mem::size_of, ops::Range};
 
 use common::*;
-use crate::{triangulate, OutputGeometry};
-
-// trait Widget<R>
-// fn draw(&mut self, renderer: &mut R);
-
-/*
-There are three (builtin) renderers that can be used by widgets:
-- curve renderer
-- opengl/metal/whatever (native) renderer
-- raw window access
-*/
-
-// pub struct BuiltinRenderer {
-//     pub curve: CurveRenderer,
-//     // pub gl: GlRenderer,
-//     // pub raw: RawRenderer,
-// }
-
-// pub struct BuiltinShared {
-//     pub curve: CurveRenderer,
-//     // pub gl: GlRenderer,
-//     // pub raw: RawRenderer,
-// }
-
-// pub struct {
-//     pub curve: CurveRenderer,
-//     // pub gl: GlRenderer,
-//     // pub raw: RawRenderer,
-// }
-
-// pub trait Renderer {
-//     type Base;
-//     type Buffer: Buffer;
-//     fn new(window: &mut );
-//     fn render(&mut self, buffer: &mut Self::Buffer);
-// }
-
-// pub trait Renderer {
-//     type Ctx: Context;
-//     type Buf: Buffer;
-//     /// Create a new render context for a specific window.
-//     fn context(&mut self) -> Self::Ctx;
-//     /// Render the buffer contents to whatever destination this
-//     /// context renders to.
-//     fn render(&mut self, buf: &mut Self::Buf);
-// }
-
-// pub trait Buffer {
-//     /// Clear the buffer, so it can be reused.
-//     fn clear(&mut self);
-// }
-
-// type HasRenderer<T: Target<R>, R>
-
-// }
+use crate::triangulate;
 
 #[derive(Default)]
 pub struct CurveGeometry {
@@ -90,9 +36,9 @@ impl GlPoint {
 }
 
 /// A point in window coordinates.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy,PartialEq)]
 pub struct Point {
-    pub x: f32,
+    pub x: f32, // TODO: use i16?
     pub y: f32,
 }
 
@@ -187,6 +133,11 @@ impl CurvePoint {
     /// Convert to basic point. Discarding curve information.
     pub(crate) fn point(self) -> Point {
         Point::new(self.x() as f32, self.y() as f32)
+    }
+
+    /// fuckery
+    pub(crate) fn fuckery(x: Point) -> Self {
+        Self::base(x.x as i16, x.y as i16)
     }
 
     /// Convert to normalized device coordinates using the given window size.
@@ -298,6 +249,8 @@ pub struct GlRenderer<S: SubRenderers> {
     lib: egl::Instance,
     ctx: egl::v2::Context,
     config: egl::v2::Config,
+    fbo: gl::FrameBuffer,
+    old: Size,
     pub inner: S,
 }
 
@@ -317,16 +270,26 @@ impl<S: SubRenderers> GlRenderer<S> {
 
         let ctx = egl::v2::Context::new(&lib, &config)?;
 
+        // bind for initialization
         ctx.bind(None)?;
-        let renderers = S::new()?; // setup the sub renderers
 
         gl::debug_message_callback(gl::debug_message_tracing_handler);
-        // gl::debug_message_control(None, None, None, true); // idk how to enable the messages
+        gl::debug_message_control(Some(gl::DebugSeverity::Notification), None, None, true);
+
+        // create the composition buffer for transparency rendering
+        // the textures are created later
+        let fbo = gl::gen_frame_buffer();
+        gl::draw_buffers(&fbo, &[gl::AttachmentPoint::Color0, gl::AttachmentPoint::Color1]);
+
+        // setup the sub renderers
+        let renderers = S::new()?;
 
         Ok(Self {
             lib,
             config,
             ctx,
+            fbo,
+            old: Size::new(0, 0),
             inner: renderers,
         })
 
@@ -336,12 +299,34 @@ impl<S: SubRenderers> GlRenderer<S> {
 
         let size = window.surface.size();
 
-        // TODO: how expensive is calling this (and gl::resize_viewport) every frame? can it be moved, I mean there will probably be no other context no?
         self.ctx.bind(&window.surface)?;
-        gl::resize_viewport(size); // TODO: does this function affect the rendering to other surfaces of this ctx aswell? or is it contained
+        gl::resize_viewport(size);
 
+        // recreate composition textures of necessary
+        if size != self.old {
+
+            let color = gl::gen_texture(gl::TextureKind::D2);
+            gl::tex_image_2d(&color, 0, gl::ColorFormat::Rgba16F, size, gl::PixelFormat::Rgba, gl::DataType::Float);
+            gl::tex_parameter_i(&color, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
+            gl::tex_parameter_i(&color, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
+            
+            let reveal = gl::gen_texture(gl::TextureKind::D2);
+            gl::tex_image_2d(&reveal, 0, gl::ColorFormat::R8, size, gl::PixelFormat::Red, gl::DataType::UByte);
+            gl::tex_parameter_i(&reveal, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
+            gl::tex_parameter_i(&reveal, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
+
+            gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &color, 0);
+            gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color1, &reveal, 0);
+            
+        }
+
+        // TODO: how expensive is calling this (and gl::resize_viewport) every frame? can it be moved, I mean there will probably be no other context no?
+
+        // draw using the sub renderers
         let damage = self.inner.draw(size)?;
-        self.ctx.swap(&window.surface, damage)?; // swap the buffers
+
+        // finally swap the buffers
+        self.ctx.swap(&window.surface, damage)?;
 
         Ok(())
 

@@ -1,5 +1,21 @@
 
-// simple wrapper for common opengl functions
+/// Simple wrapper around `gl` that adds typing and safety and handles binding automatically.
+///
+/// Right now, not all functions are implemented and many enums are incomplete,
+/// but adding more is really easy and often a matter of seconds.
+/// This library does not deal with context creation, for that you should
+/// use platform specific libraries like `wgl` or `egl`.
+///
+/// # Initialization
+/// 1. bind a context
+/// 2. use [`load_with`] to load all functions that are present
+/// 3. setup a debug callback
+///
+/// # Debug messages
+/// If you are using `tracing` the easiest way to receive debug messages is
+/// `gl::debug_message_callback(gl::debug_message_tracing_handler)` Otherwise,
+/// you can write your own handler. Note that debug messages are only supported
+/// in gl version 4.0 and onwards.
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
 use num_enum::TryFromPrimitive;
@@ -12,15 +28,13 @@ pub fn load_with<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: 
 
     let mut result = Ok(());
 
-    gl::load_with(|name| // TODO: try returning null here and see if it is caught by gl or if it is undefined behaviour
-        match f(name) {
-            Some(ptr) => ptr as *const void,
-            None => {
-                result = Err(FnsUnknown);
-                null()
-            },
-        }
-    );
+    gl::load_with(|name| match f(name) {
+        Some(ptr) => ptr as *const void,
+        None => {
+            result = Err(FnsUnknown);
+            null()
+        },
+    });
 
     result
 
@@ -56,7 +70,14 @@ extern "system" fn debug_callback(
 
 }
 
+#[track_caller]
 pub fn debug_message_callback<F: DebugCallback + Send + 'static>(f: F) {
+
+    let version = get_version();
+    if version.major <= 4 {
+        let msg = format!("debug messages are unsupported this gl version ({}.{})", version.major, version.minor);
+        f(DebugSource::Other, DebugType::Other, DebugSeverity::Notification, 0, &msg);
+    }
 
     let userdata = &mut *USERDATA.lock().unwrap();
     *userdata = Some(Box::new(f));
@@ -67,9 +88,9 @@ pub fn debug_message_callback<F: DebugCallback + Send + 'static>(f: F) {
 
 pub fn debug_message_control(severity: Option<DebugSeverity>, source: Option<DebugSource>, kind: Option<DebugType>, enabled: bool) {
     unsafe { gl::DebugMessageControl(
-        source.map(|val| val as u32).unwrap_or(gl::DONT_CARE),
-        kind.map(|val| val as u32).unwrap_or(gl::DONT_CARE),
-        severity.map(|val| val as u32).unwrap_or(gl::DONT_CARE),
+        source   .map(|val| val as u32).unwrap_or(gl::DONT_CARE),
+        kind     .map(|val| val as u32).unwrap_or(gl::DONT_CARE),
+        severity .map(|val| val as u32).unwrap_or(gl::DONT_CARE),
         0, // ids.len
         null(), // ids (array)
         enabled as u8
@@ -140,13 +161,28 @@ pub enum DebugSource {
     WindowSystem   = gl::DEBUG_SOURCE_WINDOW_SYSTEM
 }
 
-pub fn get_integerv(property: Property) -> Result<usize, PropertyUnknown> {
+pub fn get_integer_v(property: Property) -> Result<usize, PropertyUnknown> {
     let mut out = -1;
     unsafe { gl::GetIntegerv(property as u32, &mut out) };
     match out {
         -1 => Err(PropertyUnknown),
         val => Ok(val as usize),
     }
+}
+
+#[derive(Debug, Clone, Copy,PartialEq, Eq)]
+pub struct Version {
+    major: usize,
+    minor: usize,
+}
+
+/// The version of the currently bound context.
+#[track_caller]
+pub fn get_version() -> Version {
+    let minor = get_integer_v(Property::MinorVersion);
+    let major = get_integer_v(Property::MajorVersion);
+    minor.and_then(move |minor| Ok(Version { minor, major: major? } ))
+        .expect("cannot get version")
 }
 
 #[derive(Debug)]
@@ -361,12 +397,9 @@ fn bind_vertex_array(this: &VertexArrayObject) {
 }
 
 pub fn gen_buffer(kind: BufferType) -> Buffer {
-
     let mut id = 0;
     unsafe { gl::GenBuffers(1, &mut id) };
-
     Buffer { id, kind }
-    
 }
 
 /// This function doesn't perform type-checking, it accepts a slice of any type
@@ -390,7 +423,7 @@ fn bind_buffer(this: &Buffer) {
     unsafe { gl::BindBuffer(this.kind as u32, this.id) }
 }
 
-#[derive(Clone)]
+#[derive(Clone)] // TODO: all clone, all clone + copy?
 pub struct Buffer {
     id: u32,
     kind: BufferType,
@@ -475,12 +508,145 @@ pub fn vertex_attrib_divisor(vao: &VertexArrayObject, location: u32, divisor: Di
     unsafe { gl::VertexAttribDivisor(location, value) };
 }
 
+#[derive(Clone, Default)] // NOTE: implements Default, as id `0` will bind the default framebuffer
+pub struct FrameBuffer {
+    id: u32,
+}
+
+pub fn gen_frame_buffer() -> FrameBuffer {
+    let mut id = 0;
+    unsafe { gl::GenFramebuffers(1, &mut id) };
+    FrameBuffer { id }
+}
+
+fn bind_frame_buffer(fbo: &FrameBuffer) {
+    unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, fbo.id) };
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum AttachmentPoint {
+    Color0 = gl::COLOR_ATTACHMENT0,
+    Color1 = gl::COLOR_ATTACHMENT1,
+}
+
+pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, texture: &Texture, level: usize) {
+    bind_frame_buffer(fbo);
+    unsafe { gl::FramebufferTexture2D(
+        fbo.id as u32,
+        attachment as u32,
+        texture.kind as u32,
+        texture.id as u32,
+        level as i32
+    ) }
+}
+
+pub fn draw_buffers(fbo: &FrameBuffer, buffers: &[AttachmentPoint]) {
+    bind_frame_buffer(fbo);
+    unsafe { gl::DrawBuffers(buffers.len() as i32, buffers.as_ptr().cast()) }
+}
+
+pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f32]) {
+    bind_frame_buffer(fbo);
+    // somebody has to be punished for creating this horrible kind of api...
+    // why is this completely different compared to ALL other functions that deal with fbo's
+    let (param1, param2) = match attachment {
+        AttachmentPoint::Color0 => (gl::COLOR, 0),
+        AttachmentPoint::Color1 => (gl::COLOR, 1),
+    };
+    let mut safe = [0.0; 4];
+    safe[..value.len()].copy_from_slice(value);
+    unsafe { gl::ClearBufferfv(param1, param2, safe.as_ptr()) }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum ColorFormat {
+    Rgba16F = gl::RGBA16F,
+    R8 = gl::R8,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+// why the fuck are color and pixel format a different thing
+pub enum PixelFormat {
+    Rgba = gl::RGBA,
+    Red  = gl::RED,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum TextureKind {
+    /// 1 dimensional
+    D1        = gl::TEXTURE_1D,
+    /// 2 dimensional
+    D2        = gl::TEXTURE_2D,
+    /// 3 dimensional
+    D3        = gl::TEXTURE_3D,
+    /// 1 dimensional array
+    D1Array   = gl::TEXTURE_1D_ARRAY,
+    /// 2 dimensional array
+    D2DArray  = gl::TEXTURE_2D_ARRAY,
+}
+
+#[derive(Clone)]
+pub struct Texture {
+    id: u32,
+    kind: TextureKind,
+}
+
+pub fn gen_texture(kind: TextureKind) -> Texture {
+    let mut id = 0;
+    unsafe { gl::GenTextures(1, &mut id) };
+    Texture { id, kind }
+}
+
+fn bind_texture(texture: &Texture) {
+    unsafe { gl::BindTexture(texture.kind as u32, texture.id) };
+}
+
+pub fn tex_image_2d(texture: &Texture, level: usize, fcolor: ColorFormat, size: Size, fpixel: PixelFormat, kind: DataType) {
+    bind_texture(texture);
+    unsafe { gl::TexImage2D(
+        texture.kind as u32,
+        level as i32,
+        fcolor as i32,
+        size.w as i32, size.h as i32,
+        0,
+        fpixel as u32,
+        kind as u32,
+        null()
+    ) }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum TextureProperty {
+    MagFilter,
+    MinFilter,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum TexturePropertyValue {
+    Linear,
+}
+
+pub fn tex_parameter_i(texture: &Texture, property: TextureProperty, value: TexturePropertyValue) {
+    bind_texture(texture);
+    unsafe { gl::TexParameteri(
+        texture.kind as u32,
+        property as u32,
+        value as i32
+    ) }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(u32)]
 pub enum DataType {
     #[default]
     Float = gl::FLOAT,
+    UByte = gl::UNSIGNED_BYTE,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -602,6 +768,7 @@ pub fn clear(r: f32, g: f32, b: f32, alpha: f32) {
     unsafe { gl::Clear(gl::COLOR_BUFFER_BIT) };
 }
 
+/// Sets both front and back buffer.
 pub fn polygon_mode(mode: PolygonMode) {
     unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, mode as u32) }
 }

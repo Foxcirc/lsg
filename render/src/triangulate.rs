@@ -175,7 +175,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
         // generate the triangles
         self.curves(points, meta)?;
-        self.triangulate(points, meta)?;
+        Self::triangulate(points, meta, TriangulationState { removed: &mut self.removed, ears: &mut self.ears, out: VerticesOut { singular: &mut self.singular.vertices, instanced: &mut self.instanced.vertices } })?;
 
         if let ShapeKind::Instanced = kind {
             for it in instances {
@@ -242,13 +242,15 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
                 Self::triangle(
                     a.point(), b.point(), c.point(), Self::uvs(convex), meta,
-                    VerticesOut {
+                    &mut VerticesOut {
                         singular: &mut self.singular.vertices,
                         instanced: &mut self.instanced.vertices
                     }
                 );
 
             } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
+
+                /*
 
                 increment = 3;
 
@@ -260,17 +262,29 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                 // C. mark all of the original control points that are inside the
                 //    shape as removed
 
-                // let critical_points = Self::critical_points(a, b, c, d);
-
                 // println!("{:?}", critical_points);
 
-                self.removed.set(ib as u64, true);
-                self.removed.set(ic as u64, true);
+                let b_inside_approx = Self::left_of_line(b.point(), a.point(), d.point());
+                let c_inside_approx = Self::left_of_line(c.point(), a.point(), d.point());
+
+                if !b_inside_approx { self.removed.set(ib as u64, true) };
+                if !c_inside_approx { self.removed.set(ic as u64, true) };
+
+                dbg!(b_inside_approx, c_inside_approx);
 
                 let mut curve = [a.point(), b.point(), c.point(), d.point()];
                 let mut previous_t = 0.0;
 
-                let critical_points = [0.2, 0.4, 0.6];
+                let mut tr_removed = BitVec::<usize>::new();
+                let mut tr_ears = BitVec::<usize>::new();
+                let mut tr_points: Vec<CurvePoint> = Vec::new();
+
+                let critical_points: Vec<f32> = (0..4).map(|it| it as f32 / 4.0).collect();
+
+                // push first point
+                // tr_removed.push(false);
+                // tr_ears.push(false);
+                // tr_points.push(CurvePoint::fuckery(curve[0]));
 
                 for t in critical_points.iter().copied().chain([1.0]) { // chain 1.0 so we also get the final segment
 
@@ -285,12 +299,24 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                         -0.25*sub[0].x + 0.75*sub[1].x + 0.75*sub[2].x -0.25*sub[3].x,
                         -0.25*sub[0].y + 0.75*sub[1].y + 0.75*sub[2].y -0.25*sub[3].y
                     );
-                    
+                   
                     let [p1, p3] = [sub[0], sub[3]];
+
                     let convex = Self::convex([p1, p2, p3]);
+
+                    tr_removed.push(false);
+                    tr_ears.push(false);
+                    tr_points.push(CurvePoint::fuckery(p1));
+
+                    if !convex {
+                        tr_removed.push(false);
+                        tr_ears.push(false);
+                        tr_points.push(CurvePoint::fuckery(p2));
+                    }
+
                     Self::triangle(
                         p1, p2, p3, Self::uvs(convex), meta,
-                        VerticesOut {
+                        &mut VerticesOut {
                             singular: &mut self.singular.vertices,
                             instanced: &mut self.instanced.vertices
                         }
@@ -300,6 +326,30 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                     previous_t = t;
                     
                 }
+
+                // push the end point
+                tr_removed.push(false);
+                tr_ears.push(false);
+                tr_points.push(CurvePoint::fuckery(curve[3]));
+
+                if b_inside_approx {
+                    tr_removed.push(false);
+                    tr_ears.push(false);
+                    tr_points.push(b);
+                };
+                if c_inside_approx {
+                    tr_removed.push(false);
+                    tr_ears.push(false);
+                    tr_points.push(c);
+                };
+
+                dbg!(&tr_points);
+
+                Self::triangulate(&tr_points, meta, TriangulationState { removed: &mut tr_removed, ears: &mut tr_ears, out: VerticesOut { singular: &mut self.singular.vertices, instanced: &mut self.instanced.vertices } }).ok();
+
+                */
+
+                panic!("TODO: the rendering of cubic beziér curves is not implemented yet");
 
             } else {
                 // not a beziér curve, maybe just a line, so just continue
@@ -322,7 +372,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     /// The algorithms is purposely written in a way that is similar to the
     /// compute shader implementation.
     // TODO(DOC): link to docs on the triangulation compute shader
-    fn triangulate(&mut self, points: &[CurvePoint], meta: ShapeMetadata) -> Result<(), &'static str> {
+    fn triangulate(points: &[CurvePoint], meta: ShapeMetadata, mut state: TriangulationState) -> Result<(), &'static str> {
 
         let len = points.len();
         debug_assert!(len >= 3);
@@ -330,8 +380,8 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         // calculate initial ear state for every point
 
         for idx in 0..len {
-            let ear = Self::ear(points, &self.removed, idx);
-            self.ears.set(idx as u64, ear);
+            let ear = Self::ear(points, &state.removed, idx);
+            state.ears.set(idx as u64, ear);
         }
 
         // remove ears and recalculate neighbours
@@ -351,33 +401,30 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             let idx = counter - 1;
             
             // skip all removed points
-            if self.removed[idx as u64] {
+            if state.removed[idx as u64] {
                 continue
             }
 
-            if self.ears[idx as u64] {
+            if state.ears[idx as u64] {
 
-                let [ia, ib, ic] = Self::neighbours(&self.removed, idx);
+                let [ia, ib, ic] = Self::neighbours(&state.removed, idx);
                 if ia == ic { // only two points were left
                     break
                 };
 
                 Self::triangle(
-                    points[ia].point(), points[ib].point(), points[ic].point(), Self::FILLED, meta,
-                    VerticesOut {
-                        singular: &mut self.singular.vertices,
-                        instanced: &mut self.instanced.vertices
-                    }
+                    points[ia].point(), points[ib].point(), points[ic].point(),
+                    Self::FILLED, meta, &mut state.out
                 );
 
                 // mark the point as self.removed
-                self.removed.set(ib as u64, true);
+                state.removed.set(ib as u64, true);
 
                 // recalculate the neighbors
-                let ear = Self::ear(points, &self.removed, ia);
-                self.ears.set(ia as u64, ear);
-                let ear = Self::ear(points, &self.removed, ic);
-                self.ears.set(ic as u64, ear);
+                let ear = Self::ear(points, &state.removed, ia);
+                state.ears.set(ia as u64, ear);
+                let ear = Self::ear(points, &state.removed, ic);
+                state.ears.set(ic as u64, ear);
 
                 changes = true;
 
@@ -393,7 +440,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5];
     const FILLED:  [f32; 6] = [1.0; 6];
 
-    fn triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: VerticesOut) {
+    fn triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut VerticesOut) {
 
         let [ga, gb, gc] = [a.gl(meta.size), b.gl(meta.size), c.gl(meta.size)];
 
@@ -618,11 +665,27 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         }
     }
 
+    // y-flipped version
+    fn left_of_line(p: Point, line_start: Point, line_end: Point) -> bool {
+        let vector1_x = line_end.x - line_start.x;
+        let vector1_y = -(line_end.y - line_start.y);
+        let vector2_x = p.x - line_start.x;
+        let vector2_y = -(p.y - line_start.y);
+        let cross_product = vector1_x * vector2_y - vector1_y * vector2_x;
+        cross_product > 0.0
+    }
+
 }
 
 struct VerticesOut<'a> {
     singular: &'a mut Vec<f32>,
     instanced: &'a mut Vec<f32>,
+}
+
+struct TriangulationState<'a> {
+    removed: &'a mut BitVec,
+    ears: &'a mut BitVec,
+    out: VerticesOut<'a>,
 }
 
 #[test]

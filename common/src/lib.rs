@@ -16,7 +16,7 @@ impl Rect {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy,PartialEq, Eq)]
 pub struct Size {
     pub w: u32,
     pub h: u32
