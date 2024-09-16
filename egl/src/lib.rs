@@ -131,6 +131,8 @@ impl Instance {
 
 pub mod v2 {
 
+    // TODO: make this the default
+
     use super::*;
 
     #[derive(Default)]
@@ -147,12 +149,29 @@ pub mod v2 {
         Compat,
     }
 
+    pub struct Sizes {
+        pub rgba: (usize, usize, usize, usize),
+        pub depth: usize,
+        pub stencil: usize,
+    }
+
+    impl Default for Sizes {
+        fn default() -> Self {
+            Self {
+                rgba: (8, 8, 8, 8),
+                depth: 0,
+                stencil: 0,
+            }
+        }
+    }
+
     #[derive(Default)]
     pub struct ConfigBuilder {
         pub api: Api,
         pub profile: Profile,
         pub version: [usize; 2],
         pub debug: bool,
+        pub sizes: Sizes,
     }
 
     impl ConfigBuilder {
@@ -177,6 +196,11 @@ pub mod v2 {
             self
         }
 
+        pub fn sizes(mut self, value: Sizes) -> Self {
+            self.sizes = value;
+            self
+        }
+
         pub fn finish(self, instance: &Instance) -> Result<Config, EglError> {
         
             let attribs = [
@@ -190,12 +214,12 @@ pub mod v2 {
                     Api::Es3    => egl::OPENGL_ES3_BIT,
                 },
 
-                egl::RED_SIZE, 8,
-                egl::GREEN_SIZE, 8,
-                egl::BLUE_SIZE, 8,
-                egl::ALPHA_SIZE, 8,
-                egl::DEPTH_SIZE, 24,
-                egl::STENCIL_SIZE, 8,
+                egl::RED_SIZE,     self.sizes.rgba.0  as i32,
+                egl::GREEN_SIZE,   self.sizes.rgba.1  as i32,
+                egl::BLUE_SIZE,    self.sizes.rgba.2  as i32,
+                egl::ALPHA_SIZE,   self.sizes.rgba.3  as i32,
+                egl::DEPTH_SIZE,   self.sizes.depth   as i32,
+                egl::STENCIL_SIZE, self.sizes.stencil as i32,
 
                 egl::NONE
 

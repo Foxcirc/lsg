@@ -135,14 +135,6 @@ impl CurvePoint {
         Point::new(self.x() as f32, self.y() as f32)
     }
 
-    /// Convert to normalized device coordinates using the given window size.
-    pub(crate) fn gl(self, size: Size) -> GlPoint {
-        GlPoint {
-            x:       2.0 * (self.x() as f32 / size.w  as f32) - 1.0,
-            y: 1.0 - 2.0 * (self.y() as f32 / size.h as f32)
-        }
-    }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,7 +211,7 @@ pub struct PerWindow {
 
 impl PerWindow {
 
-    pub fn new<S: SubRenderers, W: egl::IsSurface>(gl: &GlRenderer<S>, window: &W, size: Size) -> Result<Self, RenderError> {
+    pub fn new<W: egl::IsSurface>(gl: &GlRenderer, window: &W, size: Size) -> Result<Self, RenderError> {
         let surface = egl::v2::Surface::new(&gl.lib, &gl.config, window, size)?;
         Ok(Self { surface })
     }
@@ -230,32 +222,15 @@ impl PerWindow {
 
 }
 
-pub trait SubRenderers {
-    // TODO: document the properties of the opengl context given to this OR/AND instead of passing "size", pass a "poperties" parameter
-    //  that contains multiple gl/window properties
-    fn new() -> Result<Self, RenderError> where Self: Sized;
-    fn draw<'s>(&'s mut self, size: Size) -> Result<Damage<'s>, RenderError>;
-}
-
-struct CompositeData {
-    old: Size,
-    fbo: gl::FrameBuffer,
-    color: gl::Texture,
-    reveal: gl::Texture,
-    vao: gl::VertexArray,
-    _vbo: gl::Buffer,
-    program: gl::LinkedProgram,
-}
-
-pub struct GlRenderer<S: SubRenderers> {
+pub struct GlRenderer {
     lib: egl::Instance,
     ctx: egl::v2::Context,
     config: egl::v2::Config,
-    composite: CompositeData,
-    pub inner: S,
+    pub shape: ShapeRenderer,
+    composite: CompositeRenderer,
 }
 
-impl<S: SubRenderers> GlRenderer<S> {
+impl GlRenderer {
     
     pub fn new<D: egl::IsDisplay>(display: &D) -> Result<Self, RenderError> {
 
@@ -277,8 +252,50 @@ impl<S: SubRenderers> GlRenderer<S> {
         gl::debug_message_callback(gl::debug_message_tracing_handler);
         gl::debug_message_control(Some(gl::DebugSeverity::Notification), None, None, true);
 
-        // setup fbo and shaders for transparency composition
-        let fbo = gl::gen_frame_buffer();
+        let shape = ShapeRenderer::new()?;
+        let composite = CompositeRenderer::new()?;
+
+        Ok(Self {
+            lib,
+            config,
+            ctx,
+            shape,
+            composite,
+        })
+
+    }
+
+    pub fn draw(&mut self, window: &PerWindow) -> Result<(), RenderError> {
+
+        let size = window.surface.size();
+
+        self.ctx.bind(&window.surface)?;
+        gl::resize_viewport(size);
+
+        self.composite.update(size);
+        self.shape.draw(size, &self.composite.fbo)?; // draw the new geometry ontop of the old one
+        self.composite.draw(&gl::FrameBuffer::default()); // final full-screen composition pass
+
+        self.ctx.swap(&window.surface, Damage::all())?; // finally swap the buffers
+
+        Ok(())
+
+    }
+    
+}
+
+pub struct CompositeRenderer {
+    current: Size,
+    fbo: gl::FrameBuffer,
+    vao: gl::VertexArray,
+    #[allow(unused)]
+    vbo: gl::Buffer,
+    texture: gl::Texture,
+    program: gl::LinkedProgram,
+}
+impl CompositeRenderer {
+
+    pub fn new() -> Result<Self, RenderError> {
 
         let program = {
 
@@ -295,13 +312,8 @@ impl<S: SubRenderers> GlRenderer<S> {
             gl::attach_shader(&mut builder, frag);
             let program = gl::link_program(builder)?;
 
-            // set the sampler uniforms
-
-            let color = gl::uniform_location(&program, "colorTexture")?;
-            let reveal = gl::uniform_location(&program, "revealTexture")?;
-
-            gl::uniform_1i(&program, color, 0); // color texture will be the 0th unit
-            gl::uniform_1i(&program, reveal, 1); // reveal texture will be the 1st unit
+            let texture = gl::uniform_location(&program, "texture")?;
+            gl::uniform_1i(&program, texture, 0);
 
             program
             
@@ -315,7 +327,7 @@ impl<S: SubRenderers> GlRenderer<S> {
             let f = size_of::<f32>();
             gl::vertex_attrib_pointer(&vao, &vbo, 0, 2, gl::DataType::Float, false, 2*f, 0);
 
-            // a single full screen rect
+           // a single full screen rect
             let vertices: [f32; 12] = [
                 -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, // upper left triangle
                 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, // lower right triangle
@@ -327,87 +339,49 @@ impl<S: SubRenderers> GlRenderer<S> {
             
         };
 
-        // setup the sub renderers
-        let renderers = S::new()?;
+        let fbo = gl::gen_frame_buffer();
 
         Ok(Self {
-            lib,
-            config,
-            ctx,
-            composite: CompositeData {
-                fbo,
-                old: Size::new(0, 0),
-                color: gl::Texture::invalid(),
-                reveal: gl::Texture::invalid(),
-                vao,
-                _vbo: vbo,
-                program,
-            },
-            inner: renderers,
+            fbo,
+            current: Size::new(0, 0),
+            vao,
+            vbo,
+            texture: gl::Texture::invalid(),
+            program,
         })
 
     }
 
-    pub fn draw(&mut self, window: &PerWindow) -> Result<(), RenderError> {
+    pub fn update(&mut self, size: Size) {
+        
+        // (re)create composition texture if necessary
+        if size != self.current {
 
-        let size = window.surface.size();
+            let texture = gl::gen_texture(gl::TextureType::D2);
+            gl::tex_image_2d(&texture, 0, gl::ColorFormat::Rgba8, size, gl::PixelFormat::Rgba, gl::DataType::UByte);
+            gl::tex_parameter_i(&texture, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
+            gl::tex_parameter_i(&texture, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
+        
+            gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &texture, 0);
 
-        self.ctx.bind(&window.surface)?;
-        gl::resize_viewport(size);
-
-        // recreate composition textures of necessary
-        if size != self.composite.old {
-
-            let color = gl::gen_texture(gl::TextureKind::D2);
-            gl::tex_image_2d(&color, 0, gl::ColorFormat::Rgba16F, size, gl::PixelFormat::Rgba, gl::DataType::Float);
-            gl::tex_parameter_i(&color, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
-            gl::tex_parameter_i(&color, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
-            
-            let reveal = gl::gen_texture(gl::TextureKind::D2);
-            gl::tex_image_2d(&reveal, 0, gl::ColorFormat::R8, size, gl::PixelFormat::Red, gl::DataType::UByte);
-            gl::tex_parameter_i(&reveal, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
-            gl::tex_parameter_i(&reveal, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
-
-            gl::frame_buffer_texture_2d(&self.composite.fbo, gl::AttachmentPoint::Color0, &color, 0);
-            gl::frame_buffer_texture_2d(&self.composite.fbo, gl::AttachmentPoint::Color1, &reveal, 0);
-
-            gl::draw_buffers(&self.composite.fbo, &[gl::AttachmentPoint::Color0, gl::AttachmentPoint::Color1]);
-
-            // drop the old ones and keep the new ones alive
-            self.composite.color = color;
-            self.composite.reveal = reveal;
-
-            self.composite.old = size;
-            
+            // drop the old one and keep the new one alive
+            self.texture = texture;
+            self.current = size;
+        
         }
 
-        gl::clear_buffer_v(&self.composite.fbo, gl::AttachmentPoint::Color0, &[0.0; 4]);
-        gl::clear_buffer_v(&self.composite.fbo, gl::AttachmentPoint::Color1, &[1.0; 4]);
+    }
 
-        // draw using the sub renderers
-        gl::bind_frame_buffer(&self.composite.fbo); // TODO: we need to pass this into the sub renderers, so sub renderers can make use of their own fbo's
+    pub fn draw(&mut self, target: &gl::FrameBuffer) {
+        
+        gl::disable(gl::Capability::Blend);
+        gl::active_texture(0, &self.texture);
 
-        let damage = self.inner.draw(size)?;
-
-        // final compositing pass
-        gl::bind_default_frame_buffer();
-
-        gl::clear(0.0, 0.0, 0.0, 1.0);
-
-        gl::enable(gl::Capability::Blend);
-        gl::blend_func(gl::BlendFunc::OneMinusSrcAlpha, gl::BlendFunc::SrcAlpha);
-        gl::active_texture(0, &self.composite.color);
-        gl::active_texture(1, &self.composite.reveal);
-
-        gl::draw_arrays(&self.composite.program, &self.composite.vao, gl::Primitive::Triangles, 0, 6);
-
-        // finally swap the buffers
-        self.ctx.swap(&window.surface, damage)?;
-
-        Ok(())
+        gl::clear(target, 0.0, 0.0, 0.0, 1.0);
+        gl::draw_arrays(target, &self.program, &self.vao, gl::Primitive::Triangles, 0, 6);
 
     }
-    
+
 }
 
 pub struct SingularData {
@@ -423,7 +397,7 @@ pub struct InstancedData {
 }
 
 /// The builtin curve renderer.
-pub struct BuiltinRenderer {
+pub struct ShapeRenderer {
     /// This buffer stores geometry that will be drawn next frame.
     pub geometry: CurveGeometry,
     singular: SingularData,
@@ -432,23 +406,23 @@ pub struct BuiltinRenderer {
     triangulator: triangulate::Triangulator,
 }
 
-impl BuiltinRenderer {
+// impl BuiltinRenderer {
 
-    /// Add a non-instanced polygon to the current frame.
-    // TODO: choose a name, polygon OR shape!
-    pub fn add(&mut self, polygon: &[CurvePoint]) {
-        let shape = self.geometry.points.len() as i16 .. polygon.len() as i16;
-        let instance = self.geometry.instances.len() as u16;
-        self.geometry.points.extend_from_slice(polygon);
-        self.geometry.shapes.push(Shape::singular(shape, instance));
-        self.geometry.instances.push(Instance { pos: [0.0, 0.0, 0.0], texture: [1.0, 1.0, 1.0] });
-    }
+//     /// Add a non-instanced polygon to the current frame.
+//     // TODO: choose a name, polygon OR shape!
+//     pub fn add(&mut self, polygon: &[CurvePoint]) {
+//         let shape = self.geometry.points.len() as i16 .. polygon.len() as i16;
+//         let instance = self.geometry.instances.len() as u16;
+//         self.geometry.points.extend_from_slice(polygon);
+//         self.geometry.shapes.push(Shape::singular(shape, instance));
+//         self.geometry.instances.push(Instance { pos: [0.0, 0.0, 0.0], texture: [1.0, 1.0, 1.0] });
+//     }
     
-}
+// }
 
 /// Usually this trait is implemented for a struct containing multiple sub renderers
 /// itself, but this way you can directly use `BuiltinRenderer`.
-impl SubRenderers for BuiltinRenderer {
+impl ShapeRenderer {
 
     fn new() -> Result<Self, RenderError> {
 
@@ -505,28 +479,21 @@ impl SubRenderers for BuiltinRenderer {
 
     }
 
-    fn draw<'s>(&'s mut self, size: Size) -> Result<Damage<'s>, RenderError> {
+    fn draw<'s>(&'s mut self, size: Size, target: &gl::FrameBuffer) -> Result<Damage<'s>, RenderError> {
         
         let result = self.triangulator.process(size, &self.geometry);
 
         // assure that we've gotten valid geometry
         result.check().map_err(|msg| RenderError::InvalidInput(msg.into()))?;
 
-        // render transparent shapes
-        gl::depth_mask(false);
         gl::enable(gl::Capability::Blend);
-        // gl::blend_func_seperate(
-        //     gl::BlendFunc::One, gl::BlendFunc::One, /* rgb */
-        //     gl::BlendFunc::Zero, gl::BlendFunc::OneMinusSrcAlpha /* alpha */
-        // );
-        gl::blend_func_i(gl::AttachmentPoint::Color0, gl::BlendFunc::One, gl::BlendFunc::One);
-        gl::blend_func_i(gl::AttachmentPoint::Color1, gl::BlendFunc::Zero, gl::BlendFunc::OneMinusSrcAlpha);
+        gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
 
         // render all non-instanced shapes
         let r = &result.singular;
         if result.singular.vertices.len() > 0 {
             gl::buffer_data(&self.singular.vdata, r.vertices, gl::DrawHint::Dynamic);
-            gl::draw_arrays(&self.program, &self.singular.vao, gl::Primitive::Triangles, 0, r.vertices.len() / 7);
+            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, r.vertices.len() / 7);
         }
 
         // render all instanced shapes
@@ -535,7 +502,7 @@ impl SubRenderers for BuiltinRenderer {
             gl::buffer_data(&self.instanced.vdata,    &r.vertices,  gl::DrawHint::Dynamic);
             gl::buffer_data(&self.instanced.idata,    &r.instances, gl::DrawHint::Dynamic);
             gl::buffer_data(&self.instanced.commands, &r.commands,  gl::DrawHint::Dynamic);
-            gl::draw_arrays_indirect(&self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
+            gl::draw_arrays_indirect(target, &self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
         }
 
         Ok(Damage::all())

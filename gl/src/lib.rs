@@ -208,8 +208,29 @@ pub struct PropertyUnknown;
 
 #[repr(u32)]
 pub enum Property {
-    MajorVersion  = gl::MAJOR_VERSION,
-    MinorVersion  = gl::MINOR_VERSION,
+
+    MajorVersion = gl::MAJOR_VERSION,
+    MinorVersion = gl::MINOR_VERSION,
+
+    FrameBufferBinding         = gl::FRAMEBUFFER_BINDING,
+    ReadFramebufferBinding     = gl::READ_FRAMEBUFFER_BINDING,
+    ArrayBufferBinding         = gl::ARRAY_BUFFER_BINDING,
+    ElementBufferBinding       = gl::ELEMENT_ARRAY_BUFFER_BINDING,
+    VertexArrayBinding         = gl::VERTEX_ARRAY_BINDING,
+    TextureD1Binding           = gl::TEXTURE_BINDING_1D,
+    TextureD2Binding           = gl::TEXTURE_BINDING_2D,
+    TextureD3Binding           = gl::TEXTURE_BINDING_3D,
+    TextureD1ArrayBinding      = gl::TEXTURE_BINDING_1D_ARRAY,
+    TextureD2ArrayBinding      = gl::TEXTURE_BINDING_2D_ARRAY,
+    CurrentProgram             = gl::CURRENT_PROGRAM,
+    RenderBufferBinding        = gl::RENDERBUFFER_BINDING,
+    UniformBufferBinding       = gl::UNIFORM_BUFFER_BINDING,
+    SamplerBinding             = gl::SAMPLER_BINDING,
+    ShaderStorageBufferBinding = gl::SHADER_STORAGE_BUFFER_BINDING,
+    AtomicCounterBufferBinding = gl::ATOMIC_COUNTER_BUFFER_BINDING,
+    DrawIndirectBufferBinding  = gl::DRAW_INDIRECT_BUFFER_BINDING,
+    QueryBufferBinding         = gl::QUERY_BUFFER_BINDING,
+
 }
 
 pub struct Shader {
@@ -413,6 +434,9 @@ impl LinkedProgram {
     pub fn invalid() -> Self {
         Self { id: 0 }
     }
+    pub fn current() -> Self {
+        Self { id: get_integer_v(Property::CurrentProgram).unwrap_or(0) as u32 }
+    }
 }
 
 pub fn bind_program(program: &LinkedProgram) {
@@ -445,6 +469,9 @@ pub struct VertexArray {
 impl VertexArray {
     pub fn invalid() -> Self {
         Self { id: 0 }
+    }
+    pub fn current() -> Self {
+        Self { id: get_integer_v(Property::VertexArrayBinding).unwrap_or(0) as u32 }
     }
 }
 
@@ -493,6 +520,13 @@ pub struct Buffer {
 impl Buffer {
     pub fn invalid() -> Self {
         Self { id: 0, kind: BufferType::Array }
+    }
+    pub fn current(kind: BufferType) -> Self {
+        match kind {
+            BufferType::Array        => Self { id: get_integer_v(Property::ArrayBufferBinding).unwrap_or(0) as u32, kind },
+            BufferType::Element      => Self { id: get_integer_v(Property::ElementBufferBinding).unwrap_or(0) as u32, kind },
+            BufferType::DrawIndirect => Self { id: get_integer_v(Property::DrawIndirectBufferBinding).unwrap_or(0) as u32, kind },
+        }
     }
 }
 
@@ -589,8 +623,9 @@ impl Drop for FrameBuffer {
 }
 
 impl FrameBuffer {
-    pub fn invalid() -> Self {
-        Self { id: 0 }
+    pub const fn default() -> Self { Self { id: 0 } }
+    pub fn current() -> Self {
+        Self { id: get_integer_v(Property::FrameBufferBinding).unwrap_or(0) as u32 }
     }
 }
 
@@ -647,8 +682,9 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum ColorFormat {
+    R8      = gl::R8,
+    Rgba8   = gl::RGBA8,
     Rgba16F = gl::RGBA16F,
-    R8 = gl::R8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -661,7 +697,7 @@ pub enum PixelFormat {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum TextureKind {
+pub enum TextureType {
     /// 1 dimensional
     D1        = gl::TEXTURE_1D,
     /// 2 dimensional
@@ -671,12 +707,12 @@ pub enum TextureKind {
     /// 1 dimensional array
     D1Array   = gl::TEXTURE_1D_ARRAY,
     /// 2 dimensional array
-    D2DArray  = gl::TEXTURE_2D_ARRAY,
+    D2Array  = gl::TEXTURE_2D_ARRAY,
 }
 
 pub struct Texture {
     id: u32,
-    kind: TextureKind,
+    kind: TextureType,
 }
 
 impl Drop for Texture {
@@ -688,12 +724,19 @@ impl Drop for Texture {
 }
 
 impl Texture {
-    pub fn invalid() -> Self {
-        Self { id: 0, kind: TextureKind::D1 }
+    pub fn invalid() -> Self { Self { id: 0, kind: TextureType::D1 } }
+    pub fn current(kind: TextureType) -> Self {
+        match kind {
+            TextureType::D1 => Self { id: get_integer_v(Property::TextureD1Binding).unwrap_or(0) as u32, kind },
+            TextureType::D2 => Self { id: get_integer_v(Property::TextureD2Binding).unwrap_or(0) as u32, kind },
+            TextureType::D3 => Self { id: get_integer_v(Property::TextureD3Binding).unwrap_or(0) as u32, kind },
+            TextureType::D1Array => Self { id: get_integer_v(Property::TextureD1ArrayBinding).unwrap_or(0) as u32, kind },
+            TextureType::D2Array => Self { id: get_integer_v(Property::TextureD2ArrayBinding).unwrap_or(0) as u32, kind },
+        }
     }
 }
 
-pub fn gen_texture(kind: TextureKind) -> Texture {
+pub fn gen_texture(kind: TextureType) -> Texture {
     let mut id = 0;
     unsafe { gl::GenTextures(1, &mut id) };
     Texture { id, kind }
@@ -820,6 +863,10 @@ pub fn enable(capability: Capability) {
     unsafe { gl::Enable(capability as u32) }
 }
 
+pub fn disable(capability: Capability) {
+    unsafe { gl::Disable(capability as u32) }
+}
+
 #[repr(u32)]
 pub enum BlendFunc {
     One              = gl::ONE,
@@ -853,7 +900,8 @@ pub fn resize_viewport(size: Size) {
 }
 
 /// `count` is the number of vertices (not primitives).
-pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
+pub fn draw_arrays(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
+    bind_frame_buffer(fbo);
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawArrays(primitive as u32, start as i32, count as i32) }
@@ -862,7 +910,8 @@ pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArray, primitive: Primit
 /// Expects u32 as indices right now.
 /// `start` is an index in bytes * sizeof(u32), not in bytes.
 /// `count` is the number of indices (not primitives).
-pub fn draw_elements(program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
+pub fn draw_elements(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
+    bind_frame_buffer(fbo);
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawElements(primitive as u32, count as i32, gl::UNSIGNED_INT, (start * size_of::<u32>()) as *const void) }
@@ -890,8 +939,9 @@ impl DrawArraysIndirectCommand {
 }
 
 #[track_caller]
-pub fn draw_arrays_indirect(program: &LinkedProgram, vao: &VertexArray, commands: &Buffer, primitive: Primitive, start: usize) {
+pub fn draw_arrays_indirect(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray, commands: &Buffer, primitive: Primitive, start: usize) {
     assert_eq!(commands.kind, BufferType::DrawIndirect);
+    bind_frame_buffer(fbo);
     bind_program(program);
     bind_vertex_array(vao);
     bind_buffer(commands);
@@ -906,7 +956,8 @@ pub enum Primitive {
     LineStrip = gl::LINE_STRIP,
 }
 
-pub fn clear(r: f32, g: f32, b: f32, alpha: f32) {
+pub fn clear(fbo: &FrameBuffer, r: f32, g: f32, b: f32, alpha: f32) {
+    bind_frame_buffer(fbo);
     unsafe { gl::ClearColor(r, g, b, alpha) };
     unsafe { gl::Clear(gl::COLOR_BUFFER_BIT) };
 }
