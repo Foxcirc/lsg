@@ -5,14 +5,17 @@ precision mediump float;
 in vec2 curvePos;
 in vec3 texture;
 
-out vec4 final;
+layout (location = 0) out vec4 outColor;
+layout (location = 1) out float outReveal;
 
 void main() {
 
-    // extract convexity information out of the curvePos
 
     float curveX = curvePos.x;
     float curveY = curvePos.y;
+
+    // extract convexity information out of the curvePos
+    // and convert curvePos into range 0..1
 
     bool convex;
     if (curveX > 0.5) {
@@ -27,28 +30,25 @@ void main() {
 
     float value = curveY - pow(curveX, 2.0);
     if (!convex) {
-        // we wan't to invert what we are filling for concave curves
-        value = -value;
+        value = -value; // invert what we are filling for concave curves
     }
 
-    // bool inside = convex
-    //     ? curveY >= pow(curveX, 2.0)
-    //     : curveY <= pow(curveX, 2.0);
-
-    bool inside = value >= 0.0;
-
     if (value >= 0.0) {
-        final = vec4(texture, 1.0);
-    // } else if (value >= -0.005) {
-        // cheap antialiasing in some spots
-        // value = (0.005 + value) * 200.0;
-        // final = vec4(texture * value, value);
+
+        vec4 color = vec4(texture, 0.5);
+
+        // float weight = max(min(1.0, max(max(color.r, color.g), color.b) * color.a), color.a) *
+        //     clamp(0.03 / (1e-5 + pow(gl_FragCoord.z / 200.0, 4.0)), 1e-2, 3e3);
+
+        float weight = color.a / (0.1 + pow(gl_FragCoord.z, 2.0));
+
+        outColor  = vec4(color.rgb * color.a * weight, color.a);
+        outReveal = color.a * weight;
+
+        // outColor = color;
+
     } else {
         discard;
     }
-
-    // final = inside
-    //     ? vec4(texture, 1.0)
-    //     : vec4(0.0, 0.0, 0.0, 0.0);
 
 }

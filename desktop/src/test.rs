@@ -69,7 +69,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     ]);
     renderer.inner.geometry.shapes.push(Shape::singular(0..4, 0));
     renderer.inner.geometry.instances.push(Instance {
-        pos: [0.0, 0.0, 0.0],
+        pos: [0.0, 0.0, 0.5],
         texture: [0.1, 0.1, 0.14],
     });
 
@@ -84,8 +84,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     renderer.inner.geometry.points.push(CurvePoint::base(0, 0));
     renderer.inner.geometry.shapes.push(Shape::instanced(4..5, 1..3));
     renderer.inner.geometry.instances.extend([
-        Instance { pos: [0.0, 0.0, 0.0], texture: [0.86, 0.85, 0.8] },
-        Instance { pos: [1.0, 0.0, 0.0], texture: [0.8, 0.0, 0.2] },
+        Instance { pos: [0.0, 0.0, 0.1], texture: [0.86, 0.85, 0.4] },
+        Instance { pos: [1.0, 0.0, 0.4], texture: [0.8, 0.0, 0.7] },
     ]);
 
     // run the event loop

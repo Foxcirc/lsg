@@ -1,8 +1,16 @@
 
-/// Simple wrapper around `gl` that adds typing and safety and handles binding automatically.
+/// Simple wrapper around `gl` that improves ergonomics.
 ///
-/// Right now, not all functions are implemented and many enums are incomplete,
-/// but adding more is really easy and often a matter of seconds.
+/// # Why use this
+///
+/// This crate aims to take the pain out of the old and clumbersome api, while
+/// being only a small wrapper without huge runtime cost.
+///
+/// 1. All functions are safe
+/// 2. Strong typing for all kinds of handles
+/// 3. Automatic binding
+/// 4. Resource cleanup on drop
+///
 /// This library does not deal with context creation, for that you should
 /// use platform specific libraries like `wgl` or `egl`.
 ///
@@ -16,6 +24,16 @@
 /// `gl::debug_message_callback(gl::debug_message_tracing_handler)` Otherwise,
 /// you can write your own handler. Note that debug messages are only supported
 /// in gl version 4.0 and onwards.
+///
+/// # Sharing objects
+/// Most structs simply contain an `id: u32`. However because the resource is
+/// cleaned up on drop, you still can't just clone it. To share e.g. a [`Buffer`] between
+/// mutliple places in your code you should use an [`Rc`](std::rc::Rc).
+///
+/// # Completeness
+/// Right now, not all functions are implemented and many enums are incomplete,
+/// but adding more is really easy and often a matter of minutes.
+/// Just fork it and create a PR!
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
 use num_enum::TryFromPrimitive;
@@ -74,9 +92,9 @@ extern "system" fn debug_callback(
 pub fn debug_message_callback<F: DebugCallback + Send + 'static>(f: F) {
 
     let version = get_version();
-    if version.major <= 4 {
+    if version.major < 4 {
         let msg = format!("debug messages are unsupported this gl version ({}.{})", version.major, version.minor);
-        f(DebugSource::Other, DebugType::Other, DebugSeverity::Notification, 0, &msg);
+        f(DebugSource::Application, DebugType::Other, DebugSeverity::Notification, 0, &msg);
     }
 
     let userdata = &mut *USERDATA.lock().unwrap();
@@ -111,11 +129,11 @@ pub fn debug_message_insert(severity: DebugSeverity, source: DebugSource, id: u3
     ) }
 }
 
-pub fn debug_message_tracing_handler(source: DebugSource, kind: DebugType, severity: DebugSeverity, _id: u32, msg: &str) {
+pub fn debug_message_tracing_handler(source: DebugSource, _kind: DebugType, severity: DebugSeverity, _id: u32, msg: &str) {
 
     use DebugSeverity::*;
 
-    let message = format!("from {:?}, {:?}: {}", source, kind, msg.trim_end_matches("\n"));
+    let message = format!("from {:?}: {}", source, msg.trim_end_matches("\n"));
 
     if severity == Notification || severity == Low {
         tracing::debug!("{}", message);
@@ -198,6 +216,20 @@ pub struct Shader {
     id: u32
 }
 
+impl Drop for Shader {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            unsafe { gl::DeleteShader(self.id) }
+        }
+    }
+}
+
+impl Shader {
+    pub fn invalid() -> Self {
+        Self { id: 0 }
+    }
+}
+
 pub fn create_shader(kind: ShaderType, source: &str) -> Result<Shader, ShaderError> {
 
     let source_ptr = source.as_ptr().cast();
@@ -278,12 +310,28 @@ pub enum ShaderType {
 pub struct Program {
     id: u32,
     shaders: Vec<Shader>,
+    keepalive: bool,
+}
+
+impl Drop for Program {
+    fn drop(&mut self) {
+        if self.id != 0 && !self.keepalive {
+            unsafe { gl::DeleteProgram(self.id) }
+        }
+    }
+}
+
+impl Program {
+    pub fn invalid() -> Self {
+        Self { id: 0, shaders: Vec::new(), keepalive: false }
+    }
 }
 
 pub fn create_program() -> Program {
     Program {
         id: unsafe { gl::CreateProgram() },
-        shaders: Vec::with_capacity(2)
+        shaders: Vec::with_capacity(2),
+        keepalive: false,
     }
 }
 
@@ -295,10 +343,6 @@ pub fn attach_shader(program: &mut Program, shader: Shader) {
 pub fn link_program(mut program: Program) -> Result<LinkedProgram, LinkError> {
 
     unsafe { gl::LinkProgram(program.id) }
-
-    for shader in program.shaders.drain(..) {
-        unsafe { gl::DeleteShader(shader.id) }
-    }
 
     if !program_compile_status(program.id) {
 
@@ -314,6 +358,7 @@ pub fn link_program(mut program: Program) -> Result<LinkedProgram, LinkError> {
         Err(LinkError { msg })
 
     } else {
+        program.keepalive = true; // should not be deleted in `drop`
         Ok(LinkedProgram { id: program.id })
     }
 
@@ -352,12 +397,25 @@ impl fmt::Display for LinkError {
 
 impl StdError for LinkError {}
 
-#[derive(Clone)]
 pub struct LinkedProgram {
     pub(crate) id: u32,
 }
 
-fn bind_program(program: &LinkedProgram) {
+impl Drop for LinkedProgram {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            unsafe { gl::DeleteProgram(self.id) }
+        }
+    }
+}
+
+impl LinkedProgram {
+    pub fn invalid() -> Self {
+        Self { id: 0 }
+    }
+}
+
+pub fn bind_program(program: &LinkedProgram) {
     unsafe { gl::UseProgram(program.id) }
 }
 
@@ -380,19 +438,23 @@ pub struct AttribLocation {
 #[derive(Debug)]
 pub struct AttribUnknown;
 
-#[repr(transparent)]
-#[derive(Clone)]
-pub struct VertexArrayObject {
+pub struct VertexArray {
     id: u32
 }
 
-pub fn gen_vertex_array() -> VertexArrayObject {
-    let mut id = 0;
-    unsafe { gl::GenVertexArrays(1, &mut id) };
-    VertexArrayObject { id }
+impl VertexArray {
+    pub fn invalid() -> Self {
+        Self { id: 0 }
+    }
 }
 
-fn bind_vertex_array(this: &VertexArrayObject) {
+pub fn gen_vertex_array() -> VertexArray {
+    let mut id = 0;
+    unsafe { gl::GenVertexArrays(1, &mut id) };
+    VertexArray { id }
+}
+
+pub fn bind_vertex_array(this: &VertexArray) {
     unsafe { gl::BindVertexArray(this.id) }
 }
 
@@ -403,7 +465,7 @@ pub fn gen_buffer(kind: BufferType) -> Buffer {
 }
 
 /// This function doesn't perform type-checking, it accepts a slice of any type
-/// and hands it to opengl as bytes.
+/// and hands it out as bytes.
 /// This is not unsafe, since all bytes are valid numbers, but may cause nasty bugs, so
 /// be careful to pass in the right type here.
 pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
@@ -419,27 +481,32 @@ pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
 
 }
 
-fn bind_buffer(this: &Buffer) {
+pub fn bind_buffer(this: &Buffer) {
     unsafe { gl::BindBuffer(this.kind as u32, this.id) }
 }
 
-#[derive(Clone)] // TODO: all clone, all clone + copy?
 pub struct Buffer {
     id: u32,
     kind: BufferType,
 }
 
-pub fn vertex_attrib_1f(vao: &VertexArrayObject, location: u32, x: f32) {
+impl Buffer {
+    pub fn invalid() -> Self {
+        Self { id: 0, kind: BufferType::Array }
+    }
+}
+
+pub fn vertex_attrib_1f(vao: &VertexArray, location: u32, x: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib1f(location, x) };
 }
 
-pub fn vertex_attrib_2f(vao: &VertexArrayObject, location: u32, x: f32, y: f32) {
+pub fn vertex_attrib_2f(vao: &VertexArray, location: u32, x: f32, y: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib2f(location, x, y) };
 }
 
-pub fn vertex_attrib_3f(vao: &VertexArrayObject, location: u32, x: f32, y: f32, z: f32) {
+pub fn vertex_attrib_3f(vao: &VertexArray, location: u32, x: f32, y: f32, z: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib3f(location, x, y, z) };
 }
@@ -457,9 +524,10 @@ pub struct VertexAttribs {
 // TODO: implement buffer deleting (cleanup in the destructors)
 
 /// The array will also be enabled immediatly using `EnableVertexAttribArray`.
-/// There is also a more concise version [`vertex_attrib_pointer2`].
+/// `Stride` is in bytes!
+/// There is also a more structured version [`vertex_attrib_pointer2`].
 #[track_caller]
-pub fn vertex_attrib_pointer(vao: &VertexArrayObject, vbo: &Buffer, location: u32, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
+pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, location: u32, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
     // TODO: rename all "attribs" to "attrs"
 
@@ -483,7 +551,7 @@ pub fn vertex_attrib_pointer(vao: &VertexArrayObject, vbo: &Buffer, location: u3
 
 /// Same as the other one, but accepts named arguments as a struct.
 #[track_caller]
-pub fn vertex_attrib_pointer2(vao: &VertexArrayObject, vbo: &Buffer, attribs: VertexAttribs) {
+pub fn vertex_attrib_pointer2(vao: &VertexArray, vbo: &Buffer, attribs: VertexAttribs) {
     vertex_attrib_pointer(
         vao, vbo,
         attribs.location, attribs.count, attribs.kind,
@@ -498,7 +566,7 @@ pub enum Divisor {
 }
 
 #[track_caller]
-pub fn vertex_attrib_divisor(vao: &VertexArrayObject, location: u32, divisor: Divisor) {
+pub fn vertex_attrib_divisor(vao: &VertexArray, location: u32, divisor: Divisor) {
     bind_vertex_array(vao);
     let value = match divisor {
         Divisor::PerVertex => 0,
@@ -508,9 +576,22 @@ pub fn vertex_attrib_divisor(vao: &VertexArrayObject, location: u32, divisor: Di
     unsafe { gl::VertexAttribDivisor(location, value) };
 }
 
-#[derive(Clone, Default)] // NOTE: implements Default, as id `0` will bind the default framebuffer
 pub struct FrameBuffer {
     id: u32,
+}
+
+impl Drop for FrameBuffer {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            unsafe { gl::DeleteFramebuffers(1, &self.id) }
+        }
+    }
+}
+
+impl FrameBuffer {
+    pub fn invalid() -> Self {
+        Self { id: 0 }
+    }
 }
 
 pub fn gen_frame_buffer() -> FrameBuffer {
@@ -519,8 +600,12 @@ pub fn gen_frame_buffer() -> FrameBuffer {
     FrameBuffer { id }
 }
 
-fn bind_frame_buffer(fbo: &FrameBuffer) {
+pub fn bind_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, fbo.id) };
+}
+
+pub fn bind_default_frame_buffer() {
+    unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, 0) };
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -533,7 +618,7 @@ pub enum AttachmentPoint {
 pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, texture: &Texture, level: usize) {
     bind_frame_buffer(fbo);
     unsafe { gl::FramebufferTexture2D(
-        fbo.id as u32,
+        gl::FRAMEBUFFER,
         attachment as u32,
         texture.kind as u32,
         texture.id as u32,
@@ -589,10 +674,23 @@ pub enum TextureKind {
     D2DArray  = gl::TEXTURE_2D_ARRAY,
 }
 
-#[derive(Clone)]
 pub struct Texture {
     id: u32,
     kind: TextureKind,
+}
+
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            unsafe { gl::DeleteTextures(1, &self.id) }
+        }
+    }
+}
+
+impl Texture {
+    pub fn invalid() -> Self {
+        Self { id: 0, kind: TextureKind::D1 }
+    }
 }
 
 pub fn gen_texture(kind: TextureKind) -> Texture {
@@ -601,7 +699,7 @@ pub fn gen_texture(kind: TextureKind) -> Texture {
     Texture { id, kind }
 }
 
-fn bind_texture(texture: &Texture) {
+pub fn bind_texture(texture: &Texture) {
     unsafe { gl::BindTexture(texture.kind as u32, texture.id) };
 }
 
@@ -622,14 +720,14 @@ pub fn tex_image_2d(texture: &Texture, level: usize, fcolor: ColorFormat, size: 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum TextureProperty {
-    MagFilter,
-    MinFilter,
+    MagFilter = gl::TEXTURE_MAG_FILTER,
+    MinFilter = gl::TEXTURE_MIN_FILTER,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum TexturePropertyValue {
-    Linear,
+    Linear = gl::LINEAR,
 }
 
 pub fn tex_parameter_i(texture: &Texture, property: TextureProperty, value: TexturePropertyValue) {
@@ -639,6 +737,14 @@ pub fn tex_parameter_i(texture: &Texture, property: TextureProperty, value: Text
         property as u32,
         value as i32
     ) }
+}
+
+/// Will also bind the texture!
+/// A location of `0` corresponds to `TEXTURE0`.
+pub fn active_texture(location: usize, texture: &Texture) {
+    let param = gl::TEXTURE0 + location as u32;
+    unsafe { gl::ActiveTexture(param) };
+    bind_texture(texture);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -705,12 +811,49 @@ pub fn uniform_4f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: 
     unsafe { gl::Uniform4f(uniform.index, x, y, z, w) };
 }
 
+#[repr(u32)]
+pub enum Capability {
+    Blend = gl::BLEND,
+}
+
+pub fn enable(capability: Capability) {
+    unsafe { gl::Enable(capability as u32) }
+}
+
+#[repr(u32)]
+pub enum BlendFunc {
+    One              = gl::ONE,
+    Zero             = gl::ZERO,
+    SrcAlpha         = gl::SRC_ALPHA,
+    OneMinusSrcAlpha = gl::ONE_MINUS_SRC_ALPHA,
+}
+
+pub fn blend_func(func1: BlendFunc, func2: BlendFunc) {
+    unsafe { gl::BlendFunc(func1 as u32, func2 as u32) }
+}
+
+pub fn blend_func_i(attachment: AttachmentPoint, func1: BlendFunc, func2: BlendFunc) {
+    let idx = match attachment {
+        AttachmentPoint::Color0 => 0,
+        AttachmentPoint::Color1 => 1,
+    };
+    unsafe { gl::BlendFunci(idx, func1 as u32, func2 as u32) }
+}
+
+pub fn blend_func_seperate(func1: BlendFunc, func2: BlendFunc, func3: BlendFunc, func4: BlendFunc) {
+    unsafe { gl::BlendFuncSeparate(func1 as u32, func2 as u32, func3 as u32, func4 as u32) }
+}
+
+pub fn depth_mask(enabled: bool) {
+    unsafe { gl::DepthMask(enabled as u8) }
+}
+
 pub fn resize_viewport(size: Size) {
     unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
 }
 
-/// `count` is the number of vertices not primitives.
-pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {
+/// `count` is the number of vertices (not primitives).
+pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawArrays(primitive as u32, start as i32, count as i32) }
@@ -718,8 +861,8 @@ pub fn draw_arrays(program: &LinkedProgram, vao: &VertexArrayObject, primitive: 
 
 /// Expects u32 as indices right now.
 /// `start` is an index in bytes * sizeof(u32), not in bytes.
-/// `count` is the number of indices not primitives.
-pub fn draw_elements(program: &LinkedProgram, vao: &VertexArrayObject, primitive: Primitive, start: usize, count: usize) {
+/// `count` is the number of indices (not primitives).
+pub fn draw_elements(program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawElements(primitive as u32, count as i32, gl::UNSIGNED_INT, (start * size_of::<u32>()) as *const void) }
@@ -747,7 +890,7 @@ impl DrawArraysIndirectCommand {
 }
 
 #[track_caller]
-pub fn draw_arrays_indirect(program: &LinkedProgram, vao: &VertexArrayObject, commands: &Buffer, primitive: Primitive, start: usize) {
+pub fn draw_arrays_indirect(program: &LinkedProgram, vao: &VertexArray, commands: &Buffer, primitive: Primitive, start: usize) {
     assert_eq!(commands.kind, BufferType::DrawIndirect);
     bind_program(program);
     bind_vertex_array(vao);
@@ -787,7 +930,7 @@ pub fn to_small_cstr<'d>(buf: &'d mut [u8], text: &str) -> &'d CStr {
     buf[..len].copy_from_slice(text.as_bytes()); // copy the name
     buf[len] = 0u8; // add the null byte
 
-   CStr::from_bytes_with_nul(&buf[..=len]).unwrap()
+   CStr::from_bytes_with_nul(&buf[..len + 1]).unwrap()
 
 }
 
