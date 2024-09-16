@@ -266,7 +266,7 @@ impl<S: SubRenderers> GlRenderer<S> {
             .api(egl::v2::Api::OpenGl)
             .version(4, 3)
             .debug(cfg!(debug_assertions))
-            .profile(egl::v2::Profile::Compat)
+            .profile(egl::v2::Profile::Core)
             .finish(&lib)?;
 
         let ctx = egl::v2::Context::new(&lib, &config)?;
@@ -385,12 +385,14 @@ impl<S: SubRenderers> GlRenderer<S> {
         gl::clear_buffer_v(&self.composite.fbo, gl::AttachmentPoint::Color1, &[1.0; 4]);
 
         // draw using the sub renderers
-        gl::bind_frame_buffer(&self.composite.fbo);
+        gl::bind_frame_buffer(&self.composite.fbo); // TODO: we need to pass this into the sub renderers, so sub renderers can make use of their own fbo's
 
         let damage = self.inner.draw(size)?;
 
         // final compositing pass
         gl::bind_default_frame_buffer();
+
+        gl::clear(0.0, 0.0, 0.0, 1.0);
 
         gl::enable(gl::Capability::Blend);
         gl::blend_func(gl::BlendFunc::OneMinusSrcAlpha, gl::BlendFunc::SrcAlpha);
@@ -513,10 +515,12 @@ impl SubRenderers for BuiltinRenderer {
         // render transparent shapes
         gl::depth_mask(false);
         gl::enable(gl::Capability::Blend);
-        gl::blend_func_seperate(
-            gl::BlendFunc::One, gl::BlendFunc::One, /* rgb */
-            gl::BlendFunc::Zero, gl::BlendFunc::OneMinusSrcAlpha /* alpha */
-        );
+        // gl::blend_func_seperate(
+        //     gl::BlendFunc::One, gl::BlendFunc::One, /* rgb */
+        //     gl::BlendFunc::Zero, gl::BlendFunc::OneMinusSrcAlpha /* alpha */
+        // );
+        gl::blend_func_i(gl::AttachmentPoint::Color0, gl::BlendFunc::One, gl::BlendFunc::One);
+        gl::blend_func_i(gl::AttachmentPoint::Color1, gl::BlendFunc::Zero, gl::BlendFunc::OneMinusSrcAlpha);
 
         // render all non-instanced shapes
         let r = &result.singular;

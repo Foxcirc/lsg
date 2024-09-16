@@ -828,8 +828,8 @@ pub enum BlendFunc {
     OneMinusSrcAlpha = gl::ONE_MINUS_SRC_ALPHA,
 }
 
-pub fn blend_func(func1: BlendFunc, func2: BlendFunc) {
-    unsafe { gl::BlendFunc(func1 as u32, func2 as u32) }
+pub fn blend_func(src: BlendFunc, dst: BlendFunc) {
+    unsafe { gl::BlendFunc(src as u32, dst as u32) }
 }
 
 pub fn blend_func_i(attachment: AttachmentPoint, func1: BlendFunc, func2: BlendFunc) {
@@ -840,8 +840,8 @@ pub fn blend_func_i(attachment: AttachmentPoint, func1: BlendFunc, func2: BlendF
     unsafe { gl::BlendFunci(idx, func1 as u32, func2 as u32) }
 }
 
-pub fn blend_func_seperate(func1: BlendFunc, func2: BlendFunc, func3: BlendFunc, func4: BlendFunc) {
-    unsafe { gl::BlendFuncSeparate(func1 as u32, func2 as u32, func3 as u32, func4 as u32) }
+pub fn blend_func_seperate(src1: BlendFunc, dst1: BlendFunc, src2: BlendFunc, dst2: BlendFunc) {
+    unsafe { gl::BlendFuncSeparate(src1 as u32, dst1 as u32, src2 as u32, dst2 as u32) }
 }
 
 pub fn depth_mask(enabled: bool) {
