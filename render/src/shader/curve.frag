@@ -32,7 +32,13 @@ void main() {
     }
 
     if (value >= 0.0) {
-        Color = vec4(texture, 1.0);
+        vec3 v;
+        if (curveX == 1.0) {
+            v = texture;
+        } else {
+            v = vec3(float(int(curveX * 10.0) / 10), curveY, 0.0);
+        }
+        Color = vec4(v, 1.0);
     } else {
         discard;
     }

@@ -81,11 +81,14 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     // add movable point
 
-    renderer.shape.geometry.points.push(CurvePoint::base(0, 0));
-    renderer.shape.geometry.shapes.push(Shape::instanced(4..5, 1..3));
+    renderer.shape.geometry.points.push(CurvePoint::base(40, 400));
+    renderer.shape.geometry.points.push(CurvePoint::ctrl(240, 400));
+    renderer.shape.geometry.points.push(CurvePoint::base(240, 200));
+
+    renderer.shape.geometry.shapes.push(Shape::instanced(4..7, 1..3));
     renderer.shape.geometry.instances.extend([
-        Instance { pos: [0.0, 0.0, 0.1], texture: [0.86, 0.85, 0.4] },
-        Instance { pos: [1.0, 0.0, 0.4], texture: [0.8, 0.0, 0.7] },
+        Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
+        Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
     ]);
 
     // run the event loop
@@ -119,6 +122,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseMotion { x, y } => {
 
+                        continue;
+
                         if x < 0.0 || y < 0.0 { continue }; // TODO: sometimes -1.0, handle this by default
 
                         // TODO: i think on wayland x, y can be negative .-. try clicking and then moving the mouse out the upper window boundry
@@ -126,7 +131,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                             if point.kind() {
                                 *point = CurvePoint::base(x as i16, y as i16);
                             } else {
-                                *point = CurvePoint::control(x as i16, y as i16);
+                                *point = CurvePoint::ctrl(x as i16, y as i16);
                             }
                         }
 
@@ -152,7 +157,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::MouseDown { button: MouseButton::Right, x, y } => {
 
                         renderer.shape.geometry.points.push(
-                            CurvePoint::control(x as i16, y as i16)
+                            CurvePoint::ctrl(x as i16, y as i16)
                         );
 
                         if let Some(shape) = renderer.shape.geometry.shapes.last_mut() {

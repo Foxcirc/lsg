@@ -1,7 +1,8 @@
 
 //! Ear-clipping triangulation on the cpu.
 
-use std::f32::consts::PI;
+use core::panic;
+use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
 use common::Size;
 
@@ -13,16 +14,19 @@ use crate::{CurveGeometry, CurvePoint, Instance, Point, Shape};
 pub struct OutputGeometry<'a> {
     pub singular: SingularOutputGeometry<'a>,
     pub instanced: InstancedOutputGeometry<'a>,
-    /// contains a message for the last error that occured in a shape.
-    /// shapes with an error are discarded
-    pub error: &'static str,
+    /// contains error messages for shapes that were invalid.
+    /// invalid shapes are discarded
+    pub errors: usize,
 }
 
 impl<'a> OutputGeometry<'a> {
-    pub fn check(&self) -> Result<(), &'static str> {
-        match self.error {
-            "" => Ok(()),
-            msg => Err(msg),
+    pub fn check(&self) -> Result<(), String> {
+        if self.errors == 1 {
+            Err(format!("{} invalid shape", self.errors))
+        } else if self.errors > 1 {
+            Err(format!("{} invalid shapes", self.errors))
+        } else {
+            Ok(())
         }
     }
 }
@@ -62,27 +66,228 @@ struct ShapeMetadata<'a> {
     pub size: Size,
 }
 
-pub struct Triangulator { // TODO: make pub(crate)
-    size: Size,
+pub struct Preprocessor { // TODO: rename the file too
+    lower: LowerPass,
+    trig: TrigPass,
+}
+
+impl Preprocessor {
+
+    pub fn process<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
+
+        let lowered = self.lower.process(geometry);
+        let result = self.trig.process(lowered, size);
+
+        result
+
+    }
+
+    pub(crate) fn new() -> Self {
+        Self {
+            lower: LowerPass::new(),
+            trig: TrigPass::new(),
+        }
+    }
+    
+}
+
+pub struct LowerPass {
+    lowered: CurveGeometry,
+    errors: usize,
+}
+impl LowerPass {
+
+    fn new() -> Self {
+        Self {
+            lowered: CurveGeometry::default(),
+            errors: 0,
+        }
+    }
+
+    fn process<'s>(&'s mut self, geometry: &CurveGeometry) -> &'s CurveGeometry {
+
+        self.lowered.clear();
+
+        for shape in &geometry.shapes {
+
+            // geometry is valid up to this index
+            // let start = [
+            //     self.lowered.points.len(),
+            //     self.lowered..len(),
+            // ];
+
+            match self.shape(shape, geometry) {
+                Ok(..) => (),
+                // restore the valid geometry on error
+                Err(..) => {
+                    // self.singular.vertices.truncate(start[0]);
+                    // self.instanced.vertices.truncate(start[1]);
+                    self.errors += 1;
+                }
+            }
+
+        }
+
+        &self.lowered
+
+    }
+
+    fn shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
+
+        // this pass does two things:
+        // 1. (TODO) split cubic curves into multiple quadratic ones
+        // 2. split all curves that are being intersected by the shape into sub curves
+
+        let range = shape.polygon();
+        let points = geometry.points.get(range.start as usize .. range.end as usize)
+            .unwrap_or_default();
+
+        if points.len() < 3 { return Err(()) }
+
+        let range = shape.instances();
+        let instances = geometry.instances.get(range.start as usize .. range.end as usize)
+            .unwrap_or_default();
+
+        if instances.len() == 0 { return Err(()) }
+
+        let len = points.len();
+        let mut new_len = len;
+
+        let mut idx = 0;
+        loop {
+
+            // get the point at idx and the four points "after" it in the polygon
+            let [ia, ib, ic, id] = [
+                (idx + 0) % len,
+                (idx + 1) % len,
+                (idx + 2) % len,
+                (idx + 3) % len,
+            ];
+
+            let [a, b, c, d] = [
+                points[ia], points[ib],
+                points[ic], points[id]
+            ];
+
+            let increment; // how many points to skip for the next iteration
+
+            if a.kind() && !b.kind() && c.kind() { // B-C-B
+
+                increment = 2;
+
+                self.lowered.points.push(a);
+                self.lowered.points.push(b);
+                self.lowered.points.push(c);
+
+                // if points are intersecting the curve, we have
+                // to split up the triangle to avoid artifacts
+
+                let mut max_depth = 1;
+
+                for point in points.iter() {
+                    if ![a, b, c].contains(point) &&
+                        TrigPass::triangle_intersects_point([a, b, c], *point) {
+
+                        // find the correct sub curve
+                        'subs: for current_depth in 0..max_depth {
+
+                            let points_len = self.lowered.points.len();
+                            let sub_triangle = &mut self.lowered.points[points_len - 3 * (current_depth + 1) .. points_len - 3 * current_depth];
+                            let [sa, sb, sc] = sub_triangle.try_into().expect("get sub triangle");
+                            
+                            if TrigPass::triangle_intersects_point([sa, sb, sc], *point) {
+
+                                let split_at = TrigPass::was_it_this_easy_all_along([sa.point(), sb.point(), sc.point()], point.point());
+                                dbg!(split_at);
+                                // let split_at = TrigPass::closest_point_on_curve([sa.point(), sb.point(), sc.point()], point.point());
+                                // let split_at = TrigPass::approx_split_point([sa.point(), sb.point(), sc.point()], point.point());
+                                let curves = TrigPass::split_quadratic([sa.point(), sb.point(), sc.point()], split_at - 0.01);
+
+                                // insert the first curve by replacing the original sub triangle
+                                sub_triangle[0] = CurvePoint::base(curves[0][0].x as i16, curves[0][0].y as i16);
+                                sub_triangle[1] = CurvePoint::ctrl(curves[0][1].x as i16, curves[0][1].y as i16);
+                                sub_triangle[2] = CurvePoint::base(curves[0][2].x as i16, curves[0][2].y as i16);
+
+                                // insert the second curve at the end
+                                self.lowered.points.push(CurvePoint::base(curves[1][0].x as i16, curves[1][0].y as i16));
+                                self.lowered.points.push(CurvePoint::ctrl(curves[1][1].x as i16, curves[1][1].y as i16));
+                                self.lowered.points.push(CurvePoint::base(curves[1][2].x as i16, curves[1][2].y as i16));
+
+                                new_len += 3; // three new points were added
+                                max_depth += 1;
+
+                                break 'subs
+
+                            }
+                            
+                            
+                        }
+                        
+                    }
+                }
+
+                self.lowered.points.pop(); // pop the last point since it will be addad again next iteration
+
+            } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
+                todo!("cubic curves are not yes implemented");
+            } else if !a.kind() && !b.kind() && !c.kind() {
+                todo!("error: three contol points in a row");
+            } else {
+                self.lowered.points.push(a);
+                increment = 1;
+            }
+
+            // TODO: what happens if a point is duplicated in the input? does it triangulate correctly?
+
+            idx += increment;
+            if idx >= len { break };
+        
+        }
+
+        let start = shape.polygon().start;
+        let end = start + new_len as i16;
+
+        match shape.kind() {
+            true  => self.lowered.shapes.push(Shape::singular(start..end, shape.instances().start)),
+            false => self.lowered.shapes.push(Shape::instanced(start..end, shape.instances())),
+        }
+
+        self.lowered.instances.extend_from_slice(instances);
+
+        Ok(())
+        
+
+    }
+
+}
+
+#[test]
+fn split_quadratic_curve() {
+
+    let test_case = TrigPass::was_it_this_easy_all_along([Point::new(0., 0.), Point::new(1., 2.), Point::new(2., 0.)], Point::new(2., 2.));
+    dbg!(test_case);
+    
+}
+
+pub struct TrigPass { // TODO: make pub(crate)
     // state during triangulation
     ears: BitVec<usize>,
     removed: BitVec<usize>,
     // outputs
     singular: SingularData,
     instanced: InstancedData,
-    error: &'static str,
+    errors: usize,
 }
 
-impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more then triangulating
+impl TrigPass {
 
     pub fn new() -> Self {
         Self {
-            size: Size { w: 0, h: 0 },
             ears: BitVec::new(),
             removed: BitVec::new(),
             singular: SingularData { vertices: Vec::new() },
             instanced: InstancedData { vertices: Vec::new(), instances: Vec::new(), commands: Vec::new() },
-            error: "",
+            errors: 0,
         }
     }
 
@@ -91,19 +296,17 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     /// # Processing Steps
     /// - Convert coordinates to OpenGl screen space.
     /// - Triangulate the polygon using ear-clipping, with some restrictions.
-    /// - Output extra triangles for the curved parts.
-    pub fn process<'s>(&'s mut self, size: Size, geometry: &CurveGeometry) -> OutputGeometry<'s> {
+    /// - Output extra triangles for the curved parts. TODO: remove all the doc comments. they aren useful and mostly wrong anyways
+    pub fn process<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
-        self.size = size;
-
-        // reset our state
+        // reset some state
         self.singular.vertices.clear();
         self.instanced.vertices.clear();
         self.instanced.instances.clear();
         self.instanced.commands.clear();
-        self.error = "";
+        self.errors = 0;
 
-        // append basic triangles
+        // append the shape's triangles
         for shape in &geometry.shapes {
 
             // geometry is valid up to this index
@@ -113,13 +316,13 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             ];
 
             // generate the mesh now
-            match self.shape(shape, size, &geometry) {
+            match self.shape(shape, geometry, size) {
                 Ok(..) => (),
                 // restore the valid geometry on error
-                Err(msg) => {
+                Err(..) => {
                     self.singular.vertices.truncate(start[0]);
                     self.instanced.vertices.truncate(start[1]);
-                    self.error = msg;
+                    self.errors += 1;
                 }
             }
         }
@@ -133,19 +336,20 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                 instances: &self.instanced.instances,
                 commands: &self.instanced.commands,
             },
-            error: self.error,
+            errors: self.errors,
         }
         
     }
 
-    fn shape(&mut self, shape: &Shape, size: Size, geometry: &CurveGeometry) -> Result<(), &'static str> {
+    fn shape(&mut self, shape: &Shape, geometry: &CurveGeometry, size: Size) -> Result<(), ()> {
 
         let range = shape.polygon();
         let points = geometry.points.get(range.start as usize .. range.end as usize)
             .unwrap_or_default();
 
         if points.len() < 3 {
-            return Err("shape with less then three points")
+            // return Err("shape with less then three points")
+            return Err(())
         }
 
         let range = shape.instances();
@@ -153,7 +357,8 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             .unwrap_or_default();
 
         if instances.len() == 0 {
-            return Err("shape without any instances")
+            // return Err("shape without any instances")
+            return Err(())
         }
         
         // save at what position we were in the instances list
@@ -173,9 +378,18 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         self.ears.resize(points.len() as u64, false);
         self.removed.resize(points.len() as u64, false);
 
-        // generate the triangles
-        self.curves(points, meta)?;
-        Self::triangulate(points, meta, TriangulationState { removed: &mut self.removed, ears: &mut self.ears, out: VerticesOut { singular: &mut self.singular.vertices, instanced: &mut self.instanced.vertices } })?;
+        Self::curves(points, meta, CurvesState {
+            removed: &mut self.removed,
+            out: if shape.kind() { &mut self.singular.vertices }
+                 else { &mut self.instanced.vertices },
+        })?;
+
+        Self::triangulate(points, meta, TriangulationState {
+            removed: &mut self.removed,
+            ears: &mut self.ears,
+            out: if shape.kind() { &mut self.singular.vertices }
+                 else { &mut self.instanced.vertices },
+        })?;
 
         if let ShapeKind::Instanced = kind {
             for it in instances {
@@ -198,13 +412,12 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     /// Calculate patch-on triangles that should be rendered as curves.
     ///
     /// Accepts window- and returns normalized device coordinates.
-    fn curves(&mut self, points: &[CurvePoint], meta: ShapeMetadata) -> Result<(), &'static str> {
+    fn curves(points: &[CurvePoint], meta: ShapeMetadata, mut state: CurvesState) -> Result<(), ()> {
 
         let len = points.len();
         debug_assert!(len >= 3);
 
-        // 1. make curve triangles out of quadratic curves (B-C-B)
-        // 2. split up cubic curves (B-C-C-B) into multiple quadratic ones and do the same
+        // make curve triangles out of quadratic curves (B-C-B)
 
         let mut idx = 0;
         loop {
@@ -229,23 +442,19 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
                 increment = 2;
 
                 // quadratic curve case
-                //
-                // A. render a single "curve triangle". the range of the "uvs" decides
-                //    which side of the curve get's filled by the shader
-                // B. mark all control points inside the shape as removed
+
+                // render a the curve triangle. the range of the "uvs" decides
+                // which side of the curve get's filled by the shader
 
                 let convex = Self::convex([a.point(), b.point(), c.point()]);
 
                 // mark all convex curved triangles as removed,
                 // so they are not triangulated later
-                self.removed.set(ib as u64, convex);
+                state.removed.set(ib as u64, convex);
 
                 Self::triangle(
-                    a.point(), b.point(), c.point(), Self::uvs(convex), meta,
-                    &mut VerticesOut {
-                        singular: &mut self.singular.vertices,
-                        instanced: &mut self.instanced.vertices
-                    }
+                    a.point(), b.point(), c.point(), Self::uvs_for_convexity(convex),
+                    meta, &mut state.out
                 );
 
             } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
@@ -349,11 +558,11 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
                 */
 
-                panic!("TODO: the rendering of cubic beziér curves is not implemented yet");
+                panic!("TODO: the rendering of cubic bézier curves is not implemented yet");
 
             } else {
-                // not a beziér curve, maybe just a line, so just continue
-                increment = 1; // TODO: check for three control points in a row, which would be invalid and rn just causes the control points to be ignored
+                // not a bézier curve, maybe just a line, so just continue
+                increment = 1; // TODO: check for three control points in a row, which would be invalid. right now just causes the control points to be treated as base points
             }
             
             idx += increment;
@@ -372,7 +581,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     /// The algorithms is purposely written in a way that is similar to the
     /// compute shader implementation.
     // TODO(DOC): link to docs on the triangulation compute shader
-    fn triangulate(points: &[CurvePoint], meta: ShapeMetadata, mut state: TriangulationState) -> Result<(), &'static str> {
+    fn triangulate(points: &[CurvePoint], meta: ShapeMetadata, mut state: TriangulationState) -> Result<(), ()> {
 
         let len = points.len();
         debug_assert!(len >= 3);
@@ -393,7 +602,8 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
             if counter < len {
                 counter += 1;
             } else {
-                if !changes { return Err("polygon not ccw or intersecting lines") };
+                // if !changes { return Err("polygon not ccw or intersecting lines") };
+                if !changes { return Err(()) }
                 changes = false;
                 counter = 1;
             }
@@ -436,24 +646,31 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     }
 
-    const CONVEX:  [f32; 6] = [0.5, 0.5, 0.75, 0.5, 1.0, 1.0];
-    const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5];
-    const FILLED:  [f32; 6] = [1.0; 6];
+    const CONVEX:  [f32; 6] = [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]; // curve coords
+    const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]; // curve coords
+    const FILLED:  [f32; 6] = [1.0; 6]; // curve coords
 
-    fn triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut VerticesOut) {
+    fn triangle_size(kind: ShapeKind) -> usize {
+        match kind {
+            ShapeKind::Singular(..) => 8*3,
+            ShapeKind::Instanced    => 4*3,
+        }
+    }
+
+    fn triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
 
         let [ga, gb, gc] = [a.gl(meta.size), b.gl(meta.size), c.gl(meta.size)];
 
         match meta.kind {
             ShapeKind::Singular(i) => {
-                out.singular.extend([
+                out.extend([
                     ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2],
                     gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2],
                     gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]
                 ]);
             },
             ShapeKind::Instanced => {
-                out.instanced.extend([
+                out.extend([
                     ga.x, ga.y, uvs[0], uvs[1],
                     gb.x, gb.y, uvs[2], uvs[3],
                     gc.x, gc.y, uvs[4], uvs[5]
@@ -520,8 +737,9 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
         let mut intersects = false;
         for point in polygon.iter() {
-            if [a, b, c].contains(point) { continue };
-            intersects |= Self::triangle_intersects_point([a, b, c], *point)
+            if ![a, b, c].contains(point) {
+                intersects |= Self::triangle_intersects_point([a, b, c], *point)
+            }
         }
 
         !intersects
@@ -568,7 +786,8 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     /// If `point` lies within the triangle `trig`.
     /// Y-flipped version.
-    fn triangle_intersects_point(trig: [CurvePoint; 3], point: CurvePoint) -> bool {
+    // TODO: make all these functions free floating and not TrigPass::XXYY
+    fn triangle_intersects_point(trig: [CurvePoint; 3], point: CurvePoint) -> bool { // TODO: use Point not CurvePoint
 
         let abc = Self::triangle_area(trig[0], trig[1], trig[2]);
 
@@ -584,7 +803,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
     }
 
     // function to find the critical t values (inflection points and local extremes)
-    // of a cubic beziér curve
+    // of a cubic bézier curve
     fn critical_points(a: CurvePoint, b: CurvePoint, c: CurvePoint, d: CurvePoint) -> Vec<f32> {
 
         let mut t_values = Vec::new();
@@ -640,6 +859,22 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
 
     }
 
+    fn lerp(p1: Point, p2: Point, t: f32) -> Point {
+        Point::new(
+            p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
+            p1.y as f32 + (p2.y as f32 - p1.y as f32) * t
+        )
+    }
+
+    // Function to split a quadratic bézier curve at t
+    fn split_quadratic([a, b, c]: [Point; 3], t: f32) -> [[Point; 3]; 2] {
+        let q1 = Self::lerp(a, b, t);
+        let q2 = Self::lerp(b, c, t);
+        let r0 = Self::lerp(q1, q2, t);
+        [[a, q1, r0], [r0, q2, c]]
+        //  curve1       curve2
+    }
+
     fn split_cubic([a, b, c, d]: [Point; 4], t: f32) -> [[Point; 4]; 2] {
         let p1  = Self::lerp(a, b, t);
         let p2  = Self::lerp(b, c, t);
@@ -651,14 +886,7 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         // -- curve1 --   --- curve2  ---
     }
 
-    fn lerp(p1: Point, p2: Point, t: f32) -> Point {
-        Point::new(
-            p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
-            p1.y as f32 + (p2.y as f32 - p1.y as f32) * t
-        )
-    }
-
-    fn uvs(convex: bool) -> [f32; 6] {
+    fn uvs_for_convexity(convex: bool) -> [f32; 6] {
         match convex {
             true => Self::CONVEX,
             false => Self::CONCAVE,
@@ -674,18 +902,296 @@ impl Triangulator { // TODO: rename to Preprocessor (maybe) since it does more t
         let cross_product = vector1_x * vector2_y - vector1_y * vector2_x;
         cross_product > 0.0
     }
+    
+    fn bezier_point([a, b, c]: [Point; 3], t: f32) -> Point {
+        let x = (1.0 - t) * (1.0 - t) * a.x + 2.0 * (1.0 - t) * t * b.x + t * t * c.x;
+        let y = (1.0 - t) * (1.0 - t) * a.y + 2.0 * (1.0 - t) * t * b.y + t * t * c.y;
+        Point { x, y }
+    }
+
+    fn approx_split_point(curve: [Point; 3], p: Point) -> f32 {
+
+        let mut how = f32::INFINITY;
+        let mut result = 0.0;
+        let [a, b, c] = curve;
+
+        for idx in 0..1000 {
+            let t = idx as f32 / 1000.0;
+            let sx = (1.0-t).powi(2) * a.x + 2.0*(1.0-t) + b.x + t.powi(2) * c.x;
+            let sy = (1.0-t).powi(2) * a.y + 2.0*(1.0-t) + b.y + t.powi(2) * c.y;
+            let dot = (p.x - a.x)*(sy - a.y) - (p.y - a.y) * (sx - a.x);
+            if dot >= 0.0 && dot < how {
+                how = dot;
+                result = t;
+            }
+        }
+
+        dbg!(result - 0.4)
+        
+    }
+
+    /// We split the curve so that the intersecting point p now lies at the edge of the triangle
+    /// enclosing the curve from 0 to the split point.
+    fn split_point(curve: [Point; 3], p: Point) -> f32 {
+
+        #![allow(non_snake_case)]
+
+        // conv y-flip
+        let mut curve = curve;
+        curve.iter_mut().for_each(|it| it.y = (it.y - 500.0).abs());
+
+        let mut p = p;
+        p.y = (p.y - 500.0).abs();
+
+        // calculate the relevant coefficients
+        let [a, b, c] = curve;
+        let A = p.x * (a.y - 2.0*b.y + c.y - a.x*a.y + 2.0*a.x*b.y - a.x*c.y) + p.y * (-a.x + 2.0*b.x - c.x + a.y*a.x + 2.0*a.y*b.x + a.y*c.x);
+        let B = p.x * (-2.0*a.y + 2.0*b.y - 2.0*a.x*b.y) + p.y * (2.0*a.x - 2.0*b.x + 2.0*a.y*b.x);
+        let C = p.x*a.y - p.y*a.x;
+
+        // broken chatgpt version
+        // let A = (p.x-a.x)*(a.y+c.y)-(p.y-a.y)*(a.x+c.x);
+        // let B = -2.0*(p.x-a.x)*(a.y+b.y)+2.0*(p.y-a.y)*(a.x+b.x);
+        // let C = 2.0*(p.x-a.x)*b.y-2.0*(p.y-a.y)*b.x;
+
+        let discr = B.powi(2) - 4.0*A*C;
+        dbg!(-B + (discr).sqrt()) / (2.0*A)
+
+
+    }
+    
+    fn was_it_this_easy_all_along(curve: [Point; 3], p: Point) -> f32 {
+
+        #![allow(non_snake_case)]
+
+        // coefficients of implicit line equation
+        // implicit form: A*x + B*y + C = 0
+        let A = p.y - curve[0].y;
+        let B = curve[0].x - p.x;
+        let C = curve[0].y * p.x - curve[0].x * p.y;
+
+        dbg!(A, B, C);
+        
+        // coefficients for the line-curve intersection quadratic eqation
+        // implicit form: A*x(t) + B*y(t) + C = 0
+        // final equation: a*t² + b*t + c = 0
+        let a = A * (curve[2].x - 2.0*curve[1].x + curve[0].x) + B * (curve[2].y - 2.0*curve[1].y + curve[0].y);
+        let b = A * (2.0*curve[1].x - 2.0*curve[0].x) + B * (2.0*curve[1].y - 2.0*curve[0].y);
+        let c = A * curve[0].x + B * curve[0].y + C;
+
+        dbg!(a, b, c);
+
+        // find the roots
+
+        let inner = (b.powi(2) - 4.0*a*c).sqrt();
+        debug_assert!(!inner.is_nan(), "closest point must not be on the end of the curve"); // TODO: remove and clamp to 0
+
+        let root1 = (-b + inner) / (2.0*a);
+        let root2 = (-b - inner) / (2.0*a);
+       
+        println!("root1: {root1}, root2: {root2}");
+
+        root1
+        
+    }
+
+    /// The point must lie within the concave section of the curve. The closest point must not
+    /// be an end of the curve.
+    fn closest_point_on_curve(curve: [Point; 3], p: Point) -> f32 {
+
+        // get coefficients for this curve
+        let [a, b, c, d] = Self::distance_derivative_coefficients(curve, p);
+
+        // solve the cubic equation for t values
+        let roots = Self::solve_distance_derivative(a, b, c, d);
+
+        // NOTE: for our case, where the point lies inside the curves "belly", there will
+        //       be only one root and the closest point will not be at the ends
+
+        // roots[0].expect("get relevant root")
+        // TODO: clean up. roots[0] seems to fail sometimes?
+
+        // NOTE: this would be for the general case
+
+        let iter = roots.into_iter()
+            .filter_map(identity)
+            .chain(once(0.0))
+            .chain(once(1.0));
+
+        // find the root that gives the minimum distance
+        let mut closest_t = 0.0;
+        let mut closest_dist = f32::MAX;
+
+        for t in iter {
+
+            // only consider t in the valid range [0, 1]
+            if t >= 0.0 && t <= 1.0 {
+                let curve_point = Self::bezier_point(curve, t);
+                let dist = (curve_point.x - p.x).powi(2) + (curve_point.y - p.y).powi(2);
+                if dist < closest_dist {
+                    closest_dist = dist;
+                    closest_t = t;
+                }
+            }
+        }
+
+        closest_t
+
+       
+
+    }
+
+    fn distance_derivative_coefficients([a, b, c]: [Point; 3], p: Point) -> [f32; 4] {
+
+        #![allow(non_snake_case)]
+
+        // source: https://www.primescholars.com/articles/an-algorithm-for-computing-the-shortest-distance-between-a-point-and-quadratic-bezier-curve.pdf
+        // D'(x) = 4At³ * 12Bt² * 4Ct * 4D
+        // where A, B, C, D are d4, ... d1 respectively
+
+        let A = (a.x - 2.0*b.x + c.x).powi(2)       + (a.y - 2.0*b.y + c.y).powi(2);
+        let B = (a.x - 2.0*b.x + c.x) * (b.x - a.x) + (a.y - 2.0*b.y + c.y) * (b.y - a.y);
+        let C = (a.x - 2.0*b.x + c.x) * (a.x - p.x) + (a.y - 2.0*b.y + c.y) * (a.y - p.y)      + 2.0*(b.x - a.x).powi(2) + 2.0*(b.y - a.y).powi(2);
+        let D = (b.x - a.x) * (a.x - p.x)           + (b.y - a.y) * (a.y - p.y);
+
+        [4.0*A, 12.0*B, 4.0*C, 4.0*D]
+
+    }
+
+    /// sloves a cubic equation
+    fn solve_distance_derivative(a: f32, b: f32, c: f32, d: f32) -> [Option<f32>; 3] {
+
+        #![allow(non_snake_case)]
+
+        // normalize coefficients, so at³ => t³
+        let p = b / a;
+        let q = c / a;
+        let r = d / a;
+
+        // convert to a depressed cubic u^3 + A*u + B = 0
+        let A = (3.0 * q - p * p) / 9.0;
+        let B = (9.0 * p * q - 27.0 * r - 2.0 * p * p * p) / 54.0;
+
+        // compute discriminant
+        let delta = A.powi(3) + B.powi(2);
+
+        if delta > 0.0 {
+
+            // one real root, two complex roots
+            let sqrt_delta = delta.sqrt();
+            let C = (B + sqrt_delta).cbrt();
+            let D = (B - sqrt_delta).cbrt();
+            let u1 = C + D;
+
+            // shift u back to t
+            let t1 = u1 - p / 3.0;
+
+            [Some(t1), None, None]
+
+        } else if delta == 0.0 {
+
+            // triple real root case
+            let C = B.cbrt();
+            let u1 = 2.0 * C;
+            let u2 = -C;
+
+            let t1 = u1 - p / 3.0;
+            let t2 = u2 - p / 3.0;
+
+            [Some(t1), Some(t2), None]
+
+        } else {
+
+            // three real roots, trigonometric solution
+            let theta = (B / (-A * A * A).sqrt()).acos();
+            let val = 2.0 * (-A).sqrt();
+
+            let u1 = val *  (theta / 3.0).cos();
+            let u2 = val * ((theta + 2.0 * PI) / 3.0).cos();
+            let u3 = val * ((theta + 4.0 * PI) / 3.0).cos();
+
+            let t1 = u1 - p / 3.0;
+            let t2 = u2 - p / 3.0;
+            let t3 = u3 - p / 3.0;
+
+            [Some(t1), Some(t2), Some(t3)]
+
+        }
+
+    }
 
 }
 
-struct VerticesOut<'a> {
-    singular: &'a mut Vec<f32>,
-    instanced: &'a mut Vec<f32>,
+#[test]
+fn test_one_real_root() {
+
+    fn approx_equal(a: Option<f32>, b: f32, epsilon: f32) -> bool {
+        if let Some(v) = a {
+            (v - b).abs() < epsilon
+        } else {
+            false
+        }
+    }
+
+    // Case: t^3 - 6t^2 + 11t - 6 = 0 (root at t = 1)
+    let roots = TrigPass::solve_distance_derivative(1.0, -6.0, 11.0, -6.0); // TODO: move all out of TrigPass
+    assert!(approx_equal(roots[0], 3.0, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0);
+
+    // Case: t^3 + t^2 + t + 1 = 0 (root at t = -1)
+    let roots = TrigPass::solve_distance_derivative(1.0, 1.0, 1.0, 1.0);
+    assert!(approx_equal(roots[0], -1.0, 1e-4), "the result was {:?} (first root should be {})", roots, -1.0);
+
+    // Case: t^3 - 3t^2 + 3t - 1 = 0 (root at t = 1)
+    let roots = TrigPass::solve_distance_derivative(1.0, -3.0, 3.0, -1.0);
+    assert!(approx_equal(roots[0], 1.0, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0);
+
+    // Case: t^3 + 2t^2 + 3t + 4 = 0 (root near t = -1.6506)
+    let roots = TrigPass::solve_distance_derivative(1.0, 2.0, 3.0, 4.0);
+    assert!(approx_equal(roots[0], -1.6506, 1e-4), "the result was {:?} (first root should be {})", roots, -1.6506);
+
+    // Case: t^3 + 3t^2 + 3t + 1 = 0 (root near t = 1)
+    let roots = TrigPass::solve_distance_derivative(1.0, 3.0, 3.0, 1.0);
+    assert!(approx_equal(roots[0], 1.0, 1e-4), "the result was {:?} (first root should be {})", roots, -0.8794);
+
+    // Case: t^3 - 4t^2 + 5t - 2 = 0 (root near t = 0.5858)
+    let roots = TrigPass::solve_distance_derivative(1.0, -4.0, 5.0, -2.0);
+    assert!(approx_equal(roots[0], 0.5858, 1e-4), "the result was {:?} (first root should be {})", roots, 0.5858);
+
+    // Case: t^3 - 2t^2 + t - 2 = 0 (root near t = 1.8794)
+    let roots = TrigPass::solve_distance_derivative(1.0, -2.0, 1.0, -2.0);
+    assert!(approx_equal(roots[0], 1.8794, 1e-4), "the result was {:?} (first root should be {})", roots, 1.8794);
+
+    // Case: t^3 - 5t^2 + 8t - 4 = 0 (root near t = 2.1468)
+    let roots = TrigPass::solve_distance_derivative(1.0, -5.0, 8.0, -4.0);
+    assert!(approx_equal(roots[0], 2.1468, 1e-4), "the result was {:?} (first root should be {})", roots, 2.1468);
+
+    // Case: t^3 + 6t^2 + 9t + 4 = 0 (root near t = -0.6604)
+    let roots = TrigPass::solve_distance_derivative(1.0, 6.0, 9.0, 4.0);
+    assert!(approx_equal(roots[0], -0.6604, 1e-4), "the result was {:?} (first root should be {})", roots, -0.6604);
+
+    // Case: t^3 + t^2 - 3t - 2 = 0 (root near t = 1.0000)
+    let roots = TrigPass::solve_distance_derivative(1.0, 1.0, -3.0, -2.0);
+    assert!(approx_equal(roots[0], 1.0000, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0000);
+
+    // Case: t^3 - 1.5t^2 + 0.75t - 0.25 = 0 (root near t = 0.5)
+    let roots = TrigPass::solve_distance_derivative(1.0, -1.5, 0.75, -0.25);
+    assert!(approx_equal(roots[0], 0.5, 1e-4), "the result was {:?} (first root should be {})", roots, 0.5);
+
+    // Case: t^3 + 0.5t^2 + 0.5t + 0.25 = 0 (root near t = -0.5)
+    let roots = TrigPass::solve_distance_derivative(1.0, 0.5, 0.5, 0.25);
+    assert!(approx_equal(roots[0], -0.5, 1e-4), "the result was {:?} (first root should be {})", roots, -0.5);
+
+}
+
+struct CurvesState<'a> {
+    removed: &'a mut BitVec,
+    out: &'a mut Vec<f32>,
 }
 
 struct TriangulationState<'a> {
     removed: &'a mut BitVec,
     ears: &'a mut BitVec,
-    out: VerticesOut<'a>,
+    out: &'a mut Vec<f32>,
 }
 
 #[test]
@@ -695,17 +1201,17 @@ fn neighbours() {
     bits.resize(10, false);
 
     assert_eq!(
-        Triangulator::neighbours(&bits, 4),
+        TrigPass::neighbours(&bits, 4),
         [3, 4, 5]
     );
 
     assert_eq!(
-        Triangulator::neighbours(&bits, 0),
+        TrigPass::neighbours(&bits, 0),
         [9, 0, 1]
     );
 
     assert_eq!(
-        Triangulator::neighbours(&bits, 9),
+        TrigPass::neighbours(&bits, 9),
         [8, 9, 0]
     );
 

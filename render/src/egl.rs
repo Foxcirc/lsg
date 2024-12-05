@@ -8,7 +8,6 @@ use crate::triangulate;
 pub struct CurveGeometry {
     pub points: Vec<CurvePoint>,
     pub shapes: Vec<Shape>,
-    pub singular: Vec<Instance>,
     pub instances: Vec<Instance>,
 }
 
@@ -16,7 +15,6 @@ impl CurveGeometry {
     pub fn clear(&mut self) {
         self.points.clear();
         self.shapes.clear();
-        self.singular.clear();
         self.instances.clear();
     }
 }
@@ -103,7 +101,7 @@ impl CurvePoint {
     /// ### Panics
     /// Only accepts positive values that are not i16::MAX.
     #[track_caller]
-    pub fn control(mut x: i16, mut y: i16) -> Self {
+    pub fn ctrl(mut x: i16, mut y: i16) -> Self {
         debug_assert!(
             x >= 0 && x < i16::MAX && y >= 0 && y < i16::MAX,
             "coordinates must be positive and not i16::MAX"
@@ -149,9 +147,7 @@ pub struct Shape { // TODO: make this behave more similar to CurvePoint
     /// - positive values means the shape is `singlular`
     /// - negative values means the shape is `instanced`
     pub polygon: Range<i16>,
-    /// This field has different meaning depending on the `kind` of this shape.
-    // - singular means instance.start is an index in `singular`, count will be zero
-    // - instanced means this will be an index into `instances`
+    /// Range of instances this shape has. `instance.len()` should be one for singular shapes.
     pub instance: Range<u16>,
 }
 
@@ -198,6 +194,7 @@ impl Shape {
 
 }
 
+#[derive(Debug, Clone)]
 pub struct Instance {
     /// offsetX, offsetY, z
     pub pos: [f32; 3], //  TODO: make this be like CurvePoint, an offset in u16 pixels
@@ -270,9 +267,10 @@ impl GlRenderer {
         let size = window.surface.size();
 
         self.ctx.bind(&window.surface)?;
-        gl::resize_viewport(size);
 
+        gl::resize_viewport(size);
         self.composite.update(size);
+
         self.shape.draw(size, &self.composite.fbo)?; // draw the new geometry ontop of the old one
         self.composite.draw(&gl::FrameBuffer::default()); // final full-screen composition pass
 
@@ -403,25 +401,9 @@ pub struct ShapeRenderer {
     singular: SingularData,
     instanced: InstancedData,
     program: gl::LinkedProgram,
-    triangulator: triangulate::Triangulator,
+    triangulator: triangulate::Preprocessor,
 }
 
-// impl BuiltinRenderer {
-
-//     /// Add a non-instanced polygon to the current frame.
-//     // TODO: choose a name, polygon OR shape!
-//     pub fn add(&mut self, polygon: &[CurvePoint]) {
-//         let shape = self.geometry.points.len() as i16 .. polygon.len() as i16;
-//         let instance = self.geometry.instances.len() as u16;
-//         self.geometry.points.extend_from_slice(polygon);
-//         self.geometry.shapes.push(Shape::singular(shape, instance));
-//         self.geometry.instances.push(Instance { pos: [0.0, 0.0, 0.0], texture: [1.0, 1.0, 1.0] });
-//     }
-    
-// }
-
-/// Usually this trait is implemented for a struct containing multiple sub renderers
-/// itself, but this way you can directly use `BuiltinRenderer`.
 impl ShapeRenderer {
 
     fn new() -> Result<Self, RenderError> {
@@ -437,7 +419,7 @@ impl ShapeRenderer {
         gl::attach_shader(&mut builder, frag);
         let program = gl::link_program(builder).unwrap(); // TODO: compile shaders to binary in a build.rs script
 
-        let triangulator = triangulate::Triangulator::new();
+        let triangulator = triangulate::Preprocessor::new();
 
         let singular = {
             let vdata = gl::gen_buffer(gl::BufferType::Array);
@@ -463,7 +445,8 @@ impl ShapeRenderer {
             gl::vertex_attrib_pointer(&vao, &idata, 4, 3, gl::DataType::Float, false, 6*f, 3*f); // textureX, textureY, textureLayer
             gl::vertex_attrib_divisor(&vao, 3, gl::Divisor::PerInstances(1));
             gl::vertex_attrib_divisor(&vao, 4, gl::Divisor::PerInstances(1));
-            // this is used to distingluish between an instanced and non instanced call in the shader
+            // default value for attrib that is not passed for instanced shapes
+            // this is used to distingluish between an instanced and non instanced call in the vertex shader
             gl::vertex_attrib_3f(&vao, 3, -1.0, -1.0, -1.0);
             gl::vertex_attrib_3f(&vao, 4, -1.0, -1.0, -1.0);
             InstancedData { vao, vdata, idata, commands }
@@ -481,7 +464,7 @@ impl ShapeRenderer {
 
     fn draw<'s>(&'s mut self, size: Size, target: &gl::FrameBuffer) -> Result<Damage<'s>, RenderError> {
         
-        let result = self.triangulator.process(size, &self.geometry);
+        let result = self.triangulator.process(&self.geometry, size);
 
         // assure that we've gotten valid geometry
         result.check().map_err(|msg| RenderError::InvalidInput(msg.into()))?;

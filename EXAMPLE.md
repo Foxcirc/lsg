@@ -3,11 +3,11 @@
 
 fn main() {
 
-    lsg::run(main2)
+    lsg::run(app)
 
 }
 
-fn main2(app: App) {
+fn app(app: App) {
 
     use lsg::layout as layout;
     use lsg::widget as widget;
@@ -17,15 +17,14 @@ fn main2(app: App) {
         // set the theme, which makes some things like
         // widgets::Text have a style by default
         let theme = lsg::themes::Dark::new();
-        app.theme.set(Some(theme));
+        app.theme.set(theme);
 
-        // create a window
+        // create a window, it is created hidden
         let window = lsg::Window::new();
         app.add(&window); // clones the Arc
 
-        // set the title and hide the window to avoid flickering
+        // set the title
         window.title.set("lsg-test");
-        window.hidden.set(true);
 
         // create our content
         let loading = {
@@ -52,12 +51,11 @@ fn main2(app: App) {
         filter.show(&loading);
 
         window.show(&filter);
+        window.hidden.set(false);
+
         // when loading is done...
         drop(loading);
-
         
-        // unhide the window and wait 'till it's closed
-        window.hidden.set(false);
         window.closed().await
 
         // if this returns the app exits
