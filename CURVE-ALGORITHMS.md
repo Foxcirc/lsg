@@ -13,9 +13,10 @@ space accordingly.
 
 > Splitting by closest point to intersecting point
 
-This sadly doesn't work in all cases. It would have been nice...
+This method is used for most cases, as it yields the best triangles that will be maximally equally sized.
 
 > Splitting by largest-smallest triangle
 
-This is the approach we use. It is a little bit hard to explain, but basically boils down to calculating
-the split position (t-value) that will yield a very small and very large curve triangle and works for all cases.
+This is the approach used for more degenerate cases. It is used to calculate a split position (t-value) that works for all cases.
+Let's define the Bezier curve using the three points `A, B, C` and call the point inside the curve triangle `P`.
+Then we split the curve at the `intersection` of the line `A-P` and the `curve`.
