@@ -1,57 +1,68 @@
 
 <div align="center">
-    <img src="https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/lsg-colored.png" alt="colourful lsg icon" style="display:block; margin:auto; width: 150px">
+    <img src="https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/lsg-colored.png" alt="colourful icon with the letters 'lsg'" style="display:block; margin:auto; width: 150px">
 </div>
 
-# light and small gui apps
+Light and Small Gui Apps
+========================
 
 `lsg` is a library for making desktop/mobile gui applications in rust
-It has a lot of other features that make it awesome:
-- many very functional **builtin widgets**
-- make it easy and pleasant to **style widgets** yourself
-- fully controllable **semi-automatic layouting** that makes sense
-- ergonomic **async support** that can abstract away your typical event loop
-- you can tightly **associate widgets with your application state**
-- **gpu accelerated** drawing (using OpenGL)
+It has a lot of features that make it awesome:
 
-# async
+- Many, very functional **builtin widgets**.
+- Custom **styling and advanced animations** is easier then ever.
+- Widgets are powerful and you can **create your own widgets**.
+- Integration of **async** that abstracts aways the typical event loop.
+- Rendering on the **gpu** using OpenGL. Support for **custom rendering**.
+- Transparent architecture. Implementation details want to be seen!
+
+Async
+-----
 
 This library requires the use of `async` rust to handle events. This provides a very
 powerful architecture and means your ui and logic can run on the same thread.
 
 We also don't force any async runtime upon you. You can use `smol`, `tokio` or even just `futures-lite`.
 It is recommended to use a runtime that let's you spawn tasks though, because this let's you handle events
-in a really ergonomic way.
-In my opinion `smol`/`async-executor` is the best choice, since it fits into this crates lightweight philosophy.
+and animations very ergonimically.
 
-# lightweight
+In my opinion `smol` or `async-executor` is the best choice, since it fits into this crates
+lightweight philosophy.
 
-Being "light" means following things:
-- short incremental compilation times (for rust standards)
-- fast, even in debug builds
-- reasonably small executable size
+Lightweight
+----------
 
-`lsg` keeps it's dependencies minimal. However this also means that the library itself is missing
-some features you would expect in a traditional gui framework, notably we don't have builtin support for:
-- a lot of image formats (only png is included)
-- a lot of font formats (only ttf/otf is included)
-- platform specific api's
+I try to keep the number of dependencies to a reasonable minumum for rust standarts.
+When compiling for the first time there are still >100 crates that need to be build but this
+number should only get smaller with time.
 
-# currently missing features
+Apps should also feel fast and responsive even in debug builds.
 
-These features should be implemented in the future:
+Currently Missing Features
+--------------------------
+
+These features will be implemented in the future:
 - support for accesskit
-- drag and drop
 - more platforms
 
-# platform support
+Platform Support
+----------------
 
-Currently this library supports:
-- Linux (Wayland or X11)
-- Windows
+| Platform | Supported | Comment                 |
+|----------|-----------|-------------------------|
+| Windows  | ❌         | Coming soon!            |
+| Linux    | ✅        | Only Wayland for now.   |
+| Android  | ❌         | Coming soon!            |
+| MacOS    | ❌         | Possibly in the future. |
+| iOS      | ❌         | Possibly in the future. |
 
-Will be implemented in the future:
-- Android
+Build Dependencies
+==================
 
-Will not be implemented:
-- MacOs / iOS
+| Platform | Dependencies                   |
+|----------|--------------------------------|
+| Windows  | ❌                              |
+| Linux    | wayland-devel, xkbcommon-devel |
+| Android  | ❌                              |
+| MacOS    | ❌                              |
+| iOS      | ❌                              |

@@ -8,7 +8,7 @@
 ///
 /// 1. All functions are safe
 /// 2. Strong typing for all kinds of handles
-/// 3. Automatic binding
+/// 3. Automatic binding (the bind functions are only provided for special use cases)
 /// 4. Resource cleanup on drop
 ///
 /// This library does not deal with context creation, for that you should
@@ -17,7 +17,6 @@
 /// # Initialization
 /// 1. bind a context
 /// 2. use [`load_with`] to load all functions that are present
-/// 3. setup a debug callback
 ///
 /// # Debug messages
 /// If you are using `tracing` the easiest way to receive debug messages is
@@ -33,7 +32,6 @@
 /// # Completeness
 /// Right now, not all functions are implemented and many enums are incomplete,
 /// but adding more is really easy and often a matter of minutes.
-/// Just fork it and create a PR!
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
 use num_enum::TryFromPrimitive;
@@ -57,7 +55,7 @@ pub fn load_with<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: 
     result
 
 }
-    
+
 pub trait DebugCallback: Fn(DebugSource, DebugType, DebugSeverity, u32, &str) {}
 impl<F: Fn(DebugSource, DebugType, DebugSeverity, u32, &str)> DebugCallback for F {}
 
@@ -246,7 +244,7 @@ impl Drop for Shader {
 }
 
 impl Shader {
-    pub fn invalid() -> Self {
+    pub const fn invalid() -> Self {
         Self { id: 0 }
     }
 }
@@ -343,7 +341,7 @@ impl Drop for Program {
 }
 
 impl Program {
-    pub fn invalid() -> Self {
+    pub const fn invalid() -> Self {
         Self { id: 0, shaders: Vec::new(), keepalive: false }
     }
 }
@@ -431,9 +429,7 @@ impl Drop for LinkedProgram {
 }
 
 impl LinkedProgram {
-    pub fn invalid() -> Self {
-        Self { id: 0 }
-    }
+    pub const fn invalid() -> Self { Self { id: 0 } }
     pub fn current() -> Self {
         Self { id: get_integer_v(Property::CurrentProgram).unwrap_or(0) as u32 }
     }
@@ -466,10 +462,16 @@ pub struct VertexArray {
     id: u32
 }
 
-impl VertexArray {
-    pub fn invalid() -> Self {
-        Self { id: 0 }
+impl Drop for VertexArray {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            unsafe { gl::DeleteVertexArrays(1, &self.id); }
+        }
     }
+}
+
+impl VertexArray {
+    pub const fn invalid() -> Self { Self { id: 0 } }
     pub fn current() -> Self {
         Self { id: get_integer_v(Property::VertexArrayBinding).unwrap_or(0) as u32 }
     }
@@ -496,7 +498,7 @@ pub fn gen_buffer(kind: BufferType) -> Buffer {
 /// This is not unsafe, since all bytes are valid numbers, but may cause nasty bugs, so
 /// be careful to pass in the right type here.
 pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
-    
+
     bind_buffer(buffer);
 
     unsafe { gl::BufferData(
@@ -517,10 +519,16 @@ pub struct Buffer {
     kind: BufferType,
 }
 
-impl Buffer {
-    pub fn invalid() -> Self {
-        Self { id: 0, kind: BufferType::Array }
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            unsafe { gl::DeleteBuffers(1, &self.id); }
+        }
     }
+}
+
+impl Buffer {
+    pub const fn invalid() -> Self { Self { id: 0, kind: BufferType::Array } }
     pub fn current(kind: BufferType) -> Self {
         match kind {
             BufferType::Array        => Self { id: get_integer_v(Property::ArrayBufferBinding).unwrap_or(0) as u32, kind },
@@ -724,7 +732,7 @@ impl Drop for Texture {
 }
 
 impl Texture {
-    pub fn invalid() -> Self { Self { id: 0, kind: TextureType::D1 } }
+    pub const fn invalid() -> Self { Self { id: 0, kind: TextureType::D1 } }
     pub fn current(kind: TextureType) -> Self {
         match kind {
             TextureType::D1 => Self { id: get_integer_v(Property::TextureD1Binding).unwrap_or(0) as u32, kind },
@@ -984,4 +992,3 @@ pub fn to_small_cstr<'d>(buf: &'d mut [u8], text: &str) -> &'d CStr {
    CStr::from_bytes_with_nul(&buf[..len + 1]).unwrap()
 
 }
-

@@ -2,7 +2,7 @@
 use common::*;
 use std::{ffi::c_void as void, fmt, mem, sync::Arc, error::Error as StdError};
 
-/* 
+/*
 the egl backend library has a accessible API
 for future use outside of this crate
 TODO: verify thread safety and add more constraints
@@ -85,7 +85,7 @@ impl Instance {
 
     /// Should be only be called once.
     pub fn new<D: IsDisplay>(display: &D) -> Result<Self, EglError> {
-        
+
         let lib = unsafe {
             let loaded = egl::DynamicInstance::<egl::EGL1_5>::load_required()
                 .map_err(|_| "failed to load egl 1.5")?; // NOTE: don't forget to update egl version in error message
@@ -120,13 +120,13 @@ impl Instance {
             swap_buffers_with_damage,
             display: egl_display,
         })
-        
+
     }
 
     pub fn get_proc_address(&self, name: &str) -> Option<extern "system" fn()> {
         self.lib.get_proc_address(name)
     }
-    
+
 }
 
 pub mod v2 {
@@ -190,7 +190,7 @@ pub mod v2 {
             self.version = [major, minor];
             self
         }
-        
+
         pub fn debug(mut self, value: bool) -> Self {
             self.debug = value;
             self
@@ -202,7 +202,7 @@ pub mod v2 {
         }
 
         pub fn finish(self, instance: &Instance) -> Result<Config, EglError> {
-        
+
             let attribs = [
 
                 // surface attribs
@@ -253,7 +253,7 @@ pub mod v2 {
             })
 
         }
-        
+
     }
 
     pub struct Config {
@@ -268,7 +268,7 @@ pub mod v2 {
         pub fn build() -> ConfigBuilder {
             ConfigBuilder::default()
         }
-        
+
     }
 
     pub struct Context {
@@ -287,7 +287,7 @@ pub mod v2 {
     }
 
     impl Context {
-        
+
         pub fn new(instance: &Instance, config: &Config) -> Result<Self, EglError> {
 
             // opengl (and related) has the by far worst api i've seen... ever
@@ -303,13 +303,13 @@ pub mod v2 {
                 None,
                 &config.context_attrs
             )?;
-           
+
             Ok(Self {
                 instance: instance.clone(),
                 inner: context,
                 damage_rects: Vec::new(),
             })
-            
+
         }
 
         /// Make this context current, and set the target surface.
@@ -360,7 +360,7 @@ pub mod v2 {
             Ok(())
 
         }
-   
+
     }
 
     /// A double-buffered window surface.
@@ -405,7 +405,7 @@ pub mod v2 {
                 #[cfg(unix)]
                 wl_egl_surface
             })
-            
+
         }
 
         pub fn resize(&mut self, size: Size) {
@@ -417,9 +417,9 @@ pub mod v2 {
         pub fn size(&self) -> Size {
             self.size
         }
-        
+
     }
-    
+
 }
 
 struct BaseContext {
@@ -457,7 +457,7 @@ impl BaseContext {
                 egl::CONTEXT_MINOR_VERSION, 0,
                 egl::CONTEXT_CLIENT_VERSION, 3,
 
-                egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug) { 1 } else { 0 },
+                egl::CONTEXT_OPENGL_DEBUG, if cfg!(debug_assertions) { 1 } else { 0 },
 
                 egl::NONE,
 
@@ -478,7 +478,7 @@ impl BaseContext {
             damage_rects: Vec::with_capacity(2),
             size,
         })
-        
+
     }
 
     /// Make this context current.
@@ -490,7 +490,7 @@ impl BaseContext {
             Some(self.egl_surface),
             Some(self.egl_context)
         )
-        
+
     }
 
     /// Unbind this context.
@@ -500,7 +500,7 @@ impl BaseContext {
             self.instance.display,
             None, None, None
         )
-        
+
     }
 
     pub(crate) fn swap_buffers(&mut self, damage: Option<&[Rect]>) -> Result<(), EglError> {
@@ -527,7 +527,7 @@ impl BaseContext {
         Ok(())
 
     }
-   
+
 }
 
 struct SurfacelessContext {
@@ -563,7 +563,7 @@ impl SurfacelessContext {
             instance: instance.clone(),
             egl_context: context,
         })
-        
+
     }
 
     /// Make this context current.
@@ -575,7 +575,7 @@ impl SurfacelessContext {
             None,
             Some(self.egl_context)
         )
-        
+
     }
 
     /// Unbind this context.
@@ -585,7 +585,7 @@ impl SurfacelessContext {
             self.instance.display,
             None, None, None
         )
-        
+
     }
 
 }
@@ -619,7 +619,7 @@ impl ShareContext {
         let inner = SurfacelessContext::new(instance, config)?;
 
         Ok(Self { inner })
-        
+
     }
 
     /// Make this context current.
@@ -693,7 +693,7 @@ impl Context {
             inner,
             wl_egl_surface,
         })
-        
+
     }
 
     /// Make this context current.
@@ -762,7 +762,7 @@ impl PixelBuffer {
         Ok(Self {
             inner,
         })
-        
+
     }
 
     /// Make this context current.
@@ -782,4 +782,3 @@ impl PixelBuffer {
     }
 
 }
-
