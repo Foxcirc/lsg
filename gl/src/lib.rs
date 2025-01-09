@@ -563,15 +563,11 @@ pub struct VertexAttribs {
     pub start: usize,
 }
 
-// TODO: implement buffer deleting (cleanup in the destructors)
-
 /// The array will also be enabled immediatly using `EnableVertexAttribArray`.
 /// `Stride` is in bytes!
 /// There is also a more structured version [`vertex_attrib_pointer2`].
 #[track_caller]
 pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, location: u32, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
-
-    // TODO: rename all "attribs" to "attrs"
 
     assert_eq!(vbo.kind, BufferType::Array);
 

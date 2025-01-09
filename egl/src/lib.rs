@@ -422,6 +422,8 @@ pub mod v2 {
 
 }
 
+/*
+
 struct BaseContext {
     instance: Instance,
     egl_surface: egl::Surface,
@@ -782,3 +784,5 @@ impl PixelBuffer {
     }
 
 }
+
+*/
