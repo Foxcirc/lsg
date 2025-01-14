@@ -1,7 +1,8 @@
 
-//! Ear-clipping triangulation on the cpu.
+//! Triangulation algorithms and handling of Curves.
+//! Preparing the geometry for rendering.
 
-use core::panic;
+use core::panic; // TODO: what am I using this for??
 use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
 use common::Size;
@@ -88,7 +89,7 @@ impl Preprocessor {
             trig: TrigPass::new(),
         }
     }
-    
+
 }
 
 pub struct LowerPass {
@@ -194,7 +195,7 @@ impl LowerPass {
                             let points_len = self.lowered.points.len();
                             let sub_triangle = &mut self.lowered.points[points_len - 3 * (current_depth + 1) .. points_len - 3 * current_depth];
                             let [sa, sb, sc] = sub_triangle.try_into().expect("get sub triangle");
-                            
+
                             if TrigPass::triangle_intersects_point([sa, sb, sc], *point) {
 
                                 let split_at = TrigPass::was_it_this_easy_all_along([sa.point(), sb.point(), sc.point()], point.point());
@@ -219,10 +220,10 @@ impl LowerPass {
                                 break 'subs
 
                             }
-                            
-                            
+
+
                         }
-                        
+
                     }
                 }
 
@@ -241,7 +242,7 @@ impl LowerPass {
 
             idx += increment;
             if idx >= len { break };
-        
+
         }
 
         let start = shape.polygon().start;
@@ -255,7 +256,7 @@ impl LowerPass {
         self.lowered.instances.extend_from_slice(instances);
 
         Ok(())
-        
+
 
     }
 
@@ -266,7 +267,7 @@ fn split_quadratic_curve() {
 
     let test_case = TrigPass::was_it_this_easy_all_along([Point::new(0., 0.), Point::new(1., 2.), Point::new(2., 0.)], Point::new(2., 2.));
     dbg!(test_case);
-    
+
 }
 
 pub struct TrigPass { // TODO: make pub(crate)
@@ -338,7 +339,7 @@ impl TrigPass {
             },
             errors: self.errors,
         }
-        
+
     }
 
     fn shape(&mut self, shape: &Shape, geometry: &CurveGeometry, size: Size) -> Result<(), ()> {
@@ -360,7 +361,7 @@ impl TrigPass {
             // return Err("shape without any instances")
             return Err(())
         }
-        
+
         // save at what position we were in the instances list
         let start = self.instanced.vertices.len();
 
@@ -508,7 +509,7 @@ impl TrigPass {
                         -0.25*sub[0].x + 0.75*sub[1].x + 0.75*sub[2].x -0.25*sub[3].x,
                         -0.25*sub[0].y + 0.75*sub[1].y + 0.75*sub[2].y -0.25*sub[3].y
                     );
-                   
+
                     let [p1, p3] = [sub[0], sub[3]];
 
                     let convex = Self::convex([p1, p2, p3]);
@@ -533,7 +534,7 @@ impl TrigPass {
 
                     curve = rest;
                     previous_t = t;
-                    
+
                 }
 
                 // push the end point
@@ -558,20 +559,21 @@ impl TrigPass {
 
                 */
 
+                // TODO: this is now handeled in the lowering pass
                 panic!("TODO: the rendering of cubic bézier curves is not implemented yet");
 
             } else {
                 // not a bézier curve, maybe just a line, so just continue
                 increment = 1; // TODO: check for three control points in a row, which would be invalid. right now just causes the control points to be treated as base points
             }
-            
+
             idx += increment;
             if idx >= len { break };
-            
+
         }
-        
+
         Ok(())
-        
+
     }
 
     /// Ear-clipping triangulation for a single polygon.
@@ -594,7 +596,7 @@ impl TrigPass {
         }
 
         // remove ears and recalculate neighbours
-        
+
         let mut changes = false; // used to check for errors
         let mut counter = 0;
         loop {
@@ -609,7 +611,7 @@ impl TrigPass {
             }
 
             let idx = counter - 1;
-            
+
             // skip all removed points
             if state.removed[idx as u64] {
                 continue
@@ -677,12 +679,12 @@ impl TrigPass {
                 ]);
             }
         }
-        
+
     }
 
     /// Behaviour is unspecified if all indices are marked as removed.
     pub(self) fn neighbours(removed: &BitVec, idx: usize) -> [usize; 3] {
-        
+
         let len = removed.len(); // removed.len() == polygon.len()
 
         #[cfg(debug_assertions)]
@@ -694,7 +696,7 @@ impl TrigPass {
         }
 
         let mut indices: [usize; 3] = [0; 3];
-        
+
         // the point we are concerned about
         indices[1] = idx;
 
@@ -707,7 +709,7 @@ impl TrigPass {
         }
 
         indices[2] = counter as usize;
-    
+
         // the left neighbour
         let mut counter: isize = idx as isize - 1;
         loop {
@@ -719,7 +721,7 @@ impl TrigPass {
         indices[0] = counter as usize;
 
         indices
-    
+
     }
 
     /// Check if the point at `idx` is an ear, accounting for removed neighbours.
@@ -756,7 +758,7 @@ impl TrigPass {
         let ba = [a.x as i32 - b.x as i32, -(a.y as i32 - b.y as i32)];
         let bc = [c.x as i32 - b.x as i32, -(c.y as i32 - b.y as i32)];
         //                                     ^ this minus adjusts it for being y-flipped
-    
+
         // calcualte the angle BA to BC
 
         let dot = (bc[0] * ba[0] + bc[1] * ba[1]) as f32;
@@ -772,7 +774,7 @@ impl TrigPass {
         // check if any other vertex is inside the triangle ABC
 
         angle < 180.0
-        
+
     }
 
     /// Area of the triangle ABC.
@@ -794,7 +796,7 @@ impl TrigPass {
         let pab = Self::triangle_area(point, trig[0], trig[1]);
         let pbc = Self::triangle_area(point, trig[1], trig[2]);
         let pca = Self::triangle_area(point, trig[2], trig[0]);
-    
+
         let total = pab + pbc + pca;
 
         // using a small epsilon to account for floating-point precision errors
@@ -902,7 +904,7 @@ impl TrigPass {
         let cross_product = vector1_x * vector2_y - vector1_y * vector2_x;
         cross_product > 0.0
     }
-    
+
     fn bezier_point([a, b, c]: [Point; 3], t: f32) -> Point {
         let x = (1.0 - t) * (1.0 - t) * a.x + 2.0 * (1.0 - t) * t * b.x + t * t * c.x;
         let y = (1.0 - t) * (1.0 - t) * a.y + 2.0 * (1.0 - t) * t * b.y + t * t * c.y;
@@ -927,7 +929,7 @@ impl TrigPass {
         }
 
         dbg!(result - 0.4)
-        
+
     }
 
     /// We split the curve so that the intersecting point p now lies at the edge of the triangle
@@ -959,7 +961,7 @@ impl TrigPass {
 
 
     }
-    
+
     fn was_it_this_easy_all_along(curve: [Point; 3], p: Point) -> f32 {
 
         #![allow(non_snake_case)]
@@ -971,7 +973,7 @@ impl TrigPass {
         let C = curve[0].y * p.x - curve[0].x * p.y;
 
         dbg!(A, B, C);
-        
+
         // coefficients for the line-curve intersection quadratic eqation
         // implicit form: A*x(t) + B*y(t) + C = 0
         // final equation: a*t² + b*t + c = 0
@@ -988,11 +990,11 @@ impl TrigPass {
 
         let root1 = (-b + inner) / (2.0*a);
         let root2 = (-b - inner) / (2.0*a);
-       
+
         println!("root1: {root1}, root2: {root2}");
 
         root1
-        
+
     }
 
     /// The point must lie within the concave section of the curve. The closest point must not
@@ -1037,7 +1039,7 @@ impl TrigPass {
 
         closest_t
 
-       
+
 
     }
 
@@ -1270,4 +1272,3 @@ fn neighbours() {
 
 
 // }
-

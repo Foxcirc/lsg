@@ -162,7 +162,7 @@ impl PressedKeys {
 
     pub fn current(&self) -> Vec<xkb::Keycode> {
 
-        let mut down = Vec::new(); // we can't return anything that borrows self
+        let mut down = Vec::new(); // we can't return anything that borrows self TODO: update this, maybe use a generator
 
         for idx in 0..self.keys.len() {
             if self.keys.get(idx) == true {
@@ -219,7 +219,7 @@ impl<T: 'static + Send> Connection<T> {
             state: base,
             queue
         })
-        
+
     }
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
@@ -228,11 +228,11 @@ impl<T: 'static + Send> Connection<T> {
 
             // flush all outgoing requests
             // i forgot this and had to debug 10+ hours... fuckkk me
-            self.state.con.get_ref().flush()?; 
+            self.state.con.get_ref().flush()?;
 
             let guard = {
                 let _span = tracing::span!(tracing::Level::TRACE, "lsg::wayland").entered();
-            
+
                 // process all events that we've stored
                 loop {
                     self.queue.dispatch_pending(&mut self.state)?;
@@ -283,7 +283,7 @@ impl<T: 'static + Send> Connection<T> {
             }
 
         }
-        
+
     }
 
 }
@@ -468,7 +468,7 @@ impl<T: 'static + Send> BaseWindow<T> {
             // proxy: EventProxy::new(evl),
             wl_surface: surface,
         }
-        
+
     }
 
     pub fn id(&self) -> WindowId {
@@ -516,7 +516,7 @@ impl<T: 'static + Send> BaseWindow<T> {
 
     /// This simply drops the window.
     pub fn close(self) {} // TODO: add close helper fns to everything to make closing things more explicit...
-    
+
 }
 
 unsafe impl<T: Send + 'static> egl::IsSurface for BaseWindow<T> {
@@ -572,7 +572,7 @@ impl<T: 'static + Send> Drop for Window<T> {
 }
 
 impl<T: 'static + Send> Window<T> {
-    
+
     pub fn new(evl: &mut EventLoop<T>, size: Size) -> Self {
 
         let base = BaseWindow::new(evl, size);
@@ -597,7 +597,7 @@ impl<T: 'static + Send> Window<T> {
             xdg_toplevel,
             xdg_decoration,
         }
-        
+
     }
 
     pub fn destroy(self) {}
@@ -853,7 +853,7 @@ impl DataOffer {
     }
 
     pub fn cancel(self) {}
-    
+
 }
 
 pub struct DataReader {
@@ -908,7 +908,7 @@ impl DataSource {
     pub fn selection<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
 
         let this = Self::new(evl, offers, mode);
-        
+
         evl.wayland.state.globals.data_device.set_selection(
             Some(&this.wl_data_source),
             evl.wayland.state.last_serial
@@ -939,7 +939,7 @@ impl DataSource {
             id: get_data_source_id(&wl_data_source),
             wl_data_source,
         }
-        
+
     }
 
     pub fn id(&self) -> DataSourceId {
@@ -976,7 +976,7 @@ impl Drop for CustomIcon {
 }
 
 impl CustomIcon {
-    
+
     /// Currently uses env::temp_dir() so the image content of your icon could be leaked to other users.
     #[track_caller]
     pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
@@ -1030,7 +1030,7 @@ impl CustomIcon {
             wl_buffer,
             wl_surface,
         })
-        
+
     }
 
     pub fn destroy(self) {}
@@ -1061,7 +1061,7 @@ impl<T: 'static + Send> Drop for PopupWindow<T> {
 }
 
 impl<T: 'static + Send> PopupWindow<T> {
-    
+
     pub fn new(evl: &mut EventLoop<T>, size: Size, parent: &Window<T>) -> Self {
 
         let base = BaseWindow::new(evl, size);
@@ -1086,7 +1086,7 @@ impl<T: 'static + Send> PopupWindow<T> {
             xdg_surface,
             xdg_popup,
         }
-        
+
     }
 
     pub fn destroy(self) {}
@@ -1132,7 +1132,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
         let wl_output = monitor.map(|val| &val.wl_output);
 
-        // creating this kind of window requires some wayland extensions 
+        // creating this kind of window requires some wayland extensions
         let layer_shell_mgr = evb.globals.layer_shell_mgr.as_ref().ok_or(
             EvlError::Unsupported { name: ZwlrLayerShellV1::interface().name }
         )?;
@@ -1151,7 +1151,7 @@ impl<T: 'static + Send> LayerWindow<T> {
             base,
             zwlr_surface,
         })
-        
+
     }
 
     pub fn destroy(self) {}
@@ -1167,7 +1167,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
         self.zwlr_surface.set_anchor(wl_anchor);
         self.base.wl_surface.commit();
-       
+
     }
 
     pub fn margin(&self, value: u32) {
@@ -1189,9 +1189,9 @@ impl<T: 'static + Send> LayerWindow<T> {
 
         self.zwlr_surface.set_keyboard_interactivity(wl_intr);
         self.base.wl_surface.commit();
-        
+
     }
-    
+
 }
 
 // ### more stuff ###
@@ -1216,7 +1216,7 @@ impl DndHandle {
 fn translate_dead_to_normal_sym(xkb_sym: xkb::Keysym) -> Option<xkb::Keysym> {
 
     use xkb::Keysym;
-    
+
     match xkb_sym {
         Keysym::dead_acute      => Some(Keysym::acute),
         Keysym::dead_grave      => Some(Keysym::grave),
@@ -1224,7 +1224,7 @@ fn translate_dead_to_normal_sym(xkb_sym: xkb::Keysym) -> Option<xkb::Keysym> {
         Keysym::dead_tilde      => Some(Keysym::asciitilde),
         _ => None
     }
-    
+
 }
 
 /// Look at the source and see how keys are translated.
@@ -1407,9 +1407,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents>
         _con: &wayland_client::Connection,
         qh: &wayland_client::QueueHandle<Self>
     ) {
-    
+
         // TODO: test if this actually works with my second monitor
-        
+
         if let WlRegistryEvent::Global { name, interface, .. } = event {
             if &interface == "wl_output" {
                 process_new_output(&mut evl.monitor_list, registry, name, qh);
@@ -1445,7 +1445,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> f
     ) {
 
         let mut guard = data.lock().unwrap();
-    
+
         match event {
             WlOutputEvent::Name { name } => {
                 if !name.is_empty() { guard.name = name };
@@ -1605,14 +1605,14 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandSt
             evl.offer_data.current_offer = None;
 
         }
-    
+
         else if let WlDataDeviceEvent::Selection { id: value /* not an id! */ } = event {
 
             // the data offer will have already been "introduced", so we have received all
             // advertised data kinds
 
             if let Some(wl_data_offer) = value {
-                
+
                 let data = wl_data_offer.data::<Mutex<DataKinds>>().unwrap();
                 let kinds = *data.lock().unwrap(); // copy the bitflags
 
@@ -1626,7 +1626,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandSt
                 evl.events.push(Event::SelectionUpdate { offer });
 
             } else {
-                
+
                 evl.events.push(Event::SelectionUpdate { offer: None });
 
             }
@@ -1672,7 +1672,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for Wayla
     ) {
 
         let id = get_data_source_id(data_source);
-        
+
         if let WlDataSourceEvent::Send { mime_type, fd } = event {
 
             // always set nonblocking mode explicitly
@@ -1723,7 +1723,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationTokenV1, WlSurface
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
-    
+
         // activate the token
         if let XdgActivationTokenEvent::Done { token } = event {
             let activation_mgr = evl.globals.activation_mgr.as_ref().unwrap();
@@ -1743,7 +1743,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, Windo
         _con: &wayland_client::Connection,
         _qh: &wayland_client::QueueHandle<Self>
     ) {
-    
+
         if let ZxdgDecorationEvent::Configure { mode } = event {
             let event = match mode {
                 WEnum::Value(ZxdgDecorationMode::ServerSide) => WindowEvent::Decorations { active: true },
@@ -1909,7 +1909,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<W
         else if let ZwlrLayerSurfaceEvent::Closed = event {
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
         }
-    
+
     }
 }
 
@@ -1986,9 +1986,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> 
                 id: *data,
                 event: WindowEvent::Rescale { scale: scale as f64 / 120.0 }
             });
-            
+
         }
-        
+
     }
 }
 
@@ -2039,7 +2039,10 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                     xkb::COMPILE_NO_FLAGS
                 ) {
                     Ok(val) => val,
-                    Err(..) => { evl.keyboard_data.keymap_error = Some(EvlError::InvalidLocale { value: locale.to_string_lossy().into() }); return }
+                    Err(..) => {
+                        evl.keyboard_data.keymap_error = Some(EvlError::InvalidLocale { value: locale.to_string_lossy().into() });
+                        return
+                    }
                 };
 
                 let compose_state = xkb::compose::State::new(&compose_table, xkb::STATE_NO_FLAGS);
@@ -2049,7 +2052,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                 });
 
                 tracing::trace!("keymap set, locale: {:?}", &locale);
-                
+
             },
 
             WlKeyboardEvent::Enter { surface, keys, .. } => {
@@ -2090,7 +2093,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
 
                     // also invalidate selection, to be more correct
                     evl.events.push(Event::SelectionUpdate { offer: None });
-                    
+
                 };
 
             },
@@ -2108,7 +2111,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
 
                 process_key_event(evl, raw_key, dir, Source::Event);
 
-                
+
             },
 
             WlKeyboardEvent::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
@@ -2116,7 +2119,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                 if let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific {
                     keymap_specific.xkb_state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
                 };
-                
+
             },
 
             WlKeyboardEvent::RepeatInfo { rate, delay } => {
@@ -2134,7 +2137,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
             },
 
             _ => (),
-            
+
         }
 
     }
@@ -2169,7 +2172,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32,
     let repeat = source == Source::KeyRepeat;
 
     if dir == Direction::Down {
-        
+
         let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
         let modifier = xkb_sym.is_modifier_key(); // if this key is a modifier key
 
@@ -2220,7 +2223,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32,
                     Instant::now() + evl.keyboard_data.repeat_delay,
                     evl.keyboard_data.repeat_rate
                 );
-                
+
                 // update the key state
                 keymap_specific.pressed_keys.event(xkb_key, KeyState::Pressed);
 
@@ -2338,7 +2341,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
                     id,
                     event
                 });
-                
+
             },
 
             WlPointerEvent::Axis { axis, value, .. } => {
@@ -2357,13 +2360,13 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
                     id,
                     event: WindowEvent::MouseScroll { axis, value }
                 });
-                
+
             },
 
             _ => ()
-            
+
         }
-        
+
     }
 }
 

@@ -228,7 +228,7 @@ pub struct GlRenderer {
 }
 
 impl GlRenderer {
-    
+
     pub fn new<D: egl::IsDisplay>(display: &D) -> Result<Self, RenderError> {
 
         let lib = egl::Instance::new(display)?;
@@ -269,7 +269,7 @@ impl GlRenderer {
         self.ctx.bind(&window.surface)?;
 
         gl::resize_viewport(size);
-        self.composite.update(size);
+        self.composite.update(size); // NOTE: this is done here bc we need the texture to be initialized when calling shape.draw
 
         self.shape.draw(size, &self.composite.fbo)?; // draw the new geometry ontop of the old one
         self.composite.draw(&gl::FrameBuffer::default()); // final full-screen composition pass
@@ -279,7 +279,7 @@ impl GlRenderer {
         Ok(())
 
     }
-    
+
 }
 
 pub struct CompositeRenderer {
@@ -314,7 +314,7 @@ impl CompositeRenderer {
             gl::uniform_1i(&program, texture, 0);
 
             program
-            
+
         };
 
         let (vao, vbo) = {
@@ -334,7 +334,7 @@ impl CompositeRenderer {
             gl::buffer_data(&vbo, &vertices, gl::DrawHint::Static);
 
             (vao, vbo)
-            
+
         };
 
         let fbo = gl::gen_frame_buffer();
@@ -351,7 +351,7 @@ impl CompositeRenderer {
     }
 
     pub fn update(&mut self, size: Size) {
-        
+
         // (re)create composition texture if necessary
         if size != self.current {
 
@@ -359,19 +359,19 @@ impl CompositeRenderer {
             gl::tex_image_2d(&texture, 0, gl::ColorFormat::Rgba8, size, gl::PixelFormat::Rgba, gl::DataType::UByte);
             gl::tex_parameter_i(&texture, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
             gl::tex_parameter_i(&texture, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
-        
+
             gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &texture, 0);
 
             // drop the old one and keep the new one alive
             self.texture = texture;
             self.current = size;
-        
+
         }
 
     }
 
     pub fn draw(&mut self, target: &gl::FrameBuffer) {
-        
+
         gl::disable(gl::Capability::Blend);
         gl::active_texture(0, &self.texture);
 
@@ -463,7 +463,7 @@ impl ShapeRenderer {
     }
 
     fn draw<'s>(&'s mut self, size: Size, target: &gl::FrameBuffer) -> Result<Damage<'s>, RenderError> {
-        
+
         let result = self.triangulator.process(&self.geometry, size);
 
         // assure that we've gotten valid geometry

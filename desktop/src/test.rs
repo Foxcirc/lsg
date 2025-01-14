@@ -22,7 +22,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
-    
+
     let size = Size { w: 500 , h: 500 };
     let mut window = Window::new(&mut evl, size);
 
@@ -74,7 +74,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // initial render
-    
+
     window.pre_present_notify();
     renderer.draw(&perwindow).expect("first render should be error-free");
     window.redraw();
@@ -101,7 +101,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Resume => {
                     debug!("resuming, initial render");
                     // render on resume, to make wayland accept our
-                    // window size 
+                    // window size
                     // window.pre_present_notify();
                     // renderer.draw(&perwindow).expect("first render should be error-free");
                     // TODO: why does rendering here cause a complete freeze?? i hate wayland
@@ -113,7 +113,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::Redraw => {
                         window.pre_present_notify();
                         renderer.draw(&perwindow).ok();
-                        window.redraw();
+                        // window.redraw();
                     },
 
                     WindowEvent::Resize { size, .. } => {
@@ -203,13 +203,13 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     //     // window.redraw();
 
                     // },
-                    
+
                     WindowEvent::Close => {
                         debug!("quitting...");
                         evl.quit();
                     },
                     other => debug!("unhandeled window event '{:?}'", other),
-                    
+
                 },
 
                 Event::Quit { reason } => {
@@ -218,13 +218,13 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                 },
 
                 other => debug!("unhandeled event '{:?}'", other),
-                
+
             }
-            
+
         }
 
     });
 
     Ok(())
-    
+
 }

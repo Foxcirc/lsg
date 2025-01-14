@@ -6,6 +6,7 @@ pub use wayland::*;
 // notifs, status icons, ...
 pub mod dbus;
 pub use dbus::*;
+
 use wayland_client::Proxy;
 
 use crate::shared::*;
@@ -20,10 +21,10 @@ use futures_lite::FutureExt;
 // TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
 pub struct EventLoop<T: 'static + Send = ()> {
     events: AwaitableVec<Event<T>>,
-    proxy: proxy::InnerProxy<T>,
+    proxy: proxy::EventProxyData<T>,
     wayland: wayland::Connection<T>,
     signals: signals::SignalListener,
-    dbus: dbus::Connection,
+    // dbus: dbus::Connection,
 }
 
 impl<T: 'static + Send> EventLoop<T> {
@@ -31,10 +32,10 @@ impl<T: 'static + Send> EventLoop<T> {
     pub(crate) fn new(app: &str) -> Result<Self, EvlError> {
         Ok(Self {
             events: AwaitableVec::new(Vec::new()),
-            proxy: proxy::InnerProxy::new(),
+            proxy: proxy::EventProxyData::new(),
             wayland: wayland::Connection::new(app)?,
             signals: signals::SignalListener::new()?,
-            dbus: dbus::Connection::new(app)?,
+            // dbus: dbus::Connection::new(app)?,
         })
     }
 
@@ -52,17 +53,18 @@ impl<T: 'static + Send> EventLoop<T> {
             .or(self.wayland.next())
             .or(self.proxy.next())
             .or(self.signals.next())
-            .or(self.dbus.next())
+            // .or(self.dbus.next())
             .await
     }
-    
+
     /// Write pending requests. Call this during cleanup
     /// if you are no longer going to call `next`.
     pub async fn flush(&mut self) -> Result<(), EvlError> {
         // eg. close a notification
-        self.dbus.flush().await
+        // self.dbus.flush().await
+        Ok(())
     }
-    
+
     /// On linux, this is a no-op.
     pub fn on_main_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
         func() // on linux the event loop runs on the main thread
@@ -81,9 +83,9 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     // TODO: make it be Notif::new(&mut evl) instead
-    pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
-        self.dbus.send_notification(notif)
-    }
+    // pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
+        // self.dbus.send_notification(notif)
+        // }
 
     pub fn display(&self) -> *mut std::ffi::c_void {
         use wayland_client::Proxy;
@@ -130,12 +132,12 @@ pub mod proxy {
 
     use crate::*;
 
-    pub(crate) struct InnerProxy<T> {
+    pub(crate) struct EventProxyData<T> {
         pub(crate) sender: AsyncSender<Event<T>>,
         pub(crate) receiver: AsyncReceiver<Event<T>>,
     }
 
-    impl<T> InnerProxy<T> {
+    impl<T> EventProxyData<T> {
 
         pub fn new() -> Self {
             let (sender, receiver) = async_channel::unbounded();
@@ -145,9 +147,9 @@ pub mod proxy {
         pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
             Ok(self.receiver.recv().await.unwrap())
         }
-        
+
     }
-    
+
     pub struct EventProxy<T: Send> {
         sender: AsyncSender<Event<T>>,
     }
@@ -166,8 +168,8 @@ pub mod proxy {
 
         #[track_caller]
         pub fn send(&self, event: Event<T>) {
-            // the event loop exiting should be the last thing to happen
-            // anyways
+            // the event loop exiting should be the last thing to happen, so this
+            // isn't meant to fail
             self.sender.try_send(event)
                 .expect("event loop dead")
         }
@@ -186,9 +188,10 @@ pub mod signals {
 
     use crate::*;
 
+    /// Listens to SIGTERM and SIGINT to emit the apropriate events
     pub(crate) struct SignalListener {
         #[cfg(feature = "signals")]
-        signals: async_signals::Signals, // listens to sigterm and emits a quit event
+        signals: async_signals::Signals,
     }
 
     impl SignalListener {
@@ -205,7 +208,7 @@ pub mod signals {
                 #[cfg(feature = "signals")]
                 signals
             })
-            
+
         }
 
         pub async fn next<T>(&mut self) -> Result<Event<T>, EvlError> {
@@ -223,10 +226,9 @@ pub mod signals {
             #[cfg(not(feature = "signals"))]
             future::pending().await
 
-            
-        }
-        
-    }
-    
-}
 
+        }
+
+    }
+
+}
