@@ -154,7 +154,7 @@ pub struct Shape { // TODO: make this behave more similar to CurvePoint
 impl Shape {
 
     #[track_caller]
-    pub fn singular(polygon: Range<i16>, instance: u16) -> Self {
+    pub fn new_singular(polygon: Range<i16>, instance: u16) -> Self {
         debug_assert!(polygon.start >= 0 && polygon.end > 0); // TODO: we have to alow "empty" shapes (where polygon.end == 0), but rn we dont!! which is confusing for users (0..1 is not empty!)
         Self {
             polygon,
@@ -163,7 +163,7 @@ impl Shape {
     }
 
     #[track_caller]
-    pub fn instanced(polygon: Range<i16>, instances: Range<u16>) -> Self {
+    pub fn new_instanced(polygon: Range<i16>, instances: Range<u16>) -> Self {
         debug_assert!(polygon.start >= 0 && polygon.end > 0);
         debug_assert!(!instances.len() > 0);
         Self {
@@ -172,21 +172,21 @@ impl Shape {
         }
     }
 
-    pub fn polygon(&self) -> Range<i16> {
+    pub fn polygon_range(&self) -> Range<i16> {
         self.polygon.start.abs()
         .. self.polygon.end.abs()
     }
 
     /// The range of instances of this shape.
     /// Will include only one instance for singular shapes.
-    pub fn instances(&self) -> Range<u16> {
+    pub fn instances_range(&self) -> Range<u16> {
         self.instance.start
         .. self.instance.end
     }
 
     /// `true`: singular
     /// `false`: instanced
-    pub fn kind(&self) -> bool {
+    pub fn is_singular(&self) -> bool {
         // `start` can be zero, `end` cannot and
         // will always be positive or negative
         self.polygon.end > 0
@@ -401,7 +401,7 @@ pub struct ShapeRenderer {
     singular: SingularData,
     instanced: InstancedData,
     program: gl::LinkedProgram,
-    triangulator: triangulate::Preprocessor,
+    triangulator: triangulate::Triangulator,
 }
 
 impl ShapeRenderer {
@@ -419,7 +419,7 @@ impl ShapeRenderer {
         gl::attach_shader(&mut builder, frag);
         let program = gl::link_program(builder).unwrap(); // TODO: compile shaders to binary in a build.rs script
 
-        let triangulator = triangulate::Preprocessor::new();
+        let triangulator = triangulate::Triangulator::new();
 
         let singular = {
             let vdata = gl::gen_buffer(gl::BufferType::Array);

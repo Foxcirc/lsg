@@ -67,17 +67,17 @@ struct ShapeMetadata<'a> {
     pub size: Size,
 }
 
-pub struct Preprocessor { // TODO: rename the file too
-    lower: LowerPass,
-    trig: TrigPass,
+pub struct Triangulator {
+    lower: LoweringPass,
+    trig: TriangulationPass,
 }
 
-impl Preprocessor {
+impl Triangulator {
 
     pub fn process<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
-        let lowered = self.lower.process(geometry);
-        let result = self.trig.process(lowered, size);
+        // let lowered = self.lower.process_geometry(geometry);
+        let result = self.trig.process_all_shapes(geometry, size);
 
         result
 
@@ -85,29 +85,35 @@ impl Preprocessor {
 
     pub(crate) fn new() -> Self {
         Self {
-            lower: LowerPass::new(),
-            trig: TrigPass::new(),
+            lower: LoweringPass::new(),
+            trig: TriangulationPass::new(),
         }
     }
 
 }
 
-pub struct LowerPass {
-    lowered: CurveGeometry,
+/// This pass performs lowering of curve data so the later algorithms can be simpler.
+///
+/// More concretely this currently does following things:
+/// - Convert all cubic into quadratic beziér curves
+/// - Split up curve triangles that intersect with the shape
+pub struct LoweringPass {
+    output: CurveGeometry,
     errors: usize,
 }
-impl LowerPass {
+impl LoweringPass {
 
     fn new() -> Self {
         Self {
-            lowered: CurveGeometry::default(),
+            output: CurveGeometry::default(),
             errors: 0,
         }
     }
 
-    fn process<'s>(&'s mut self, geometry: &CurveGeometry) -> &'s CurveGeometry {
+    /// Returns a reference to the updated geometry.
+    fn process_geometry<'s>(&'s mut self, geometry: &CurveGeometry) -> &'s CurveGeometry {
 
-        self.lowered.clear();
+        self.output.clear();
 
         for shape in &geometry.shapes {
 
@@ -117,7 +123,7 @@ impl LowerPass {
             //     self.lowered..len(),
             // ];
 
-            match self.shape(shape, geometry) {
+            match self.process_one_shape(shape, geometry) {
                 Ok(..) => (),
                 // restore the valid geometry on error
                 Err(..) => {
@@ -129,33 +135,33 @@ impl LowerPass {
 
         }
 
-        &self.lowered
+        &self.output
 
     }
 
-    fn shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
+    fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
 
-        // this pass does two things:
-        // 1. (TODO) split cubic curves into multiple quadratic ones
-        // 2. split all curves that are being intersected by the shape into sub curves
-
-        let range = shape.polygon();
+        let range = shape.polygon_range();
         let points = geometry.points.get(range.start as usize .. range.end as usize)
-            .unwrap_or_default();
+            .unwrap_or_default(); // TODO: soft fail or hard error here?
 
         if points.len() < 3 { return Err(()) }
 
-        let range = shape.instances();
+        let range = shape.instances_range();
         let instances = geometry.instances.get(range.start as usize .. range.end as usize)
             .unwrap_or_default();
 
-        if instances.len() == 0 { return Err(()) }
+        // we just hand the instances through, as we only need to modify
+        // the actual shapes.
+        self.output.instances.extend_from_slice(instances);
 
-        let len = points.len();
-        let mut new_len = len;
+        let mut max_depth = 1;
+        let mut was_split = false;
 
         let mut idx = 0;
         loop {
+
+            let len = points.len();
 
             // get the point at idx and the four points "after" it in the polygon
             let [ia, ib, ic, id] = [
@@ -176,65 +182,123 @@ impl LowerPass {
 
                 increment = 2;
 
-                self.lowered.points.push(a);
-                self.lowered.points.push(b);
-                self.lowered.points.push(c);
+                // "generate" a triangle
 
-                // if points are intersecting the curve, we have
+                self.output.points.push(a);
+                self.output.points.push(b);
+                self.output.points.push(c);
+
+                // if points are intersecting the curve triangle, we have
                 // to split up the triangle to avoid artifacts
 
-                let mut max_depth = 1;
+                // the triangle and then its sub-triangles are tested
+                // recursively if they are still intersecting.
+                // this is done in a somewhat cumbersome way to make it
+                // possible to preallocate output space on the gpu
 
-                for point in points.iter() {
-                    if ![a, b, c].contains(point) &&
-                        TrigPass::triangle_intersects_point([a, b, c], *point) {
+                while was_split {
 
-                        // find the correct sub curve
-                        'subs: for current_depth in 0..max_depth {
+                    was_split = false;
+                    let len = self.output.points.len();
 
-                            let points_len = self.lowered.points.len();
-                            let sub_triangle = &mut self.lowered.points[points_len - 3 * (current_depth + 1) .. points_len - 3 * current_depth];
-                            let [sa, sb, sc] = sub_triangle.try_into().expect("get sub triangle");
+                    // iterate through the already generated triangles
+                    for current_depth in 0..max_depth {
 
-                            if TrigPass::triangle_intersects_point([sa, sb, sc], *point) {
+                        let [isa, isb, isc] = [
+                            len - max_depth * 3 + current_depth * 3,
+                            len - max_depth * 3 + current_depth * 3 + 1,
+                            len - max_depth * 3 + current_depth * 3 + 2
+                        ];
 
-                                let split_at = TrigPass::was_it_this_easy_all_along([sa.point(), sb.point(), sc.point()], point.point());
-                                dbg!(split_at);
-                                // let split_at = TrigPass::closest_point_on_curve([sa.point(), sb.point(), sc.point()], point.point());
-                                // let split_at = TrigPass::approx_split_point([sa.point(), sb.point(), sc.point()], point.point());
-                                let curves = TrigPass::split_quadratic([sa.point(), sb.point(), sc.point()], split_at - 0.01);
+                        println!("{isa}, {:?}", self.output.points);
 
-                                // insert the first curve by replacing the original sub triangle
-                                sub_triangle[0] = CurvePoint::base(curves[0][0].x as i16, curves[0][0].y as i16);
-                                sub_triangle[1] = CurvePoint::ctrl(curves[0][1].x as i16, curves[0][1].y as i16);
-                                sub_triangle[2] = CurvePoint::base(curves[0][2].x as i16, curves[0][2].y as i16);
+                        let [sa, sb, sc] = [self.output.points[isa], self.output.points[isb], self.output.points[isc]];
 
-                                // insert the second curve at the end
-                                self.lowered.points.push(CurvePoint::base(curves[1][0].x as i16, curves[1][0].y as i16));
-                                self.lowered.points.push(CurvePoint::ctrl(curves[1][1].x as i16, curves[1][1].y as i16));
-                                self.lowered.points.push(CurvePoint::base(curves[1][2].x as i16, curves[1][2].y as i16));
+                        // check if any point intersects
+                        for point in points.iter() {
+                            if ![sa, sb, sc].contains(point) &&
+                                TriangulationPass::triangle_intersects_point([sa, sb, sc], *point) {
 
-                                new_len += 3; // three new points were added
+                                println!("intersecting...");
+
+                                was_split = true;
                                 max_depth += 1;
 
-                                break 'subs
+                                // split the curve triangle
+                                let split_at = TriangulationPass::was_it_this_easy_all_along([sa.point(), sb.point(), sc.point()], point.point());
+                                let [first, second] = TriangulationPass::split_quadratic([sa.point(), sb.point(), sc.point()], split_at - 0.01); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
+
+                                // insert the first curve triangle by replacing the original sub triangle
+                                self.output.points[isa] = CurvePoint::base(first[0].x as i16, first[0].y as i16);
+                                self.output.points[isb] = CurvePoint::ctrl(first[1].x as i16, first[1].y as i16);
+                                self.output.points[isc] = CurvePoint::base(first[2].x as i16, first[2].y as i16);
+
+                                // insert the second curve triangle at the end
+                                self.output.points.push(CurvePoint::base(second[0].x as i16, second[0].y as i16));
+                                self.output.points.push(CurvePoint::ctrl(second[1].x as i16, second[1].y as i16));
+                                self.output.points.push(CurvePoint::base(second[2].x as i16, second[2].y as i16));
 
                             }
-
-
                         }
 
                     }
+
                 }
 
-                self.lowered.points.pop(); // pop the last point since it will be addad again next iteration
+                println!("split done.");
+
+                // for point in points.iter() {
+                //     if ![a, b, c].contains(point) &&
+                //         TrigPass::triangle_intersects_point([a, b, c], *point) {
+
+                //         // find the correct sub curve
+                //         'subs: for current_depth in 0..max_depth {
+
+                //             let points_len = self.lowered.points.len();
+                //             let sub_triangle = &mut self.lowered.points[points_len - 3 * (current_depth + 1) .. points_len - 3 * current_depth];
+                //             let [sa, sb, sc] = sub_triangle.try_into().expect("get sub triangle");
+
+                //             if TrigPass::triangle_intersects_point([sa, sb, sc], *point) {
+
+                //                 let split_at = TrigPass::was_it_this_easy_all_along([sa.point(), sb.point(), sc.point()], point.point());
+                //                 // dbg!(split_at);
+                //                 // let split_at = TrigPass::closest_point_on_curve([sa.point(), sb.point(), sc.point()], point.point());
+                //                 // let split_at = TrigPass::approx_split_point([sa.point(), sb.point(), sc.point()], point.point());
+                //                 let curves = TrigPass::split_quadratic([sa.point(), sb.point(), sc.point()], split_at - 0.01);
+
+                //                 // insert the first curve by replacing the original sub triangle
+                //                 sub_triangle[0] = CurvePoint::base(curves[0][0].x as i16, curves[0][0].y as i16);
+                //                 sub_triangle[1] = CurvePoint::ctrl(curves[0][1].x as i16, curves[0][1].y as i16);
+                //                 sub_triangle[2] = CurvePoint::base(curves[0][2].x as i16, curves[0][2].y as i16);
+
+                //                 // insert the second curve at the end
+                //                 self.lowered.points.push(CurvePoint::base(curves[1][0].x as i16, curves[1][0].y as i16));
+                //                 self.lowered.points.push(CurvePoint::ctrl(curves[1][1].x as i16, curves[1][1].y as i16));
+                //                 self.lowered.points.push(CurvePoint::base(curves[1][2].x as i16, curves[1][2].y as i16));
+
+                //                 new_len += 3; // three new points were added
+                //                 max_depth += 1;
+
+                //                 break 'subs
+
+                //             }
+
+
+                //         }
+
+                //     }
+                // }
+
+                // self.output.points.pop(); // pop the last point since it will be addad again next iteration
 
             } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
                 todo!("cubic curves are not yes implemented");
+                // TODO: Dont forget to also split up intersected curve trigs here
             } else if !a.kind() && !b.kind() && !c.kind() {
                 todo!("error: three contol points in a row");
             } else {
-                self.lowered.points.push(a);
+                // normal "line"
+                self.output.points.push(a);
                 increment = 1;
             }
 
@@ -245,15 +309,16 @@ impl LowerPass {
 
         }
 
-        let start = shape.polygon().start;
-        let end = start + new_len as i16;
+        // generate the output shape, with updated indices
 
-        match shape.kind() {
-            true  => self.lowered.shapes.push(Shape::singular(start..end, shape.instances().start)),
-            false => self.lowered.shapes.push(Shape::instanced(start..end, shape.instances())),
+        let start = shape.polygon_range().start;
+        let end = start + (max_depth * 3) as i16;
+
+        match shape.is_singular() {
+            true  => self.output.shapes.push(Shape::new_singular(start..end, shape.instances_range().start)),
+            false => self.output.shapes.push(Shape::new_instanced(start..end, shape.instances_range())),
+            //                                                                 ^^^^ just hand the instances indices through
         }
-
-        self.lowered.instances.extend_from_slice(instances);
 
         Ok(())
 
@@ -262,15 +327,7 @@ impl LowerPass {
 
 }
 
-#[test]
-fn split_quadratic_curve() {
-
-    let test_case = TrigPass::was_it_this_easy_all_along([Point::new(0., 0.), Point::new(1., 2.), Point::new(2., 0.)], Point::new(2., 2.));
-    dbg!(test_case);
-
-}
-
-pub struct TrigPass { // TODO: make pub(crate)
+pub struct TriangulationPass { // TODO: make pub(crate)
     // state during triangulation
     ears: BitVec<usize>,
     removed: BitVec<usize>,
@@ -280,7 +337,7 @@ pub struct TrigPass { // TODO: make pub(crate)
     errors: usize,
 }
 
-impl TrigPass {
+impl TriangulationPass {
 
     pub fn new() -> Self {
         Self {
@@ -297,10 +354,10 @@ impl TrigPass {
     /// # Processing Steps
     /// - Convert coordinates to OpenGl screen space.
     /// - Triangulate the polygon using ear-clipping, with some restrictions.
-    /// - Output extra triangles for the curved parts. TODO: remove all the doc comments. they aren useful and mostly wrong anyways
-    pub fn process<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
+    /// - Output extra triangles for the curved parts. TODO: check all the doc comments. rn they arent useful and mostly wrong anyways
+    pub fn process_all_shapes<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
-        // reset some state
+        // reset the state
         self.singular.vertices.clear();
         self.instanced.vertices.clear();
         self.instanced.instances.clear();
@@ -317,7 +374,7 @@ impl TrigPass {
             ];
 
             // generate the mesh now
-            match self.shape(shape, geometry, size) {
+            match self.process_one_shape(shape, geometry, size) {
                 Ok(..) => (),
                 // restore the valid geometry on error
                 Err(..) => {
@@ -342,9 +399,9 @@ impl TrigPass {
 
     }
 
-    fn shape(&mut self, shape: &Shape, geometry: &CurveGeometry, size: Size) -> Result<(), ()> {
+    fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry, size: Size) -> Result<(), ()> {
 
-        let range = shape.polygon();
+        let range = shape.polygon_range();
         let points = geometry.points.get(range.start as usize .. range.end as usize)
             .unwrap_or_default();
 
@@ -353,7 +410,7 @@ impl TrigPass {
             return Err(())
         }
 
-        let range = shape.instances();
+        let range = shape.instances_range();
         let instances = geometry.instances.get(range.start as usize .. range.end as usize)
             .unwrap_or_default();
 
@@ -366,7 +423,7 @@ impl TrigPass {
         let start = self.instanced.vertices.len();
 
         // this determines which kind of vertices are generated
-        let kind = match shape.kind() {
+        let kind = match shape.is_singular() {
             true => ShapeKind::Singular(&instances[0]),
             false => ShapeKind::Instanced,
         };
@@ -379,20 +436,20 @@ impl TrigPass {
         self.ears.resize(points.len() as u64, false);
         self.removed.resize(points.len() as u64, false);
 
-        Self::curves(points, meta, CurvesState {
+        Self::triangulate_curves(points, meta, CurvesState {
             removed: &mut self.removed,
-            out: if shape.kind() { &mut self.singular.vertices }
+            out: if shape.is_singular() { &mut self.singular.vertices }
                  else { &mut self.instanced.vertices },
         })?;
 
-        Self::triangulate(points, meta, TriangulationState {
+        Self::triangulate_body(points, meta, TriangulationState {
             removed: &mut self.removed,
             ears: &mut self.ears,
-            out: if shape.kind() { &mut self.singular.vertices }
+            out: if shape.is_singular() { &mut self.singular.vertices }
                  else { &mut self.instanced.vertices },
         })?;
 
-        if let ShapeKind::Instanced = kind {
+        if !shape.is_singular() {
             for it in instances {
                 self.instanced.instances.extend([
                     it.pos[0], it.pos[1], it.pos[2], // offsetX, offsetY, z
@@ -413,7 +470,7 @@ impl TrigPass {
     /// Calculate patch-on triangles that should be rendered as curves.
     ///
     /// Accepts window- and returns normalized device coordinates.
-    fn curves(points: &[CurvePoint], meta: ShapeMetadata, mut state: CurvesState) -> Result<(), ()> {
+    fn triangulate_curves(points: &[CurvePoint], meta: ShapeMetadata, mut state: CurvesState) -> Result<(), ()> {
 
         let len = points.len();
         debug_assert!(len >= 3);
@@ -583,7 +640,7 @@ impl TrigPass {
     /// The algorithms is purposely written in a way that is similar to the
     /// compute shader implementation.
     // TODO(DOC): link to docs on the triangulation compute shader
-    fn triangulate(points: &[CurvePoint], meta: ShapeMetadata, mut state: TriangulationState) -> Result<(), ()> {
+    fn triangulate_body(points: &[CurvePoint], meta: ShapeMetadata, mut state: TriangulationState) -> Result<(), ()> {
 
         let len = points.len();
         debug_assert!(len >= 3);
@@ -928,7 +985,7 @@ impl TrigPass {
             }
         }
 
-        dbg!(result - 0.4)
+        result - 0.4
 
     }
 
@@ -957,7 +1014,7 @@ impl TrigPass {
         // let C = 2.0*(p.x-a.x)*b.y-2.0*(p.y-a.y)*b.x;
 
         let discr = B.powi(2) - 4.0*A*C;
-        dbg!(-B + (discr).sqrt()) / (2.0*A)
+        (-B + (discr).sqrt()) / (2.0*A)
 
 
     }
@@ -972,16 +1029,12 @@ impl TrigPass {
         let B = curve[0].x - p.x;
         let C = curve[0].y * p.x - curve[0].x * p.y;
 
-        dbg!(A, B, C);
-
         // coefficients for the line-curve intersection quadratic eqation
         // implicit form: A*x(t) + B*y(t) + C = 0
         // final equation: a*t² + b*t + c = 0
         let a = A * (curve[2].x - 2.0*curve[1].x + curve[0].x) + B * (curve[2].y - 2.0*curve[1].y + curve[0].y);
         let b = A * (2.0*curve[1].x - 2.0*curve[0].x) + B * (2.0*curve[1].y - 2.0*curve[0].y);
         let c = A * curve[0].x + B * curve[0].y + C;
-
-        dbg!(a, b, c);
 
         // find the roots
 
@@ -990,8 +1043,6 @@ impl TrigPass {
 
         let root1 = (-b + inner) / (2.0*a);
         let root2 = (-b - inner) / (2.0*a);
-
-        println!("root1: {root1}, root2: {root2}");
 
         root1
 
@@ -1136,51 +1187,51 @@ fn test_one_real_root() {
     }
 
     // Case: t^3 - 6t^2 + 11t - 6 = 0 (root at t = 1)
-    let roots = TrigPass::solve_distance_derivative(1.0, -6.0, 11.0, -6.0); // TODO: move all out of TrigPass
+    let roots = TriangulationPass::solve_distance_derivative(1.0, -6.0, 11.0, -6.0); // TODO: move all out of TrigPass
     assert!(approx_equal(roots[0], 3.0, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0);
 
     // Case: t^3 + t^2 + t + 1 = 0 (root at t = -1)
-    let roots = TrigPass::solve_distance_derivative(1.0, 1.0, 1.0, 1.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, 1.0, 1.0, 1.0);
     assert!(approx_equal(roots[0], -1.0, 1e-4), "the result was {:?} (first root should be {})", roots, -1.0);
 
     // Case: t^3 - 3t^2 + 3t - 1 = 0 (root at t = 1)
-    let roots = TrigPass::solve_distance_derivative(1.0, -3.0, 3.0, -1.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, -3.0, 3.0, -1.0);
     assert!(approx_equal(roots[0], 1.0, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0);
 
     // Case: t^3 + 2t^2 + 3t + 4 = 0 (root near t = -1.6506)
-    let roots = TrigPass::solve_distance_derivative(1.0, 2.0, 3.0, 4.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, 2.0, 3.0, 4.0);
     assert!(approx_equal(roots[0], -1.6506, 1e-4), "the result was {:?} (first root should be {})", roots, -1.6506);
 
     // Case: t^3 + 3t^2 + 3t + 1 = 0 (root near t = 1)
-    let roots = TrigPass::solve_distance_derivative(1.0, 3.0, 3.0, 1.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, 3.0, 3.0, 1.0);
     assert!(approx_equal(roots[0], 1.0, 1e-4), "the result was {:?} (first root should be {})", roots, -0.8794);
 
     // Case: t^3 - 4t^2 + 5t - 2 = 0 (root near t = 0.5858)
-    let roots = TrigPass::solve_distance_derivative(1.0, -4.0, 5.0, -2.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, -4.0, 5.0, -2.0);
     assert!(approx_equal(roots[0], 0.5858, 1e-4), "the result was {:?} (first root should be {})", roots, 0.5858);
 
     // Case: t^3 - 2t^2 + t - 2 = 0 (root near t = 1.8794)
-    let roots = TrigPass::solve_distance_derivative(1.0, -2.0, 1.0, -2.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, -2.0, 1.0, -2.0);
     assert!(approx_equal(roots[0], 1.8794, 1e-4), "the result was {:?} (first root should be {})", roots, 1.8794);
 
     // Case: t^3 - 5t^2 + 8t - 4 = 0 (root near t = 2.1468)
-    let roots = TrigPass::solve_distance_derivative(1.0, -5.0, 8.0, -4.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, -5.0, 8.0, -4.0);
     assert!(approx_equal(roots[0], 2.1468, 1e-4), "the result was {:?} (first root should be {})", roots, 2.1468);
 
     // Case: t^3 + 6t^2 + 9t + 4 = 0 (root near t = -0.6604)
-    let roots = TrigPass::solve_distance_derivative(1.0, 6.0, 9.0, 4.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, 6.0, 9.0, 4.0);
     assert!(approx_equal(roots[0], -0.6604, 1e-4), "the result was {:?} (first root should be {})", roots, -0.6604);
 
     // Case: t^3 + t^2 - 3t - 2 = 0 (root near t = 1.0000)
-    let roots = TrigPass::solve_distance_derivative(1.0, 1.0, -3.0, -2.0);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, 1.0, -3.0, -2.0);
     assert!(approx_equal(roots[0], 1.0000, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0000);
 
     // Case: t^3 - 1.5t^2 + 0.75t - 0.25 = 0 (root near t = 0.5)
-    let roots = TrigPass::solve_distance_derivative(1.0, -1.5, 0.75, -0.25);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, -1.5, 0.75, -0.25);
     assert!(approx_equal(roots[0], 0.5, 1e-4), "the result was {:?} (first root should be {})", roots, 0.5);
 
     // Case: t^3 + 0.5t^2 + 0.5t + 0.25 = 0 (root near t = -0.5)
-    let roots = TrigPass::solve_distance_derivative(1.0, 0.5, 0.5, 0.25);
+    let roots = TriangulationPass::solve_distance_derivative(1.0, 0.5, 0.5, 0.25);
     assert!(approx_equal(roots[0], -0.5, 1e-4), "the result was {:?} (first root should be {})", roots, -0.5);
 
 }
@@ -1203,17 +1254,17 @@ fn neighbours() {
     bits.resize(10, false);
 
     assert_eq!(
-        TrigPass::neighbours(&bits, 4),
+        TriangulationPass::neighbours(&bits, 4),
         [3, 4, 5]
     );
 
     assert_eq!(
-        TrigPass::neighbours(&bits, 0),
+        TriangulationPass::neighbours(&bits, 0),
         [9, 0, 1]
     );
 
     assert_eq!(
-        TrigPass::neighbours(&bits, 9),
+        TriangulationPass::neighbours(&bits, 9),
         [8, 9, 0]
     );
 

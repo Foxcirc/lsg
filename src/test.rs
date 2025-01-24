@@ -1,4 +1,6 @@
 
+//! Interactive test to try out features that are currently being worked on.
+
 use futures_lite::future::block_on;
 use render::{CurvePoint, Instance, Shape, PerWindow};
 use tracing::debug;
@@ -6,11 +8,9 @@ use tracing::debug;
 use desktop::*;
 use common::*;
 
-// TODO: this test should only test the desktop event handling etc.
-// TODO: rendering, triangulating and more should be a different test
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    EventLoop::run(app, "lsg/test")?
+#[test]
+fn interactive() -> Result<(), Box<dyn std::error::Error>> {
+    EventLoop::run(app, "interactive-test")?
 }
 
 fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
@@ -23,40 +23,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    let size = Size { w: 500 , h: 500 };
-    let mut window = Window::new(&mut evl, size);
-
-    // let mut ctx = Context::new(&egl, &*window, size, None)?; // create an egl context for our window
-    // ctx.bind()?; // make the context current
+    let mut window = Window::new(&mut evl, Size::new(500, 500));
 
     window.set_title("lsg/test");
     window.set_transparency(true);
     window.set_input_mode(&mut evl, InputMode::SingleKey); // TODO: Always emit both events!!! Remove set_input_mode
-
-    // let points: &mut [[i32; 2]] = &mut [
-    //     [0, 0],
-    //     [10, 0],
-    //     [15, 5],
-    //     [20, 10],
-    //     [15, 15],
-    //     [10, 20],
-    //     [0, 20],
-    // ];
-
-    // let points: &mut [Vertex] = &mut [
-    //     Vertex { x: 0, y:  0 },
-    //     Vertex { x: 20, y:  0 },
-    //     Vertex { x: 20, y:  20 },
-    //     Vertex { x: 0, y:  20 },
-    //     // inner
-    //     Vertex { x: 5, y:  15 },
-    //     Vertex { x: 15, y:  15 },
-    //     Vertex { x: 15, y:  5 },
-    //     Vertex { x: 5, y:  5 },
-    //     // path back
-    //     Vertex { x: 5, y:  15 },
-    //     Vertex { x: 0, y:  20 },
-    // ];
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
     let mut perwindow = PerWindow::new(&renderer, &*window, Size::new(500, 500)).unwrap();
@@ -67,7 +38,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         CurvePoint::base(500, 500),
         CurvePoint::base(500, 0),
     ]);
-    renderer.shape.geometry.shapes.push(Shape::singular(0..4, 0));
+    renderer.shape.geometry.shapes.push(Shape::new_singular(0..4, 0));
     renderer.shape.geometry.instances.push(Instance {
         pos: [0.0, 0.0, 0.5],
         texture: [0.1, 0.1, 0.14],
@@ -85,7 +56,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     renderer.shape.geometry.points.push(CurvePoint::ctrl(240, 400));
     renderer.shape.geometry.points.push(CurvePoint::base(240, 200));
 
-    renderer.shape.geometry.shapes.push(Shape::instanced(4..7, 1..3));
+    renderer.shape.geometry.shapes.push(Shape::new_instanced(4..7, 1..3));
     renderer.shape.geometry.instances.extend([
         Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
@@ -113,7 +84,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::Redraw => {
                         window.pre_present_notify();
                         renderer.draw(&perwindow).ok();
-                        // window.redraw();
+                        window.redraw();
                     },
 
                     WindowEvent::Resize { size, .. } => {
@@ -144,7 +115,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         if let Some(shape) = renderer.shape.geometry.shapes.last_mut() {
-                            match shape.kind() {
+                            match shape.is_singular() {
                                 true => shape.polygon.end += 1,
                                 false => shape.polygon.end -= 1,
                             }
@@ -161,7 +132,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         if let Some(shape) = renderer.shape.geometry.shapes.last_mut() {
-                            match shape.kind() {
+                            match shape.is_singular() {
                                 true => shape.polygon.end += 1,
                                 false => shape.polygon.end -= 1,
                             }
