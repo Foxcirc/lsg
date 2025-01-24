@@ -101,7 +101,6 @@ struct KeyboardData {
     repeat_key: u32, // raw key
     repeat_rate: Duration,
     repeat_delay: Duration,
-    input_modes: HashMap<WindowId, InputMode>, // per-window input mode
 }
 
 impl KeyboardData {
@@ -115,7 +114,6 @@ impl KeyboardData {
             repeat_key: 0,
             repeat_rate: Duration::from_millis(60),
             repeat_delay: Duration::from_millis(450),
-            input_modes: HashMap::new(),
         })
     }
 }
@@ -154,15 +152,15 @@ impl PressedKeys {
         }
     }
 
-    pub fn event(&mut self, key: xkb::Keycode, state: KeyState) {
+    pub fn update_key_state(&mut self, key: xkb::Keycode, state: KeyState) {
         let pressed = state == KeyState::Pressed;
         let idx = key.raw() - self.min;
         self.keys.set(idx as u64, pressed);
     }
 
-    pub fn current(&self) -> Vec<xkb::Keycode> {
+    pub fn currently_pressed(&self) -> Vec<xkb::Keycode> {
 
-        let mut down = Vec::new(); // we can't return anything that borrows self TODO: update this, maybe use a generator
+        let mut down = Vec::new(); // we can't return anything that borrows self right now, TODO: still somehow update this, maybe use a generator
 
         for idx in 0..self.keys.len() {
             if self.keys.get(idx) == true {
@@ -476,7 +474,14 @@ impl<T: 'static + Send> BaseWindow<T> {
     }
 
     #[track_caller]
-    pub fn redraw(&self) {
+    /// Wait for vsync and then automatically emit a [`Redraw`](WindowEvent::Redraw).
+    ///
+    /// Call this after you have rendered to a window to shedule an automatic redraw when
+    /// the system is ready for the next frame. Usually this behaves like vsync but the system
+    /// may decide to throttle the fps of your application to conserve power.
+    ///
+    /// This is the preferred way to continously rerender your application.
+    pub fn redraw_with_vsync(&self) {
         let mut guard = self.shared.lock().unwrap();
         // if guard.frame_callback_registered {
             // we will receive the callback and then redraw with vsync
@@ -491,13 +496,13 @@ impl<T: 'static + Send> BaseWindow<T> {
     }
 
     pub fn pre_present_notify(&self) {
-        // note: it seems you have request the frame callback before swapping buffers
+        // note: it seems you have to request the frame callback before swapping buffers
         //       otherwise the callback will never fire because the compositor thinks the content didn't change
         let mut guard = self.shared.lock().unwrap();
         if !guard.frame_callback_registered {
             guard.frame_callback_registered = true;
             guard.already_got_redraw_event = false; // reset it here, because this must be invoked after a frame event was received
-            self.wl_surface.frame(&self.qh, Arc::clone(&self.shared));
+            self.wl_surface.frame(&self.qh, Arc::clone(&self.shared)); // TODO: every time an arc is cloned rn
             self.wl_surface.commit();
         }
     }
@@ -601,13 +606,6 @@ impl<T: 'static + Send> Window<T> {
     }
 
     pub fn destroy(self) {}
-
-    pub fn set_input_mode(&mut self, evl: &mut EventLoop<T>, mode: InputMode) {
-        // TODO: this is not a good approach, instead we should always emit both types of events
-        //       for example it would not be possible to listen on CTRL when typing into a text box
-        evl.wayland.state.keyboard_data.input_modes.
-            insert(self.base.id, mode);
-    }
 
     pub fn set_decorations(&mut self, value: bool) {
         let mode = if value { ZxdgDecorationMode::ServerSide } else { ZxdgDecorationMode::ClientSide };
@@ -2085,7 +2083,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                     evl.events.push(Event::Window { id, event: WindowEvent::Leave });
 
                     // emit a synthetic key-up event for all keys that are still pressed
-                    for key in keymap_specific.pressed_keys.current() {
+                    for key in keymap_specific.pressed_keys.currently_pressed() {
                         process_key_event(evl, key.raw(), Direction::Up, Source::Event);
                     }
 
@@ -2155,19 +2153,17 @@ enum Source {
     KeyRepeat,
 }
 
+// TODO: make this function not take a &mut WaylandState, but more like &mut KeyState
 fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32, dir: Direction, source: Source) {
 
-    // uses evl.keyboard_data and evl.events
+    // NOTE: uses evl.keyboard_data and evl.events
 
     let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific else { return };
 
     let surface = evl.keyboard_data.has_focus.as_ref().unwrap();
     let id = get_window_id(&surface);
 
-    let input_mode = evl.keyboard_data.input_modes.get(&id)
-        .unwrap_or(&InputMode::SingleKey);
-
-    let xkb_key = xkb::Keycode::new(raw_key + 8); // says the wayland docs
+    let xkb_key = xkb::Keycode::new(raw_key + 8); // "+8" says the wayland docs
 
     let repeat = source == Source::KeyRepeat;
 
@@ -2176,59 +2172,57 @@ fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32,
         let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
         let modifier = xkb_sym.is_modifier_key(); // if this key is a modifier key
 
-        match input_mode {
-            InputMode::SingleKey => {
-                let key = translate_xkb_sym(xkb_sym);
-                evl.events.push(Event::Window { id, event: WindowEvent::KeyDown { key, repeat } });
-            },
-            InputMode::Text => {
-                keymap_specific.compose_state.feed(xkb_sym);
-                match keymap_specific.compose_state.status() {
-                    xkb::Status::Nothing => {
-                        if let Some(chr) = xkb_sym.key_char() {
-                            evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
-                        } else {
-                            let key = translate_xkb_sym(xkb_sym);
-                            evl.events.push(Event::Window { id, event: WindowEvent::KeyDown { key, repeat } });
-                        }
-                    },
-                    xkb::Status::Composing => {
-                        // sadly we can't just get the string repr of a dead-char
-                        if let Some(chr) = translate_dead_to_normal_sym(xkb_sym).and_then(xkb::Keysym::key_char) {
-                            evl.events.push(Event::Window { id, event: WindowEvent::TextCompose { chr } })
-                        }
-                    },
-                    xkb::Status::Composed => {
-                        if let Some(text) = keymap_specific.compose_state.utf8() {
-                            for chr in text.chars() {
-                                evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
-                            }
-                        }
-                        keymap_specific.compose_state.reset();
-                    },
-                    xkb::Status::Cancelled => {},
+        // emit a generic key down event
+        let key = translate_xkb_sym(xkb_sym);
+        evl.events.push(Event::Window { id, event: WindowEvent::KeyDown { key, repeat } });
+
+        // turn this key into utf8 text and emit text input events
+        keymap_specific.compose_state.feed(xkb_sym);
+        match keymap_specific.compose_state.status() {
+            xkb::Status::Nothing => {
+                if let Some(chr) = xkb_sym.key_char() {
+                    evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
                 }
+            },
+            xkb::Status::Composing => {
+                // sadly we can't just get the string repr of a dead-char
+                if let Some(chr) = translate_dead_to_normal_sym(xkb_sym).and_then(xkb::Keysym::key_char) {
+                    evl.events.push(Event::Window { id, event: WindowEvent::TextCompose { chr } })
+                }
+            },
+            xkb::Status::Composed => {
+                if let Some(text) = keymap_specific.compose_state.utf8() {
+                    for chr in text.chars() {
+                        evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
+                    }
+                }
+                keymap_specific.compose_state.reset();
+            },
+            xkb::Status::Cancelled => {
+                // order is important, so that the cancel event is received first
+                if let Some(chr) = xkb_sym.key_char() {
+                    evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
+                }
+                evl.events.push(Event::Window { id, event: WindowEvent::TextComposeCancel });
+            },
             }
-        }
 
-        if !modifier {
+        // implement key repeat
+        // only re-arm if this was NOT called from a repeated key event
+        if !modifier && source != Source::KeyRepeat {
 
-            // only re-arm if this was NOT called from a repeated key event
-            if source != Source::KeyRepeat {
+            evl.keyboard_data.repeat_key = raw_key;
 
-                evl.keyboard_data.repeat_key = raw_key;
+            // arm key-repeat timer with the correct delay and repeat rate
+            evl.keyboard_data.repeat_timer.set_interval_at(
+                Instant::now() + evl.keyboard_data.repeat_delay,
+                evl.keyboard_data.repeat_rate
+            );
 
-                // arm key-repeat timer with the correct delay and repeat rate
-                evl.keyboard_data.repeat_timer.set_interval_at(
-                    Instant::now() + evl.keyboard_data.repeat_delay,
-                    evl.keyboard_data.repeat_rate
-                );
+            // update the key state
+            keymap_specific.pressed_keys.update_key_state(xkb_key, KeyState::Pressed);
 
-                // update the key state
-                keymap_specific.pressed_keys.event(xkb_key, KeyState::Pressed);
-
-            }
-        }
+    }
 
     } else {
 
@@ -2236,13 +2230,11 @@ fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32,
         evl.keyboard_data.repeat_timer.set_after(Duration::MAX);
 
         // update the key state
-       keymap_specific.pressed_keys.event(xkb_key, KeyState::Released);
+        keymap_specific.pressed_keys.update_key_state(xkb_key, KeyState::Released);
 
-        if let InputMode::SingleKey = input_mode {
-            let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
-            let key = translate_xkb_sym(xkb_sym);
-            evl.events.push(Event::Window { id, event: WindowEvent::KeyUp { key } });
-        }
+        let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
+        let key = translate_xkb_sym(xkb_sym);
+        evl.events.push(Event::Window { id, event: WindowEvent::KeyUp { key } });
 
     };
 

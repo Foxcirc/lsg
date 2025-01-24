@@ -46,6 +46,7 @@ pub enum WindowEvent {
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
     TextCompose { chr: char },
+    TextComposeCancel,
     TextInput { chr: char },
     /// A Drag-and-drop event.
     Dnd { event: DndEvent, sameapp: bool },
@@ -267,7 +268,7 @@ impl Default for DataKinds {
 pub struct ConfigureFlags {
     pub fullscreen: bool
 }
- 
+
 #[derive(Debug)]
 pub enum ScrollAxis {
     Vertical,
@@ -287,5 +288,5 @@ impl MonitorInfo {
     /// Trimmed conversion.
     pub fn fps(&self) -> u32 {
         self.refresh / 1000
-    }    
+    }
 }

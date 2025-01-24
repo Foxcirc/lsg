@@ -25,9 +25,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut window = Window::new(&mut evl, Size::new(500, 500));
 
-    window.set_title("lsg/test");
+    window.set_title("interactive-test");
     window.set_transparency(true);
-    window.set_input_mode(&mut evl, InputMode::SingleKey); // TODO: Always emit both events!!! Remove set_input_mode
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
     let mut perwindow = PerWindow::new(&renderer, &*window, Size::new(500, 500)).unwrap();
@@ -48,7 +47,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     window.pre_present_notify();
     renderer.draw(&perwindow).expect("first render should be error-free");
-    window.redraw();
+    window.redraw_with_vsync();
 
     // add movable point
 
@@ -84,11 +83,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::Redraw => {
                         window.pre_present_notify();
                         renderer.draw(&perwindow).ok();
-                        window.redraw();
                     },
 
                     WindowEvent::Resize { size, .. } => {
                         perwindow.resize(size);
+                        window.redraw_with_vsync();
                     },
 
                     WindowEvent::MouseMotion { x, y } => {
@@ -106,6 +105,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
 
+                        window.redraw_with_vsync();
+
                     },
 
                     WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
@@ -122,6 +123,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         debug!("add point {:?}", renderer.shape.geometry.points.last().unwrap());
+                        window.redraw_with_vsync();
+
                     },
 
 
@@ -139,6 +142,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         debug!("add control point {:?}", renderer.shape.geometry.points.last().unwrap());
+                        window.redraw_with_vsync();
 
                     },
 
