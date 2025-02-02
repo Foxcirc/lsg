@@ -62,7 +62,7 @@ use crate::*;
 // ### base event loop ###
 
 pub(crate) struct WaylandState<T: 'static + Send = ()> {
-    appid: String,
+    app_name: String,
     pub(crate) con: Async<wayland_client::Connection>,
     qh: QueueHandle<Self>,
     globals: WaylandGlobals,
@@ -202,7 +202,7 @@ impl<T: 'static + Send> Connection<T> {
         events.push(Event::Resume);
 
         let base = WaylandState {
-            appid: application.to_string(),
+            app_name: application.to_string(),
             con, qh, globals,
             events,
             mouse_data: MouseData::default(),
@@ -592,7 +592,7 @@ impl<T: 'static + Send> Window<T> {
             .map(|val| val.get_toplevel_decoration(&xdg_toplevel, &evb.qh, base.id));
 
         xdg_decoration.as_ref().map(|val| val.set_mode(ZxdgDecorationMode::ServerSide));
-        xdg_toplevel.set_app_id(evb.appid.clone());
+        xdg_toplevel.set_app_id(evb.app_name.clone());
 
         base.wl_surface.commit();
 
@@ -667,7 +667,7 @@ impl<T: 'static + Send> Window<T> {
 
             let token = activation_mgr.get_activation_token(&evb.qh, self.base.wl_surface.clone());
 
-            token.set_app_id(evb.appid.clone());
+            token.set_app_id(evb.app_name.clone());
             token.set_serial(evb.last_serial, &evb.globals.seat);
 
             if let Some(ref surface) = evb.keyboard_data.has_focus {
@@ -1137,7 +1137,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
         // layer-shell role
         let zwlr_surface = layer_shell_mgr.get_layer_surface(
-            &base.wl_surface, wl_output, wl_layer, evb.appid.clone(),
+            &base.wl_surface, wl_output, wl_layer, evb.app_name.clone(),
             &evb.qh, Arc::clone(&base.shared)
         );
 
@@ -2255,13 +2255,15 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
              WlPointerEvent::Enter { surface, surface_x, surface_y, serial } => {
 
                 let id = get_window_id(&surface);
+                let (x, y) = (surface_x.max(0.), surface_y.max(0.)); // must not be negative
 
                 evl.mouse_data.has_focus = Some(surface);
-                evl.mouse_data.x = surface_x;
-                evl.mouse_data.y = surface_y;
+                evl.mouse_data.x = x;
+                evl.mouse_data.y = y;
 
+                evl.events.push(Event::Window { id, event: WindowEvent::MouseEnter });
                 evl.events.push(Event::Window { id, event:
-                    WindowEvent::MouseMotion { x: surface_x, y: surface_y }
+                    WindowEvent::MouseMotion { x, y }
                 });
 
                 // set the apropriate per-window pointer style
@@ -2273,21 +2275,29 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
 
              },
 
-             WlPointerEvent::Leave { .. } => {
+             WlPointerEvent::Leave { surface, .. } => {
+
+                let id = get_window_id(&surface);
+
                 evl.mouse_data.has_focus = None;
+
+                evl.events.push(Event::Window { id, event: WindowEvent::MouseEnter });
+
              },
 
              WlPointerEvent::Motion { surface_x, surface_y, .. } => {
 
-                evl.mouse_data.x = surface_x;
-                evl.mouse_data.y = surface_y;
+                 let (x, y) = (surface_x.max(0.), surface_y.max(0.)); // must not be negative
+
+                evl.mouse_data.x = x;
+                evl.mouse_data.y = y;
 
                 let surface = evl.mouse_data.has_focus.as_ref().unwrap();
                 let id = get_window_id(&surface);
 
                 evl.events.push(Event::Window {
                     id,
-                    event: WindowEvent::MouseMotion { x: surface_x, y: surface_y }
+                    event: WindowEvent::MouseMotion { x, y }
                 });
 
              },

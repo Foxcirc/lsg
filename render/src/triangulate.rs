@@ -76,8 +76,8 @@ impl Triangulator {
 
     pub fn process<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
-        // let lowered = self.lower.process_geometry(geometry);
-        let result = self.trig.process_all_shapes(geometry, size);
+        let lowered = self.lower.process_geometry(geometry);
+        let result = self.trig.process_geometry(lowered, size);
 
         result
 
@@ -155,9 +155,7 @@ impl LoweringPass {
         // the actual shapes.
         self.output.instances.extend_from_slice(instances);
 
-        let mut max_depth = 1;
-        let mut was_split = false;
-
+        let mut output_len = points.len();
         let mut idx = 0;
         loop {
 
@@ -182,7 +180,8 @@ impl LoweringPass {
 
                 increment = 2;
 
-                // "generate" a triangle
+                // appends the points of the curve, which can be considered
+                // a "curve triangle" in this case
 
                 self.output.points.push(a);
                 self.output.points.push(b);
@@ -196,6 +195,8 @@ impl LoweringPass {
                 // this is done in a somewhat cumbersome way to make it
                 // possible to preallocate output space on the gpu
 
+                let mut max_depth = 1; // number of curve triangles that were generated
+                let mut was_split = true;
                 while was_split {
 
                     was_split = false;
@@ -205,21 +206,17 @@ impl LoweringPass {
                     for current_depth in 0..max_depth {
 
                         let [isa, isb, isc] = [
-                            len - max_depth * 3 + current_depth * 3,
-                            len - max_depth * 3 + current_depth * 3 + 1,
-                            len - max_depth * 3 + current_depth * 3 + 2
+                            len - max_depth * 3 + current_depth * 3,     // 1. point
+                            len - max_depth * 3 + current_depth * 3 + 1, // 2. point
+                            len - max_depth * 3 + current_depth * 3 + 2  // 3. point
                         ];
-
-                        println!("{isa}, {:?}", self.output.points);
 
                         let [sa, sb, sc] = [self.output.points[isa], self.output.points[isb], self.output.points[isc]];
 
-                        // check if any point intersects
+                        // check for any intersections
                         for point in points.iter() {
                             if ![sa, sb, sc].contains(point) &&
                                 TriangulationPass::triangle_intersects_point([sa, sb, sc], *point) {
-
-                                println!("intersecting...");
 
                                 was_split = true;
                                 max_depth += 1;
@@ -245,7 +242,8 @@ impl LoweringPass {
 
                 }
 
-                println!("split done.");
+                let new_points = (max_depth - 1) * 3;
+                output_len += new_points;
 
                 // for point in points.iter() {
                 //     if ![a, b, c].contains(point) &&
@@ -289,7 +287,7 @@ impl LoweringPass {
                 //     }
                 // }
 
-                // self.output.points.pop(); // pop the last point since it will be addad again next iteration
+                self.output.points.pop(); // pop the last point since it will be addad again next iteration
 
             } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
                 todo!("cubic curves are not yes implemented");
@@ -312,7 +310,7 @@ impl LoweringPass {
         // generate the output shape, with updated indices
 
         let start = shape.polygon_range().start;
-        let end = start + (max_depth * 3) as i16;
+        let end = start + output_len as i16;
 
         match shape.is_singular() {
             true  => self.output.shapes.push(Shape::new_singular(start..end, shape.instances_range().start)),
@@ -355,7 +353,7 @@ impl TriangulationPass {
     /// - Convert coordinates to OpenGl screen space.
     /// - Triangulate the polygon using ear-clipping, with some restrictions.
     /// - Output extra triangles for the curved parts. TODO: check all the doc comments. rn they arent useful and mostly wrong anyways
-    pub fn process_all_shapes<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
+    pub fn process_geometry<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
         // reset the state
         self.singular.vertices.clear();

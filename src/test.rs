@@ -25,7 +25,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut window = Window::new(&mut evl, Size::new(500, 500));
 
-    window.set_title("interactive-test");
+    window.set_title(evl.app_name());
     window.set_transparency(true);
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
@@ -87,12 +87,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Resize { size, .. } => {
                         perwindow.resize(size);
-                        window.redraw_with_vsync();
+                        window.pre_present_notify();
+                        renderer.draw(&perwindow).ok();
                     },
 
-                    WindowEvent::MouseMotion { x, y } => {
-
-                        continue;
+                    /* WindowEvent::MouseMotion { x, y } => {
 
                         if x < 0.0 || y < 0.0 { continue }; // TODO: sometimes -1.0, handle this by default
 
@@ -105,9 +104,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
 
-                        window.redraw_with_vsync();
+                        window.pre_present_notify();
+                        renderer.draw(&perwindow).ok();
 
-                    },
+                    }, */
 
                     WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
 
@@ -123,7 +123,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         debug!("add point {:?}", renderer.shape.geometry.points.last().unwrap());
-                        window.redraw_with_vsync();
+                        window.pre_present_notify();
+                        renderer.draw(&perwindow).ok();
 
                     },
 
@@ -142,7 +143,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         debug!("add control point {:?}", renderer.shape.geometry.points.last().unwrap());
-                        window.redraw_with_vsync();
+                        window.pre_present_notify();
+                        renderer.draw(&perwindow).ok();
 
                     },
 
@@ -183,7 +185,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         debug!("quitting...");
                         evl.quit();
                     },
-                    other => debug!("unhandeled window event '{:?}'", other),
+                    other => tracing::trace!("unhandeled window event '{:?}'", other),
 
                 },
 

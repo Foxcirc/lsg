@@ -24,17 +24,19 @@ pub struct EventLoop<T: 'static + Send = ()> {
     proxy: proxy::EventProxyData<T>,
     wayland: wayland::Connection<T>,
     signals: signals::SignalListener,
+    app_name: String,
     // dbus: dbus::Connection,
 }
 
 impl<T: 'static + Send> EventLoop<T> {
 
-    pub(crate) fn new(app: &str) -> Result<Self, EvlError> {
+    pub(crate) fn new(app_name: &str) -> Result<Self, EvlError> {
         Ok(Self {
             events: AwaitableVec::new(Vec::new()),
             proxy: proxy::EventProxyData::new(),
-            wayland: wayland::Connection::new(app)?,
+            wayland: wayland::Connection::new(app_name)?,
             signals: signals::SignalListener::new()?,
+            app_name: app_name.into(),
             // dbus: dbus::Connection::new(app)?,
         })
     }
@@ -65,6 +67,10 @@ impl<T: 'static + Send> EventLoop<T> {
         Ok(())
     }
 
+    pub fn app_name(&self) -> &str {
+        &self.app_name
+    }
+
     /// On linux, this is a no-op.
     pub fn on_main_thread<R>(&mut self, func: impl FnOnce() -> R) -> R {
         func() // on linux the event loop runs on the main thread
@@ -86,11 +92,6 @@ impl<T: 'static + Send> EventLoop<T> {
     // pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
         // self.dbus.send_notification(notif)
         // }
-
-    pub fn display(&self) -> *mut std::ffi::c_void {
-        use wayland_client::Proxy;
-        self.wayland.state.con.get_ref().display().id().as_ptr().cast()
-    }
 
 }
 

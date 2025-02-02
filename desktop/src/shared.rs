@@ -39,6 +39,8 @@ pub enum WindowEvent {
     Decorations { active: bool },
     Enter,
     Leave,
+    MouseEnter,
+    MouseLeave,
     MouseMotion { x: f64, y: f64 },
     MouseDown { x: f64, y: f64, button: MouseButton },
     MouseUp { x: f64, y: f64, button: MouseButton },
