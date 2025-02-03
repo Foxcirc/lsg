@@ -313,16 +313,25 @@ pub mod v2 {
         }
 
         /// Make this context current, and set the target surface.
-        pub fn bind<'d, S>(&self, surface: S) -> Result<(), EglError>
+        pub fn bind<'d, S>(&self, instance: &Instance, surface: S) -> Result<(), EglError>
           where S: Into<Option<&'d Surface>> {
 
             let it = surface.into();
+
             self.instance.lib.make_current(
                 self.instance.display,
                 it.map(|it| it.inner), // NOTE: it is an error to only specify one of the two (read/draw) surfaces
                 it.map(|it| it.inner),
                 Some(self.inner)
             )?;
+
+            if it.is_some() {
+                // set swap-interval to 0, because we never want to block waiting
+                // for a frame to be vsync-ed
+                // TODO: does doing this potentially every frame represent a significant performance penalty? sadly a context + surface has to be bound for this
+                instance.lib.swap_interval(instance.display, 0)?;
+            }
+
             Ok(())
 
         }

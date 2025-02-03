@@ -473,37 +473,44 @@ impl<T: 'static + Send> BaseWindow<T> {
         self.id
     }
 
-    #[track_caller]
-    /// Wait for vsync and then automatically emit a [`Redraw`](WindowEvent::Redraw).
-    ///
-    /// Call this after you have rendered to a window to shedule an automatic redraw when
-    /// the system is ready for the next frame. Usually this behaves like vsync but the system
-    /// may decide to throttle the fps of your application to conserve power.
-    ///
-    /// This is the preferred way to continously rerender your application.
-    pub fn redraw_with_vsync(&self) {
-        let mut guard = self.shared.lock().unwrap();
-        // if guard.frame_callback_registered {
-            // we will receive the callback and then redraw with vsync
-            guard.redraw_requested = true;
-        // } else {
-            // TODO: what happens if a configure event gets sent right after this? doooooom
-            // TODO: doom if called multiple times, we simply need to dedup redraw events in the evl
-            // let event = WindowEvent::Redraw;
-            // self.proxy.send(Event::Window { id: self.id, event });
-            // ahhhhhhh
-        // }
-    }
-
+    /// Notify the windowing system that you are going to draw to the window now.
+    /// This function is mandatory and you must call it, otherwise the window will behave weirdly.
     pub fn pre_present_notify(&self) {
-        // note: it seems you have to request the frame callback before swapping buffers
-        //       otherwise the callback will never fire because the compositor thinks the content didn't change
         let mut guard = self.shared.lock().unwrap();
-        if !guard.frame_callback_registered {
+        // we are now processing the redraw event, so we can receive another one later
+        // note: it is important that resetting this is not done inside the if-check below, since this might
+        //       happen when a frame callback is still in-flight due to a redraw being triggered by a configure event
+        //       that arrived before the frame callback completed, but we ALWAYS have to reset the variable
+        guard.already_got_redraw_event = false;
+        // you have to request the frame callback before swapping buffers.
+        // really, the frame callback will start counting from the moment the buffers are swapped
+        if !guard.frame_callback_registered { // make sure to only request a frame callback once
             guard.frame_callback_registered = true;
-            guard.already_got_redraw_event = false; // reset it here, because this must be invoked after a frame event was received
             self.wl_surface.frame(&self.qh, Arc::clone(&self.shared)); // TODO: every time an arc is cloned rn
             self.wl_surface.commit();
+        }
+    }
+
+    /// Tells the windowing systen to redraw the window.
+    ///
+    /// Don't forget to call [`pre_present_notify`](Self::pre_present_notify).
+    ///
+    /// The next redraw will automatically be throttled to align with the "desired"
+    /// framerate that may be chosen by the system. In most cases, this is the refresh rate of
+    /// the monitor.
+    ///
+    /// In practice this means you can call this function as often or as rarely as you want and
+    /// it will always generate at most one redraw event for every monitor frame.
+    pub fn redraw_with_vsync(&self, evl: &mut EventLoop<T>) {
+        let mut guard = self.shared.lock().unwrap();
+        if guard.frame_callback_registered {
+            // since a frame callback is currently in-flight which means we are wanting to redraw faster
+            // then the monitor refresh rate, we will wait for vsync
+            guard.redraw_requested = true;
+        } else if !guard.already_got_redraw_event {
+            // force-redraw, since we are apperently drawing slower then the monitor refresh rate
+            guard.already_got_redraw_event = true; // will be reset next frame by `pre_present_notify`.
+            evl.events.push(Event::Window { id: self.id, event: WindowEvent::Redraw });
         }
     }
 
@@ -535,10 +542,14 @@ struct WindowShared {
     new_width: u32,
     new_height: u32,
     flags: ConfigureFlags,
+    /// Used to check if a frame event was already requested.
     redraw_requested: bool,
+    /// Used to check if a frame callback is currently in-flight or if a redraw event
+    /// has to be "force generated".
     frame_callback_registered: bool,
-    already_got_redraw_event: bool, // TODO: rethink this logic and write it down somewhere
-    // need to access some wayland objects
+    /// This is set to `true` everytime a redraw event is finally pushed onto the event queue
+    /// and used to assure only a single redraw event will be generated each frame.
+    already_got_redraw_event: bool,
     frac_scale_data: Option<FracScaleData>,
 }
 
@@ -1911,7 +1922,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<W
     }
 }
 
-fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, guard: MutexGuard<WindowShared>, width: u32, height: u32) {
+fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, mut guard: MutexGuard<WindowShared>, width: u32, height: u32) {
 
     // update the window's viewport destination
     if let Some(ref frac_scale_data) = guard.frac_scale_data {
@@ -1924,7 +1935,8 @@ fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, guard: MutexG
         flags: guard.flags
     } });
 
-    if !guard.redraw_requested && !guard.already_got_redraw_event {
+    if !guard.already_got_redraw_event {
+        guard.already_got_redraw_event = true;
         evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
     }
 
@@ -1953,12 +1965,12 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
         _qh: &wayland_client::QueueHandle<Self>
     ) {
         let mut guard = shared.lock().unwrap();
-        if guard.redraw_requested {
-            guard.redraw_requested = false;
-            guard.frame_callback_registered = false;
-            guard.already_got_redraw_event = true; // prevent another redraw event from getting sent in case a Configure event arrives just after this
+        if !guard.already_got_redraw_event && guard.redraw_requested {
+            guard.already_got_redraw_event = true;
             evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
         }
+        guard.frame_callback_registered = false;
+        guard.redraw_requested = false;
     }
 }
 

@@ -45,9 +45,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     // initial render
 
-    window.pre_present_notify();
-    renderer.draw(&perwindow).expect("first render should be error-free");
-    window.redraw_with_vsync();
+    // window.pre_present_notify();
+    // renderer.draw(&perwindow).expect("first render should be error-free");
+    // window.redraw_with_vsync();
 
     // add movable point
 
@@ -81,14 +81,18 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Window { event, .. } => match event {
 
                     WindowEvent::Redraw => {
+                        // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected?
+                        println!("redrawing...");
                         window.pre_present_notify();
                         renderer.draw(&perwindow).ok();
+                        window.redraw_with_vsync(&mut evl);
+                        // evl.push_redraw_test(&window);
                     },
 
                     WindowEvent::Resize { size, .. } => {
                         perwindow.resize(size);
-                        window.pre_present_notify();
-                        renderer.draw(&perwindow).ok();
+                    //     window.pre_present_notify();
+                    //     renderer.draw(&perwindow).ok();
                     },
 
                     /* WindowEvent::MouseMotion { x, y } => {
@@ -185,6 +189,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         debug!("quitting...");
                         evl.quit();
                     },
+
                     other => tracing::trace!("unhandeled window event '{:?}'", other),
 
                 },

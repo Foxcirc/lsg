@@ -209,7 +209,7 @@ pub struct PerWindow {
 impl PerWindow {
 
     pub fn new<W: egl::IsSurface>(gl: &GlRenderer, window: &W, size: Size) -> Result<Self, RenderError> {
-        let surface = egl::v2::Surface::new(&gl.lib, &gl.config, window, size)?;
+        let surface = egl::v2::Surface::new(&gl.instance, &gl.config, window, size)?;
         Ok(Self { surface })
     }
 
@@ -220,7 +220,7 @@ impl PerWindow {
 }
 
 pub struct GlRenderer {
-    lib: egl::Instance,
+    instance: egl::Instance,
     ctx: egl::v2::Context,
     config: egl::v2::Config,
     pub shape: ShapeRenderer,
@@ -231,20 +231,20 @@ impl GlRenderer {
 
     pub fn new<D: egl::IsDisplay>(display: &D) -> Result<Self, RenderError> {
 
-        let lib = egl::Instance::new(display)?;
-        gl::load_with(|name| lib.get_proc_address(name))?;
+        let instance = egl::Instance::new(display)?;
+        gl::load_with(|name| instance.get_proc_address(name))?;
 
         let config = egl::v2::Config::build()
             .api(egl::v2::Api::OpenGl)
             .version(4, 3)
             .debug(cfg!(debug_assertions))
             .profile(egl::v2::Profile::Core)
-            .finish(&lib)?;
+            .finish(&instance)?;
 
-        let ctx = egl::v2::Context::new(&lib, &config)?;
+        let ctx = egl::v2::Context::new(&instance, &config)?;
 
         // bind for initialization
-        ctx.bind(None)?;
+        ctx.bind(&instance, None)?;
 
         gl::debug_message_callback(gl::debug_message_tracing_handler);
         gl::debug_message_control(Some(gl::DebugSeverity::Notification), None, None, true);
@@ -253,7 +253,7 @@ impl GlRenderer {
         let composite = CompositeRenderer::new()?;
 
         Ok(Self {
-            lib,
+            instance,
             config,
             ctx,
             shape,
@@ -266,7 +266,7 @@ impl GlRenderer {
 
         let size = window.surface.size();
 
-        self.ctx.bind(&window.surface)?;
+        self.ctx.bind(&self.instance, &window.surface)?;
 
         gl::resize_viewport(size);
         self.composite.update(size); // NOTE: this is done here bc we need the texture to be initialized when calling shape.draw
@@ -286,7 +286,7 @@ pub struct CompositeRenderer {
     current: Size,
     fbo: gl::FrameBuffer,
     vao: gl::VertexArray,
-    #[allow(unused)]
+    #[allow(unused)] // to keep it alive
     vbo: gl::Buffer,
     texture: gl::Texture,
     program: gl::LinkedProgram,

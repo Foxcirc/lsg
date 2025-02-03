@@ -148,8 +148,8 @@ pub enum InputMode {
 
 #[derive(Debug)]
 pub enum QuitReason {
-    /// Quit requested via `request_quit`.
-    User,
+    /// Quit requested programatically.
+    Program,
     /// SIGTERM received. For example on shutdown. Only generated when `signals` feature is enabled.
     System,
     /// SIGINT received. Only generated when `signals` feature is enabled.
@@ -171,16 +171,13 @@ pub enum IconFormat {
 
 /// The layers are ordered from bottom most to top most.
 pub enum WindowLayer {
-    // Below everything.
-    // eg. desktop widgets, file icons
+    /// Below everything. (Eg. Desktop Widgets)
     Background,
-    // Always below normal programs.
+    /// Below normal programs.
     Bottom,
-    // Always above normal programs.
-    // eg. fullscreen windows, windows task manager
+    /// Above normal programs. (Eg. Always-on-top Window)
     Top,
-    // Above everything.
-    // eg. key-press display, fps counter, notifications
+    /// Above everything. (Eg. Fps Counter)
     Overlay
 }
 
@@ -195,8 +192,7 @@ pub enum WindowAnchor {
 pub enum KbInteractivity {
     /// Window can't have keyboard focus.
     None,
-    /// Top/Overlay windows will grab keyboard focus
-    /// Can be buggy. I advise against using it.
+    /// Top/Overlay windows will completely grab keyboard focus.
     Exclusive
 }
 
@@ -210,7 +206,7 @@ pub enum Key {
     Alt,
     AltGr,
     /// Windows key.
-    Super, // windows key
+    Super,
     /// Application menu key.
     AppMenu,
     Return,

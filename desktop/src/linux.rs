@@ -51,10 +51,10 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
-        self.events.next()
+        self.signals.next() // signals are the most important
             .or(self.wayland.next())
             .or(self.proxy.next())
-            .or(self.signals.next())
+            .or(self.events.next())
             // .or(self.dbus.next())
             .await
     }
@@ -65,6 +65,10 @@ impl<T: 'static + Send> EventLoop<T> {
         // eg. close a notification
         // self.dbus.flush().await
         Ok(())
+    }
+
+    pub fn push_redraw_test<R: Send>(&mut self, window: &BaseWindow<R>) {
+        self.events.push(Event::Window { id: window.id, event: WindowEvent::Redraw });
     }
 
     pub fn app_name(&self) -> &str {
@@ -85,7 +89,7 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub fn quit(&mut self) {
-        self.events.push(Event::Quit { reason: QuitReason::User });
+        self.events.push(Event::Quit { reason: QuitReason::Program });
     }
 
     // TODO: make it be Notif::new(&mut evl) instead
