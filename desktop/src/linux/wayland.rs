@@ -692,26 +692,6 @@ impl<T: 'static + Send> Window<T> {
 
     }
 
-    /// You should only start a drag-and-drop when the left mouse button is held down
-    /// *and* the user then moves the mouse.
-    /// Otherwise the request may be denied or visually broken.
-    // TODO: make this DataSource::dnd
-    pub fn start_drag_and_drop(&mut self, evl: &mut EventLoop<T>, icon: CustomIcon, ds: &DataSource) {
-
-        let evb = &mut evl.wayland.state;
-
-        evb.globals.data_device.start_drag(
-            Some(&ds.wl_data_source),
-            &self.base.wl_surface,
-            Some(&icon.wl_surface),
-            evb.last_serial
-        );
-
-        evb.offer_data.dnd_active = true;
-        evb.offer_data.dnd_icon = Some(icon);
-
-    }
-
     // TODO: in theory all window funcs only need &self not &mut self, decide on this and make the API homogenous
 
     pub fn set_cursor(&mut self, evl: &mut EventLoop<T>, style: CursorStyle) {
@@ -896,12 +876,16 @@ fn get_data_source_id(ds: &WlDataSource) -> DataSourceId {
     ds.id().protocol_id()
 }
 
+/// A handle that let's you send data to other clients. Used for clipboard and drag-and-drop.
+///
+/// You will receive events for this DataSource when another client
+/// or the system wants to read from the selection.
 pub struct DataSource {
     pub id: DataSourceId,
     wl_data_source: WlDataSource,
 }
 
-/// Dropping this will cancel the drag-and-drop operation.
+/// Dropping this will cancel a drag-and-drop operation.
 impl Drop for DataSource {
     fn drop(&mut self) {
         self.wl_data_source.destroy();
@@ -910,7 +894,7 @@ impl Drop for DataSource {
 
 impl DataSource {
 
-    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
+    fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
 
         let evb = &mut evl.wayland.state;
 
@@ -951,6 +935,9 @@ impl DataSource {
 
     }
 
+    /// You should only start a drag-and-drop when the left mouse button is held down
+    /// *and* the user then moves the mouse.
+    /// Otherwise the request may be denied or visually broken.
     #[track_caller]
     pub fn create_drag_and_drop<T: 'static + Send>(evl: &mut EventLoop<T>, window: &mut Window<T>, offers: DataKinds, mode: IoMode, icon: CustomIcon) -> Self {
 
