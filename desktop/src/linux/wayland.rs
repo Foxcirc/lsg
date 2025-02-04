@@ -225,7 +225,7 @@ impl<T: 'static + Send> Connection<T> {
         loop {
 
             // flush all outgoing requests
-            // i forgot this and had to debug 10+ hours... fuckkk me
+            // (I forgot this and had to debug 10+ hours... fuckkk me)
             self.state.con.get_ref().flush()?;
 
             let guard = {
@@ -276,6 +276,7 @@ impl<T: 'static + Send> Connection<T> {
                     // emit the sysnthetic key-repeat event
                     let key = self.state.keyboard_data.repeat_key;
                     process_key_event(&mut self.state, key, Direction::Down, Source::KeyRepeat); // TODO: make it not take &mut self.state but only part of it and then remove the Either enum and process these directly in the `async` block
+                    // TODO ^^^^ make this like self.state.keyboard_data.process_key_event(...)
                 },
                 Err(err) => return Err(err),
             }
@@ -645,19 +646,19 @@ impl<T: 'static + Send> Window<T> {
         };
     }
 
-    pub fn min_size(&mut self, optional_size: Option<Size>) {
+    pub fn set_min_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_min_size(size.w as i32, size.h as i32);
         self.base.wl_surface.commit();
     }
 
-    pub fn max_size(&mut self, optional_size: Option<Size>) {
+    pub fn set_max_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.w as i32, size.h as i32);
         self.base.wl_surface.commit();
     }
 
-    pub fn fixed_size(&mut self, optional_size: Option<Size>) {
+    pub fn set_fixed_size(&mut self, optional_size: Option<Size>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.w as i32, size.h as i32);
         self.xdg_toplevel.set_min_size(size.w as i32, size.h as i32);
@@ -909,12 +910,35 @@ impl Drop for DataSource {
 
 impl DataSource {
 
+    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
+
+        let evb = &mut evl.wayland.state;
+
+        debug_assert!(!offers.is_empty(), "must offer at least one DataKind");
+
+        let wl_data_source = evb.globals.data_device_mgr.create_data_source(&evb.qh, mode);
+
+        for offer in offers {
+            let mime_type = offer.to_mime_type();
+            wl_data_source.offer(mime_type.to_string()); // why do all wayland methods take String's and not &str?
+        }
+
+        // actions are not implemented right now
+        wl_data_source.set_actions(DndAction::Move | DndAction::Copy);
+
+        Self {
+            id: get_data_source_id(&wl_data_source),
+            wl_data_source,
+        }
+
+    }
+
     /// Create a DataSource that will be the new selection.
     ///
     /// In other words this "sets the selection (clipboard)". You will receive events for this DataSource when another client
     /// wants to read from the selection.
     // TODO + DOCS: docs-rs alias to "clipboard" or smth
-    pub fn selection<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
+    pub fn create_selection<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
 
         let this = Self::new(evl, offers, mode);
 
@@ -928,26 +952,24 @@ impl DataSource {
     }
 
     #[track_caller]
-    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
+    pub fn create_drag_and_drop<T: 'static + Send>(evl: &mut EventLoop<T>, window: &mut Window<T>, offers: DataKinds, mode: IoMode, icon: CustomIcon) -> Self {
+
+        let this = Self::new(evl, offers, mode);
 
         let evb = &mut evl.wayland.state;
 
-        debug_assert!(!offers.is_empty(), "must offer at least one DataKind");
+        // actually start the drag and drop
+        evb.globals.data_device.start_drag(
+            Some(&this.wl_data_source),
+            &window.base.wl_surface,
+            Some(&icon.wl_surface),
+            evb.last_serial
+        );
 
-        let wl_data_source = evb.globals.data_device_mgr.create_data_source(&evb.qh, mode);
+        evb.offer_data.dnd_active = true;
+        evb.offer_data.dnd_icon = Some(icon);
 
-        for offer in offers {
-            let mime_type = offer.to_mime_type();
-            wl_data_source.offer(mime_type.to_string()); // why do all wayland methods take String's and not &str
-        }
-
-        // actions are not implemented right now
-        wl_data_source.set_actions(DndAction::Move | DndAction::Copy);
-
-        Self {
-            id: get_data_source_id(&wl_data_source),
-            wl_data_source,
-        }
+        this
 
     }
 
@@ -1072,6 +1094,9 @@ impl<T: 'static + Send> Drop for PopupWindow<T> {
 impl<T: 'static + Send> PopupWindow<T> {
 
     pub fn new(evl: &mut EventLoop<T>, size: Size, parent: &Window<T>) -> Self {
+
+        // TODO: this doesn't implement positioning of the popup window (where on the parent should it be)
+        //       this is implemented using xdg_positioner.set_anchor or smth
 
         let base = BaseWindow::new(evl, size);
 

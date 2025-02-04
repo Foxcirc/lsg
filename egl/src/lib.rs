@@ -3,8 +3,6 @@ use common::*;
 use std::{ffi::c_void as void, fmt, mem, sync::Arc, error::Error as StdError};
 
 /*
-the egl backend library has a accessible API
-for future use outside of this crate
 TODO: verify thread safety and add more constraints
      - right now you can share an instance between threads and concurrently create contexts
      - eglCreateContext may not be thread-safe (more research needed)

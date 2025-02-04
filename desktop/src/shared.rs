@@ -158,10 +158,10 @@ pub enum QuitReason {
 
 #[derive(Debug, Default)]
 pub enum Urgency {
-    /// Should display a hint. Might do nothing.
+    /// Should display a hint or might do nothing.
     #[default]
     Info,
-    /// Will likely switch window focus or display an urgent hint.
+    /// Should switch window focus or display an urgent hint.
     Switch,
 }
 
