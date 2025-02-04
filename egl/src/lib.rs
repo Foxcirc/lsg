@@ -64,8 +64,6 @@ impl From<egl::Error> for EglError {
     }
 }
 
-type FnBindApi = fn(u32);
-
 type FnSwapBuffersWithDamage = fn(
     egl::EGLDisplay,
     egl::EGLSurface,
@@ -76,7 +74,6 @@ type FnSwapBuffersWithDamage = fn(
 #[derive(Clone)]
 pub struct Instance {
     lib: Arc<egl::DynamicInstance<egl::EGL1_5>>,
-    bind_api: FnBindApi,
     swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
     display: egl::Display,
 }
@@ -98,11 +95,6 @@ impl Instance {
 
         lib.initialize(egl_display)?;
 
-        // load the eglBindApi function
-        let func = lib.get_proc_address("eglBindAPI").expect("cannot load fn eglBindAPI");
-        let bind_api: FnBindApi =
-            unsafe { mem::transmute(func) };
-
         // load the eglSwapBufferWithDamage extension function
         let func = lib.get_proc_address("eglSwapBuffersWithDamageKHR");
         let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
@@ -116,7 +108,6 @@ impl Instance {
 
         Ok(Self {
             lib,
-            bind_api,
             swap_buffers_with_damage,
             display: egl_display,
         })
@@ -293,8 +284,8 @@ pub mod v2 {
             // opengl (and related) has the by far worst api i've seen... ever
             // like what the fuck is this, why is this not part of the attributes?!
             match config.api {
-                Api::OpenGl => (instance.bind_api)(egl::OPENGL_API),
-                Api::Es3    => (instance.bind_api)(egl::OPENGL_ES_API),
+                Api::OpenGl => instance.lib.bind_api(egl::OPENGL_API)?,
+                Api::Es3    => instance.lib.bind_api(egl::OPENGL_ES_API)?,
             }
 
             let context = instance.lib.create_context(
