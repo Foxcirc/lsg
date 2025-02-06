@@ -2,7 +2,7 @@
 //! Interactive test to try out features that are currently being worked on.
 
 use futures_lite::future::block_on;
-use render::{CurvePoint, Instance, Shape, PerWindow};
+use render::{CurveGeometry, CurvePoint, Instance, Shape};
 use tracing::debug;
 
 use desktop::*;
@@ -29,16 +29,18 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     window.set_transparency(true);
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
-    let mut perwindow = PerWindow::new(&renderer, &*window, Size::new(500, 500)).unwrap();
+    let mut surface = render::GlSurface::new(&renderer, &*window, Size::new(500, 500)).unwrap();
 
-    renderer.shape.geometry.points.extend([
+    let mut geometry = CurveGeometry::new();
+
+    geometry.points.extend([
         CurvePoint::base(0, 0),
         CurvePoint::base(0, 500),
         CurvePoint::base(500, 500),
         CurvePoint::base(500, 0),
     ]);
-    renderer.shape.geometry.shapes.push(Shape::new_singular(0..4, 0));
-    renderer.shape.geometry.instances.push(Instance {
+    geometry.shapes.push(Shape::new_singular(0..4, 0));
+    geometry.instances.push(Instance {
         pos: [0.0, 0.0, 0.5],
         texture: [0.1, 0.1, 0.14],
     });
@@ -51,12 +53,12 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     // add movable point
 
-    renderer.shape.geometry.points.push(CurvePoint::base(40, 400));
-    renderer.shape.geometry.points.push(CurvePoint::ctrl(240, 400));
-    renderer.shape.geometry.points.push(CurvePoint::base(240, 200));
+    geometry.points.push(CurvePoint::base(40, 400));
+    geometry.points.push(CurvePoint::ctrl(240, 400));
+    geometry.points.push(CurvePoint::base(240, 200));
 
-    renderer.shape.geometry.shapes.push(Shape::new_instanced(4..7, 1..3));
-    renderer.shape.geometry.instances.extend([
+    geometry.shapes.push(Shape::new_instanced(4..7, 1..3));
+    geometry.instances.extend([
         Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
     ]);
@@ -84,13 +86,13 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected?
                         println!("redrawing...");
                         window.pre_present_notify();
-                        renderer.draw(&perwindow).ok();
-                        window.redraw_with_vsync(&mut evl);
+                        renderer.draw(&geometry, &surface).ok();
+                        // window.redraw_with_vsync(&mut evl);
                         // evl.push_redraw_test(&window);
                     },
 
                     WindowEvent::Resize { size, .. } => {
-                        perwindow.resize(size);
+                        surface.resize(size);
                     //     window.pre_present_notify();
                     //     renderer.draw(&perwindow).ok();
                     },
@@ -100,7 +102,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         if x < 0.0 || y < 0.0 { continue }; // TODO: sometimes -1.0, handle this by default
 
                         // TODO: i think on wayland x, y can be negative .-. try clicking and then moving the mouse out the upper window boundry
-                        if let Some(point) = renderer.shape.geometry.points.last_mut() {
+                        if let Some(point) = geometry.points.last_mut() {
                             if point.kind() {
                                 *point = CurvePoint::base(x as i16, y as i16);
                             } else {
@@ -115,40 +117,40 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
 
-                        renderer.shape.geometry.points.push(
+                        geometry.points.push(
                             CurvePoint::base(x as i16, y as i16)
                         );
 
-                        if let Some(shape) = renderer.shape.geometry.shapes.last_mut() {
+                        if let Some(shape) = geometry.shapes.last_mut() {
                             match shape.is_singular() {
                                 true => shape.polygon.end += 1,
                                 false => shape.polygon.end -= 1,
                             }
                         }
 
-                        debug!("add point {:?}", renderer.shape.geometry.points.last().unwrap());
-                        window.pre_present_notify();
-                        renderer.draw(&perwindow).ok();
+                        debug!("add point {:?}", geometry.points.last().unwrap());
+
+                        window.redraw_with_vsync(&mut evl);
 
                     },
 
 
                     WindowEvent::MouseDown { button: MouseButton::Right, x, y } => {
 
-                        renderer.shape.geometry.points.push(
+                        geometry.points.push(
                             CurvePoint::ctrl(x as i16, y as i16)
                         );
 
-                        if let Some(shape) = renderer.shape.geometry.shapes.last_mut() {
+                        if let Some(shape) = geometry.shapes.last_mut() {
                             match shape.is_singular() {
                                 true => shape.polygon.end += 1,
                                 false => shape.polygon.end -= 1,
                             }
                         }
 
-                        debug!("add control point {:?}", renderer.shape.geometry.points.last().unwrap());
-                        window.pre_present_notify();
-                        renderer.draw(&perwindow).ok();
+                        debug!("add control point {:?}", geometry.points.last().unwrap());
+
+                        window.redraw_with_vsync(&mut evl);
 
                     },
 

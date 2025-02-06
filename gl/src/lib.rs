@@ -450,9 +450,21 @@ pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<AttribLoca
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub struct AttribLocation {
-    index: u32,
+    pub index: u32,
+}
+
+impl AttribLocation {
+    pub fn new(index: u32) -> Self {
+        Self { index }
+    }
+}
+
+impl From<u32> for AttribLocation {
+    fn from(value: u32) -> Self {
+        Self::new(value)
+    }
 }
 
 #[derive(Debug)]
@@ -538,24 +550,24 @@ impl Buffer {
     }
 }
 
-pub fn vertex_attrib_1f(vao: &VertexArray, location: u32, x: f32) {
+pub fn vertex_attrib_1f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32) {
     bind_vertex_array(vao);
-    unsafe { gl::VertexAttrib1f(location, x) };
+    unsafe { gl::VertexAttrib1f(loc.into().index, x) };
 }
 
-pub fn vertex_attrib_2f(vao: &VertexArray, location: u32, x: f32, y: f32) {
+pub fn vertex_attrib_2f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32, y: f32) {
     bind_vertex_array(vao);
-    unsafe { gl::VertexAttrib2f(location, x, y) };
+    unsafe { gl::VertexAttrib2f(loc.into().index, x, y) };
 }
 
-pub fn vertex_attrib_3f(vao: &VertexArray, location: u32, x: f32, y: f32, z: f32) {
+pub fn vertex_attrib_3f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32, y: f32, z: f32) {
     bind_vertex_array(vao);
-    unsafe { gl::VertexAttrib3f(location, x, y, z) };
+    unsafe { gl::VertexAttrib3f(loc.into().index, x, y, z) };
 }
 
 #[derive(Default)]
 pub struct VertexAttribs {
-    pub location: u32,
+    pub loc: AttribLocation,
     pub count: usize,
     pub kind: DataType,
     pub normalize: bool,
@@ -564,18 +576,20 @@ pub struct VertexAttribs {
 }
 
 /// The array will also be enabled immediatly using `EnableVertexAttribArray`.
-/// `Stride` is in bytes!
+/// Remember `stride` is in bytes!
 /// There is also a more structured version [`vertex_attrib_pointer2`].
 #[track_caller]
-pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, location: u32, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
+pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<AttribLocation>, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
     assert_eq!(vbo.kind, BufferType::Array);
 
     bind_vertex_array(vao);
     bind_buffer(vbo);
 
+    let index = loc.into().index;
+
     unsafe { gl::VertexAttribPointer(
-        location as u32,
+        index,
         count as i32,
         kind as u32,
         normalize as u8,
@@ -583,7 +597,7 @@ pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, location: u32, cou
         start as *const _,
     ) };
 
-    unsafe { gl::EnableVertexAttribArray(location) };
+    unsafe { gl::EnableVertexAttribArray(index) };
 
 }
 
@@ -592,7 +606,7 @@ pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, location: u32, cou
 pub fn vertex_attrib_pointer2(vao: &VertexArray, vbo: &Buffer, attribs: VertexAttribs) {
     vertex_attrib_pointer(
         vao, vbo,
-        attribs.location, attribs.count, attribs.kind,
+        attribs.loc, attribs.count, attribs.kind,
         attribs.normalize, attribs.stride, attribs.start
     );
 }
@@ -826,13 +840,25 @@ pub fn uniform_location(program: &LinkedProgram, name: &str) -> Result<UniformLo
     if index == -1 {
         Err(UniformUnknown)
     } else {
-        Ok(UniformLocation { index })
+        Ok(UniformLocation { index: index as u32 })
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct UniformLocation {
-    index: i32,
+    pub index: u32,
+}
+
+impl UniformLocation {
+    pub fn new(index: u32) -> Self {
+        Self { index }
+    }
+}
+
+impl From<u32> for UniformLocation {
+    fn from(value: u32) -> Self {
+        Self::new(value)
+    }
 }
 
 #[derive(Debug)]
@@ -840,22 +866,22 @@ pub struct UniformUnknown;
 
 pub fn uniform_1i(program: &LinkedProgram, uniform: UniformLocation, val: i32) {
     bind_program(program);
-    unsafe { gl::Uniform1i(uniform.index, val) };
+    unsafe { gl::Uniform1i(uniform.index as i32, val) };
 }
 
 pub fn uniform_1ui(program: &LinkedProgram, uniform: UniformLocation, val: u32) {
     bind_program(program);
-    unsafe { gl::Uniform1ui(uniform.index, val) };
+    unsafe { gl::Uniform1ui(uniform.index as i32, val) };
 }
 
 pub fn uniform_3f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32) {
     bind_program(program);
-    unsafe { gl::Uniform3f(uniform.index, x, y, z) };
+    unsafe { gl::Uniform3f(uniform.index as i32, x, y, z) };
 }
 
 pub fn uniform_4f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32, w: f32) {
     bind_program(program);
-    unsafe { gl::Uniform4f(uniform.index, x, y, z, w) };
+    unsafe { gl::Uniform4f(uniform.index as i32, x, y, z, w) };
 }
 
 #[repr(u32)]

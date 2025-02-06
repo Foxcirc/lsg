@@ -1,15 +1,17 @@
 
-//! Triangulation algorithms and handling of Curves.
+//! CPU triangulation algorithms and handling of Curves.
 //! Preparing the geometry for rendering.
 
-use core::panic; // TODO: what am I using this for??
 use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
-use common::Size;
+use common::*;
 
-use crate::{CurveGeometry, CurvePoint, Instance, Point, Shape};
+use crate::{CurveGeometry, CurvePoint, GlPoint, Instance, Shape};
 
-// TODO: make all u16 be i16 and enforce it to pe positive or enforce all u16's to be in range 0..32K (i16::MAX) or use another type
+// TODO: Idea for interop with this an my gl library: Add a struct that is a kind of of "description" of the vertex data layout
+// used by an algorithm. Basically Transformer provides this kind of description which the renderer then uses to setup its buffers in a simple way
+// this way layout difference bugs would be prevented
+// is this a thing that could be awesome?
 
 /// Output after processing a polygon.
 pub struct OutputGeometry<'a> {
@@ -63,16 +65,16 @@ enum ShapeKind<'a> {
 #[derive(Clone, Copy)]
 struct ShapeMetadata<'a> {
     pub kind: ShapeKind<'a>,
-    /// window size
+    /// Window size
     pub size: Size,
 }
 
-pub struct Triangulator {
+pub struct Transformer {
     lower: LoweringPass,
     trig: TriangulationPass,
 }
 
-impl Triangulator {
+impl Transformer {
 
     pub fn process<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
@@ -176,7 +178,7 @@ impl LoweringPass {
 
             let increment; // how many points to skip for the next iteration
 
-            if a.kind() && !b.kind() && c.kind() { // B-C-B
+            if a.is_base() && !b.is_base() && c.is_base() { // B-C-B
 
                 increment = 2;
 
@@ -222,8 +224,8 @@ impl LoweringPass {
                                 max_depth += 1;
 
                                 // split the curve triangle
-                                let split_at = TriangulationPass::was_it_this_easy_all_along([sa.point(), sb.point(), sc.point()], point.point());
-                                let [first, second] = TriangulationPass::split_quadratic([sa.point(), sb.point(), sc.point()], split_at - 0.01); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
+                                let split_at = TriangulationPass::was_it_this_easy_all_along([sa.into(), sb.into(), sc.into()], (*point).into());
+                                let [first, second] = TriangulationPass::split_quadratic([sa.into(), sb.into(), sc.into()], split_at - 0.01); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
 
                                 // insert the first curve triangle by replacing the original sub triangle
                                 self.output.points[isa] = CurvePoint::base(first[0].x as i16, first[0].y as i16);
@@ -289,10 +291,10 @@ impl LoweringPass {
 
                 self.output.points.pop(); // pop the last point since it will be addad again next iteration
 
-            } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
+            } else if a.is_base() && !b.is_base() && !c.is_base() && d.is_base() {
                 todo!("cubic curves are not yes implemented");
                 // TODO: Dont forget to also split up intersected curve trigs here
-            } else if !a.kind() && !b.kind() && !c.kind() {
+            } else if !a.is_base() && !b.is_base() && !c.is_base() {
                 todo!("error: three contol points in a row");
             } else {
                 // normal "line"
@@ -493,7 +495,7 @@ impl TriangulationPass {
 
             let increment; // how many points to skip for the next iteration
 
-            if a.kind() && !b.kind() && c.kind() {
+            if a.is_base() && !b.is_base() && c.is_base() {
 
                 increment = 2;
 
@@ -502,18 +504,18 @@ impl TriangulationPass {
                 // render a the curve triangle. the range of the "uvs" decides
                 // which side of the curve get's filled by the shader
 
-                let convex = Self::convex([a.point(), b.point(), c.point()]);
+                let convex = Self::convex([a.into(), b.into(), c.into()]);
 
                 // mark all convex curved triangles as removed,
                 // so they are not triangulated later
                 state.removed.set(ib as u64, convex);
 
                 Self::triangle(
-                    a.point(), b.point(), c.point(), Self::uvs_for_convexity(convex),
+                    a.into(), b.into(), c.into(), Self::uvs_for_convexity(convex),
                     meta, &mut state.out
                 );
 
-            } else if a.kind() && !b.kind() && !c.kind() && d.kind() {
+            } else if a.is_base() && !b.is_base() && !c.is_base() && d.is_base() {
 
                 /*
 
@@ -680,7 +682,7 @@ impl TriangulationPass {
                 };
 
                 Self::triangle(
-                    points[ia].point(), points[ib].point(), points[ic].point(),
+                    points[ia].into(), points[ib].into(), points[ic].into(),
                     Self::FILLED, meta, &mut state.out
                 );
 
@@ -716,7 +718,7 @@ impl TriangulationPass {
 
     fn triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
 
-        let [ga, gb, gc] = [a.gl(meta.size), b.gl(meta.size), c.gl(meta.size)];
+        let [ga, gb, gc] = [GlPoint::from(a, meta.size), GlPoint::from(b, meta.size), GlPoint::from(c, meta.size)];
 
         match meta.kind {
             ShapeKind::Singular(i) => {
@@ -787,7 +789,7 @@ impl TriangulationPass {
         let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
 
         // short curcuit if it is concave
-        let convex = Self::convex([a.point(), b.point(), c.point()]);
+        let convex = Self::convex([a.into(), b.into(), c.into()]);
         if !convex {
             return false
         }

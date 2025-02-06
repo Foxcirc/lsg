@@ -4,5 +4,8 @@
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))] pub mod egl;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))] pub use egl::*;
 
-pub mod triangulate;
-pub use triangulate::*; // TODO: make pub(crate)
+pub mod shared;
+pub use shared::*;
+
+pub mod transform;
+pub use transform::*; // TODO: make pub(crate)
