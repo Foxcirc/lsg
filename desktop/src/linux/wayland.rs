@@ -793,7 +793,7 @@ pub struct DataOffer {
     wl_data_offer: WlDataOffer,
     con: wayland_client::Connection, // needed to flush all events after accepting the offer
     kinds: DataKinds,
-    dnd: bool, // checked on drop to determine how wl_data_offer should be destroyed
+    dnd: bool, // checked in the destructor to determine how wl_data_offer should be destroyed
 }
 
 impl fmt::Debug for DataOffer {
@@ -802,13 +802,11 @@ impl fmt::Debug for DataOffer {
     }
 }
 
-/// Dropping this will cancel drag-and-drop / invalidate the clipboard.
+/// Dropping this will cancel drag-and-drop.
 impl Drop for DataOffer {
     fn drop(&mut self) {
-        if self.dnd {
-            self.wl_data_offer.finish();
-            self.wl_data_offer.destroy();
-        };
+        if self.dnd { self.wl_data_offer.finish() };
+        self.wl_data_offer.destroy();
     }
 }
 
@@ -1248,7 +1246,7 @@ fn translate_dead_to_normal_sym(xkb_sym: xkb::Keysym) -> Option<xkb::Keysym> {
 
 }
 
-/// Look at the source and see how keys are translated.
+/// Look at the source code to see how keys are translated.
 pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
 
     use xkb::Keysym;
