@@ -97,23 +97,19 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     //     renderer.draw(&perwindow).ok();
                     },
 
-                    /* WindowEvent::MouseMotion { x, y } => {
+                    WindowEvent::MouseMotion { x, y } => {
 
-                        if x < 0.0 || y < 0.0 { continue }; // TODO: sometimes -1.0, handle this by default
-
-                        // TODO: i think on wayland x, y can be negative .-. try clicking and then moving the mouse out the upper window boundry
                         if let Some(point) = geometry.points.last_mut() {
-                            if point.kind() {
+                            if point.is_base() {
                                 *point = CurvePoint::base(x as i16, y as i16);
                             } else {
                                 *point = CurvePoint::ctrl(x as i16, y as i16);
                             }
                         }
 
-                        window.pre_present_notify();
-                        renderer.draw(&perwindow).ok();
+                        window.redraw_with_vsync(&mut evl);
 
-                    }, */
+                    },
 
                     WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
 

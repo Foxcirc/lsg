@@ -127,8 +127,8 @@ struct KeymapSpecificData {
 #[derive(Default)]
 struct MouseData {
     has_focus: Option<WlSurface>,
-    x: f64,
-    y: f64
+    x: u16,
+    y: u16
 }
 
 // ### pressed keys ###
@@ -2277,7 +2277,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
              WlPointerEvent::Enter { surface, surface_x, surface_y, serial } => {
 
                 let id = get_window_id(&surface);
-                let (x, y) = (surface_x.max(0.), surface_y.max(0.)); // must not be negative
+                let (x, y) = (surface_x.max(0.) as u16,
+                              surface_y.max(0.) as u16); // must not be negative
 
                 evl.mouse_data.has_focus = Some(surface);
                 evl.mouse_data.x = x;
@@ -2309,7 +2310,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
 
              WlPointerEvent::Motion { surface_x, surface_y, .. } => {
 
-                 let (x, y) = (surface_x.max(0.), surface_y.max(0.)); // must not be negative
+                 let (x, y) = (surface_x.max(0.) as u16,
+                               surface_y.max(0.) as u16); // must not be negative
 
                 evl.mouse_data.x = x;
                 evl.mouse_data.y = y;

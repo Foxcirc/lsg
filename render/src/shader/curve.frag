@@ -36,7 +36,8 @@ void main() {
         if (curveX == 1.0) {
             v = texture;
         } else {
-            v = vec3(float(int(curveX * 10.0) / 10), curveY, 0.0);
+            // v = vec3(float(int(curveX * 10.0) / 10), curveY, 0.0);
+            v = texture;
         }
         Color = vec4(v, 1.0);
     } else {

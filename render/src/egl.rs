@@ -30,18 +30,18 @@ impl GlPoint {
 }
 
 pub struct GlSurface {
-    surface: egl::v2::Surface,
+    inner: egl::v2::Surface,
 }
 
 impl GlSurface {
 
     pub fn new<W: egl::IsSurface>(gl: &GlRenderer, window: &W, size: Size) -> Result<Self, RenderError> {
         let surface = egl::v2::Surface::new(&gl.instance, &gl.config, window, size)?;
-        Ok(Self { surface })
+        Ok(Self { inner: surface })
     }
 
     pub fn resize(&mut self, size: Size) {
-        self.surface.resize(size)
+        self.inner.resize(size)
     }
 
 }
@@ -50,7 +50,7 @@ pub struct GlRenderer {
     instance: egl::Instance,
     ctx: egl::v2::Context,
     config: egl::v2::Config,
-    pub shape: ShapeRenderer,
+    shape: ShapeRenderer,
     composite: CompositeRenderer,
 }
 
@@ -89,11 +89,11 @@ impl GlRenderer {
 
     }
 
-    pub fn draw(&mut self, geometry: &CurveGeometry, window: &GlSurface) -> Result<(), RenderError> {
+    pub fn draw(&mut self, geometry: &CurveGeometry, surface: &GlSurface) -> Result<(), RenderError> {
 
-        self.ctx.bind(&self.instance, &window.surface)?;
+        self.ctx.bind(&self.instance, &surface.inner)?;
 
-        let size = window.surface.size();
+        let size = surface.inner.size();
         gl::resize_viewport(size);
 
         // we need to update the size before rendering with the ShapeRenderer
@@ -103,7 +103,7 @@ impl GlRenderer {
         self.shape.draw(size, geometry, &self.composite.fbo)?; // draw the new geometry ontop of the old one
         self.composite.draw(&gl::FrameBuffer::default()); // final full-screen composition pass
 
-        self.ctx.swap(&window.surface, Damage::all())?; // finally swap the buffers
+        self.ctx.swap(&surface.inner, Damage::all())?; // finally swap the buffers
 
         Ok(())
 

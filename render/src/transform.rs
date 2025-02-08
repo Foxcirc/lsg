@@ -1,6 +1,8 @@
 
-//! CPU triangulation algorithms and handling of Curves.
-//! Preparing the geometry for rendering.
+//! CPU triangulation algorithms and handling of curves.
+//!
+//! The algorithms are purposely written in a way that is similar to the
+//! compute shader implementation.
 
 use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
@@ -69,6 +71,17 @@ struct ShapeMetadata<'a> {
     pub size: Size,
 }
 
+struct CurvesState<'a> {
+    removed: &'a mut BitVec,
+    out: &'a mut Vec<f32>,
+}
+
+struct TriangulationState<'a> {
+    removed: &'a mut BitVec,
+    ears: &'a mut BitVec,
+    out: &'a mut Vec<f32>,
+}
+
 pub struct Transformer {
     lower: LoweringPass,
     trig: TriangulationPass,
@@ -99,7 +112,7 @@ impl Transformer {
 /// More concretely this currently does following things:
 /// - Convert all cubic into quadratic beziér curves
 /// - Split up curve triangles that intersect with the shape
-pub struct LoweringPass {
+struct LoweringPass {
     output: CurveGeometry,
     errors: usize,
 }
@@ -153,11 +166,12 @@ impl LoweringPass {
         let instances = geometry.instances.get(range.start as usize .. range.end as usize)
             .unwrap_or_default();
 
-        // we just hand the instances through, as we only need to modify
-        // the actual shapes.
+        // we just hand the instances through, as we only need to modify the actual shapes
         self.output.instances.extend_from_slice(instances);
 
-        let mut output_len = points.len();
+        // save the start index so we later know which geometry belongs to the current shape
+        let shape_start = self.output.points.len() as i16;
+
         let mut idx = 0;
         loop {
 
@@ -176,9 +190,12 @@ impl LoweringPass {
                 points[ic], points[id]
             ];
 
-            let increment; // how many points to skip for the next iteration
+            // how many points to skip for the next iteration
+            let increment;
 
-            if a.is_base() && !b.is_base() && c.is_base() { // B-C-B
+            if a.is_base() && !b.is_base() && c.is_base() {
+
+                // quadratic curve case
 
                 increment = 2;
 
@@ -224,7 +241,7 @@ impl LoweringPass {
                                 max_depth += 1;
 
                                 // split the curve triangle
-                                let split_at = TriangulationPass::was_it_this_easy_all_along([sa.into(), sb.into(), sc.into()], (*point).into());
+                                let split_at = TriangulationPass::closest_split_point([sa.into(), sb.into(), sc.into()], (*point).into());
                                 let [first, second] = TriangulationPass::split_quadratic([sa.into(), sb.into(), sc.into()], split_at - 0.01); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
 
                                 // insert the first curve triangle by replacing the original sub triangle
@@ -244,60 +261,53 @@ impl LoweringPass {
 
                 }
 
-                let new_points = (max_depth - 1) * 3;
-                output_len += new_points;
-
-                // for point in points.iter() {
-                //     if ![a, b, c].contains(point) &&
-                //         TrigPass::triangle_intersects_point([a, b, c], *point) {
-
-                //         // find the correct sub curve
-                //         'subs: for current_depth in 0..max_depth {
-
-                //             let points_len = self.lowered.points.len();
-                //             let sub_triangle = &mut self.lowered.points[points_len - 3 * (current_depth + 1) .. points_len - 3 * current_depth];
-                //             let [sa, sb, sc] = sub_triangle.try_into().expect("get sub triangle");
-
-                //             if TrigPass::triangle_intersects_point([sa, sb, sc], *point) {
-
-                //                 let split_at = TrigPass::was_it_this_easy_all_along([sa.point(), sb.point(), sc.point()], point.point());
-                //                 // dbg!(split_at);
-                //                 // let split_at = TrigPass::closest_point_on_curve([sa.point(), sb.point(), sc.point()], point.point());
-                //                 // let split_at = TrigPass::approx_split_point([sa.point(), sb.point(), sc.point()], point.point());
-                //                 let curves = TrigPass::split_quadratic([sa.point(), sb.point(), sc.point()], split_at - 0.01);
-
-                //                 // insert the first curve by replacing the original sub triangle
-                //                 sub_triangle[0] = CurvePoint::base(curves[0][0].x as i16, curves[0][0].y as i16);
-                //                 sub_triangle[1] = CurvePoint::ctrl(curves[0][1].x as i16, curves[0][1].y as i16);
-                //                 sub_triangle[2] = CurvePoint::base(curves[0][2].x as i16, curves[0][2].y as i16);
-
-                //                 // insert the second curve at the end
-                //                 self.lowered.points.push(CurvePoint::base(curves[1][0].x as i16, curves[1][0].y as i16));
-                //                 self.lowered.points.push(CurvePoint::ctrl(curves[1][1].x as i16, curves[1][1].y as i16));
-                //                 self.lowered.points.push(CurvePoint::base(curves[1][2].x as i16, curves[1][2].y as i16));
-
-                //                 new_len += 3; // three new points were added
-                //                 max_depth += 1;
-
-                //                 break 'subs
-
-                //             }
-
-
-                //         }
-
-                //     }
-                // }
-
                 self.output.points.pop(); // pop the last point since it will be addad again next iteration
 
             } else if a.is_base() && !b.is_base() && !c.is_base() && d.is_base() {
-                todo!("cubic curves are not yes implemented");
-                // TODO: Dont forget to also split up intersected curve trigs here
+
+                // cubic curve case
+
+                // we split the cubic curve into pieces and
+                // then degree reduce it to a quadratic curve
+
+                increment = 3;
+
+                let critical_points = [0.25, 0.5, 0.75, 1.0];
+                // let critical_points: Vec<f64> = (0..6).into_iter().rev().map(|it| 1.0 / it as f64).collect();
+                let mut previous_t_value = 0.0;
+                let mut curve_to_split = [a.into(), b.into(), c.into(), d.into()];
+
+                // each iteration, we "chop off" the segment up to t_value
+                for t_value in critical_points {
+
+                    // calculate where we have to split the already shrunken curve
+                    let normalized_t_value = (t_value - previous_t_value) / (1.0 - previous_t_value);
+
+                    let [curve1, curve2] = TriangulationPass::split_cubic(curve_to_split, normalized_t_value as f32);
+
+                    // degree reduce by averaging
+                    let new_ctrl_point = Point::new(
+                        -0.25*curve1[0].x + 0.75*curve1[1].x + 0.75*curve1[2].x -0.25*curve1[3].x,
+                        -0.25*curve1[0].y + 0.75*curve1[1].y + 0.75*curve1[2].y -0.25*curve1[3].y
+                    );
+
+                    // push p1 and p2. the last point will be pushed on in the next iteration
+                    self.output.points.push(CurvePoint::base(curve1[0].x as i16, curve1[0].y as i16)); // TODO: this cast is soooooo dirty, f32 to i16? realy???
+                    self.output.points.push(CurvePoint::ctrl(new_ctrl_point.x as i16, new_ctrl_point.y as i16));
+
+                    curve_to_split = curve2;
+                    previous_t_value = t_value;
+
+                }
+
+                println!("all good bro.");
+
             } else if !a.is_base() && !b.is_base() && !c.is_base() {
+                // invalid case
                 todo!("error: three contol points in a row");
             } else {
-                // normal "line"
+                println!("basic pt");
+                // "normal line" case
                 self.output.points.push(a);
                 increment = 1;
             }
@@ -310,14 +320,12 @@ impl LoweringPass {
         }
 
         // generate the output shape, with updated indices
-
-        let start = shape.polygon_range().start;
-        let end = start + output_len as i16;
-
+        let shape_end = self.output.points.len() as i16;
+        println!("final len: {}", shape_end - shape_start);
         match shape.is_singular() {
-            true  => self.output.shapes.push(Shape::new_singular(start..end, shape.instances_range().start)),
-            false => self.output.shapes.push(Shape::new_instanced(start..end, shape.instances_range())),
-            //                                                                 ^^^^ just hand the instances indices through
+            true  => self.output.shapes.push(Shape::new_singular(shape_start..shape_end, shape.instances_range().start)),
+            false => self.output.shapes.push(Shape::new_instanced(shape_start..shape_end, shape.instances_range())),
+            //                                                                             ^^^^ just hand the instances indices through
         }
 
         Ok(())
@@ -327,7 +335,7 @@ impl LoweringPass {
 
 }
 
-pub struct TriangulationPass { // TODO: make pub(crate)
+struct TriangulationPass {
     // state during triangulation
     ears: BitVec<usize>,
     removed: BitVec<usize>,
@@ -349,12 +357,6 @@ impl TriangulationPass {
         }
     }
 
-    /// Prepares the polygons for rendering.
-    ///
-    /// # Processing Steps
-    /// - Convert coordinates to OpenGl screen space.
-    /// - Triangulate the polygon using ear-clipping, with some restrictions.
-    /// - Output extra triangles for the curved parts. TODO: check all the doc comments. rn they arent useful and mostly wrong anyways
     pub fn process_geometry<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
         // reset the state
@@ -467,9 +469,7 @@ impl TriangulationPass {
 
     }
 
-    /// Calculate patch-on triangles that should be rendered as curves.
-    ///
-    /// Accepts window- and returns normalized device coordinates.
+    /// Calculate triangles that should be rendered as curves.
     fn triangulate_curves(points: &[CurvePoint], meta: ShapeMetadata, mut state: CurvesState) -> Result<(), ()> {
 
         let len = points.len();
@@ -510,117 +510,15 @@ impl TriangulationPass {
                 // so they are not triangulated later
                 state.removed.set(ib as u64, convex);
 
-                Self::triangle(
+                Self::generate_triangle(
                     a.into(), b.into(), c.into(), Self::uvs_for_convexity(convex),
                     meta, &mut state.out
                 );
 
             } else if a.is_base() && !b.is_base() && !c.is_base() && d.is_base() {
-
-                /*
-
-                increment = 3;
-
-                // the cubic curve case is a little more complicated
-                //
-                // A. split the cubic curve at it's infection- and min-/max- points
-                // B. degree reduce the split out parts and generate a quadratic
-                //    curve triangle for all of them
-                // C. mark all of the original control points that are inside the
-                //    shape as removed
-
-                // println!("{:?}", critical_points);
-
-                let b_inside_approx = Self::left_of_line(b.point(), a.point(), d.point());
-                let c_inside_approx = Self::left_of_line(c.point(), a.point(), d.point());
-
-                if !b_inside_approx { self.removed.set(ib as u64, true) };
-                if !c_inside_approx { self.removed.set(ic as u64, true) };
-
-                dbg!(b_inside_approx, c_inside_approx);
-
-                let mut curve = [a.point(), b.point(), c.point(), d.point()];
-                let mut previous_t = 0.0;
-
-                let mut tr_removed = BitVec::<usize>::new();
-                let mut tr_ears = BitVec::<usize>::new();
-                let mut tr_points: Vec<CurvePoint> = Vec::new();
-
-                let critical_points: Vec<f32> = (0..4).map(|it| it as f32 / 4.0).collect();
-
-                // push first point
-                // tr_removed.push(false);
-                // tr_ears.push(false);
-                // tr_points.push(CurvePoint::fuckery(curve[0]));
-
-                for t in critical_points.iter().copied().chain([1.0]) { // chain 1.0 so we also get the final segment
-
-                    // calculate where the original t value would lie on the new segment
-                    let normalized_t = (t - previous_t) / (1.0 - previous_t);
-
-                    // split off one segment of the curve
-                    let [sub, rest] = Self::split_cubic(curve, normalized_t);
-
-                    // quadratic control point (degree reduction by averaging)
-                    let p2 = Point::new(
-                        -0.25*sub[0].x + 0.75*sub[1].x + 0.75*sub[2].x -0.25*sub[3].x,
-                        -0.25*sub[0].y + 0.75*sub[1].y + 0.75*sub[2].y -0.25*sub[3].y
-                    );
-
-                    let [p1, p3] = [sub[0], sub[3]];
-
-                    let convex = Self::convex([p1, p2, p3]);
-
-                    tr_removed.push(false);
-                    tr_ears.push(false);
-                    tr_points.push(CurvePoint::fuckery(p1));
-
-                    if !convex {
-                        tr_removed.push(false);
-                        tr_ears.push(false);
-                        tr_points.push(CurvePoint::fuckery(p2));
-                    }
-
-                    Self::triangle(
-                        p1, p2, p3, Self::uvs(convex), meta,
-                        &mut VerticesOut {
-                            singular: &mut self.singular.vertices,
-                            instanced: &mut self.instanced.vertices
-                        }
-                    );
-
-                    curve = rest;
-                    previous_t = t;
-
-                }
-
-                // push the end point
-                tr_removed.push(false);
-                tr_ears.push(false);
-                tr_points.push(CurvePoint::fuckery(curve[3]));
-
-                if b_inside_approx {
-                    tr_removed.push(false);
-                    tr_ears.push(false);
-                    tr_points.push(b);
-                };
-                if c_inside_approx {
-                    tr_removed.push(false);
-                    tr_ears.push(false);
-                    tr_points.push(c);
-                };
-
-                dbg!(&tr_points);
-
-                Self::triangulate(&tr_points, meta, TriangulationState { removed: &mut tr_removed, ears: &mut tr_ears, out: VerticesOut { singular: &mut self.singular.vertices, instanced: &mut self.instanced.vertices } }).ok();
-
-                */
-
-                // TODO: this is now handeled in the lowering pass
-                panic!("TODO: the rendering of cubic bézier curves is not implemented yet");
-
+                unreachable!();
             } else {
-                // not a bézier curve, maybe just a line, so just continue
+                // not a bézier curve, just a line, so just continue
                 increment = 1; // TODO: check for three control points in a row, which would be invalid. right now just causes the control points to be treated as base points
             }
 
@@ -635,11 +533,7 @@ impl TriangulationPass {
 
     /// Ear-clipping triangulation for a single polygon.
     ///
-    /// Accepts window- and returns normalized device coordinates.
-    ///
-    /// The algorithms is purposely written in a way that is similar to the
-    /// compute shader implementation.
-    // TODO(DOC): link to docs on the triangulation compute shader
+    // TODO(DOC): link to docs on the triangulation compute shader on github
     fn triangulate_body(points: &[CurvePoint], meta: ShapeMetadata, mut state: TriangulationState) -> Result<(), ()> {
 
         let len = points.len();
@@ -681,7 +575,7 @@ impl TriangulationPass {
                     break
                 };
 
-                Self::triangle(
+                Self::generate_triangle(
                     points[ia].into(), points[ib].into(), points[ic].into(),
                     Self::FILLED, meta, &mut state.out
                 );
@@ -709,14 +603,7 @@ impl TriangulationPass {
     const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]; // curve coords
     const FILLED:  [f32; 6] = [1.0; 6]; // curve coords
 
-    fn triangle_size(kind: ShapeKind) -> usize {
-        match kind {
-            ShapeKind::Singular(..) => 8*3,
-            ShapeKind::Instanced    => 4*3,
-        }
-    }
-
-    fn triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
+    fn generate_triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
 
         let [ga, gb, gc] = [GlPoint::from(a, meta.size), GlPoint::from(b, meta.size), GlPoint::from(c, meta.size)];
 
@@ -845,7 +732,6 @@ impl TriangulationPass {
 
     /// If `point` lies within the triangle `trig`.
     /// Y-flipped version.
-    // TODO: make all these functions free floating and not TrigPass::XXYY
     fn triangle_intersects_point(trig: [CurvePoint; 3], point: CurvePoint) -> bool { // TODO: use Point not CurvePoint
 
         let abc = Self::triangle_area(trig[0], trig[1], trig[2]);
@@ -968,58 +854,7 @@ impl TriangulationPass {
         Point { x, y }
     }
 
-    fn approx_split_point(curve: [Point; 3], p: Point) -> f32 {
-
-        let mut how = f32::INFINITY;
-        let mut result = 0.0;
-        let [a, b, c] = curve;
-
-        for idx in 0..1000 {
-            let t = idx as f32 / 1000.0;
-            let sx = (1.0-t).powi(2) * a.x + 2.0*(1.0-t) + b.x + t.powi(2) * c.x;
-            let sy = (1.0-t).powi(2) * a.y + 2.0*(1.0-t) + b.y + t.powi(2) * c.y;
-            let dot = (p.x - a.x)*(sy - a.y) - (p.y - a.y) * (sx - a.x);
-            if dot >= 0.0 && dot < how {
-                how = dot;
-                result = t;
-            }
-        }
-
-        result - 0.4
-
-    }
-
-    /// We split the curve so that the intersecting point p now lies at the edge of the triangle
-    /// enclosing the curve from 0 to the split point.
-    fn split_point(curve: [Point; 3], p: Point) -> f32 {
-
-        #![allow(non_snake_case)]
-
-        // conv y-flip
-        let mut curve = curve;
-        curve.iter_mut().for_each(|it| it.y = (it.y - 500.0).abs());
-
-        let mut p = p;
-        p.y = (p.y - 500.0).abs();
-
-        // calculate the relevant coefficients
-        let [a, b, c] = curve;
-        let A = p.x * (a.y - 2.0*b.y + c.y - a.x*a.y + 2.0*a.x*b.y - a.x*c.y) + p.y * (-a.x + 2.0*b.x - c.x + a.y*a.x + 2.0*a.y*b.x + a.y*c.x);
-        let B = p.x * (-2.0*a.y + 2.0*b.y - 2.0*a.x*b.y) + p.y * (2.0*a.x - 2.0*b.x + 2.0*a.y*b.x);
-        let C = p.x*a.y - p.y*a.x;
-
-        // broken chatgpt version
-        // let A = (p.x-a.x)*(a.y+c.y)-(p.y-a.y)*(a.x+c.x);
-        // let B = -2.0*(p.x-a.x)*(a.y+b.y)+2.0*(p.y-a.y)*(a.x+b.x);
-        // let C = 2.0*(p.x-a.x)*b.y-2.0*(p.y-a.y)*b.x;
-
-        let discr = B.powi(2) - 4.0*A*C;
-        (-B + (discr).sqrt()) / (2.0*A)
-
-
-    }
-
-    fn was_it_this_easy_all_along(curve: [Point; 3], p: Point) -> f32 {
+    fn favoured_split_point(curve: [Point; 3], p: Point) -> f32 {
 
         #![allow(non_snake_case)]
 
@@ -1042,15 +877,13 @@ impl TriangulationPass {
         debug_assert!(!inner.is_nan(), "closest point must not be on the end of the curve"); // TODO: remove and clamp to 0
 
         let root1 = (-b + inner) / (2.0*a);
-        let root2 = (-b - inner) / (2.0*a);
+        let root2 = (-b - inner) / (2.0*a); // TODO: (?) check the distance and choose the closest root like in closest_split_point
 
         root1
 
     }
 
-    /// The point must lie within the concave section of the curve. The closest point must not
-    /// be an end of the curve.
-    fn closest_point_on_curve(curve: [Point; 3], p: Point) -> f32 {
+    fn closest_split_point(curve: [Point; 3], p: Point) -> f32 {
 
         // get coefficients for this curve
         let [a, b, c, d] = Self::distance_derivative_coefficients(curve, p);
@@ -1061,10 +894,7 @@ impl TriangulationPass {
         // NOTE: for our case, where the point lies inside the curves "belly", there will
         //       be only one root and the closest point will not be at the ends
 
-        // roots[0].expect("get relevant root")
-        // TODO: clean up. roots[0] seems to fail sometimes?
-
-        // NOTE: this would be for the general case
+        // this would be for the general case
 
         let iter = roots.into_iter()
             .filter_map(identity)
@@ -1176,7 +1006,7 @@ impl TriangulationPass {
 }
 
 #[test]
-fn test_one_real_root() {
+fn test_solving_roots() {
 
     fn approx_equal(a: Option<f32>, b: f32, epsilon: f32) -> bool {
         if let Some(v) = a {
@@ -1234,17 +1064,6 @@ fn test_one_real_root() {
     let roots = TriangulationPass::solve_distance_derivative(1.0, 0.5, 0.5, 0.25);
     assert!(approx_equal(roots[0], -0.5, 1e-4), "the result was {:?} (first root should be {})", roots, -0.5);
 
-}
-
-struct CurvesState<'a> {
-    removed: &'a mut BitVec,
-    out: &'a mut Vec<f32>,
-}
-
-struct TriangulationState<'a> {
-    removed: &'a mut BitVec,
-    ears: &'a mut BitVec,
-    out: &'a mut Vec<f32>,
 }
 
 #[test]
