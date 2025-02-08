@@ -300,13 +300,10 @@ impl LoweringPass {
 
                 }
 
-                println!("all good bro.");
-
             } else if !a.is_base() && !b.is_base() && !c.is_base() {
                 // invalid case
                 todo!("error: three contol points in a row");
             } else {
-                println!("basic pt");
                 // "normal line" case
                 self.output.points.push(a);
                 increment = 1;
@@ -319,9 +316,9 @@ impl LoweringPass {
 
         }
 
-        // generate the output shape, with updated indices
         let shape_end = self.output.points.len() as i16;
-        println!("final len: {}", shape_end - shape_start);
+
+        // generate the output shape, with updated indices
         match shape.is_singular() {
             true  => self.output.shapes.push(Shape::new_singular(shape_start..shape_end, shape.instances_range().start)),
             false => self.output.shapes.push(Shape::new_instanced(shape_start..shape_end, shape.instances_range())),
@@ -747,63 +744,6 @@ impl TriangulationPass {
 
     }
 
-    // function to find the critical t values (inflection points and local extremes)
-    // of a cubic bézier curve
-    fn critical_points(a: CurvePoint, b: CurvePoint, c: CurvePoint, d: CurvePoint) -> Vec<f32> {
-
-        let mut t_values = Vec::new();
-
-        // find the t values where local extremes occur (solving the first derivative)
-        let ax = 3.0 * (-a.x() as f32 + 3.0 * (b.x() as f32 - c.x() as f32) + d.x() as f32);
-        let bx = 6.0 * ( a.x() as f32 - 2.0 *  b.x() as f32 + c.x() as f32);
-        let cx = 3.0 * ( b.x() as f32 - a.x() as f32);
-
-        let ay = 3.0 * (-a.y() as f32 + 3.0 * (b.y() as f32 - c.y() as f32) + d.y() as f32);
-        let by = 6.0 * ( a.y() as f32 - 2.0 *  b.y() as f32 + c.y() as f32);
-        let cy = 3.0 * ( b.y() as f32 - a.y() as f32);
-
-        // calculate discriminants for both x and y
-        let disc_x = bx * bx - 4.0 * ax * cx;
-        let disc_y = by * by - 4.0 * ay * cy;
-
-        // solve for t in the x direction
-        if disc_x >= 0.0 && ax != 0.0 {
-            let sqrt_disc = disc_x.sqrt();
-            let t1 = (-bx + sqrt_disc) / (2.0 * ax);
-            let t2 = (-bx - sqrt_disc) / (2.0 * ax);
-
-            if t1 >= 0.0 && t1 <= 1.0 {
-                t_values.push(t1);
-            }
-            if t2 >= 0.0 && t2 <= 1.0 {
-                t_values.push(t2);
-            }
-        }
-
-        // solve for t in the y direction
-        if disc_y >= 0.0 && ay != 0.0 {
-            let sqrt_disc = disc_y.sqrt();
-            let t1 = (-by + sqrt_disc) / (2.0 * ay);
-            let t2 = (-by - sqrt_disc) / (2.0 * ay);
-
-            if t1 >= 0.0 && t1 <= 1.0 {
-                t_values.push(t1);
-            }
-            if t2 >= 0.0 && t2 <= 1.0 {
-                t_values.push(t2);
-            }
-        }
-
-        // memove duplicates and sort the t values in ascending order
-        t_values.dedup();
-        t_values.sort_unstable_by(
-            |a, b| a.partial_cmp(b).unwrap()
-        ); // scuffed f32 sort
-
-        t_values
-
-    }
-
     fn lerp(p1: Point, p2: Point, t: f32) -> Point {
         Point::new(
             p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
@@ -828,7 +768,7 @@ impl TriangulationPass {
         let p23 = Self::lerp(p2, p3, t);
         let p   = Self::lerp(p12, p23, t);
         [[a, p1, p12, p], [p, p23, p3, d]]
-        // -- curve1 --   --- curve2  ---
+        // -- curve1 --    -- curve2  --
     }
 
     fn uvs_for_convexity(convex: bool) -> [f32; 6] {
@@ -836,16 +776,6 @@ impl TriangulationPass {
             true => Self::CONVEX,
             false => Self::CONCAVE,
         }
-    }
-
-    // y-flipped version
-    fn left_of_line(p: Point, line_start: Point, line_end: Point) -> bool {
-        let vector1_x = line_end.x - line_start.x;
-        let vector1_y = -(line_end.y - line_start.y);
-        let vector2_x = p.x - line_start.x;
-        let vector2_y = -(p.y - line_start.y);
-        let cross_product = vector1_x * vector2_y - vector1_y * vector2_x;
-        cross_product > 0.0
     }
 
     fn bezier_point([a, b, c]: [Point; 3], t: f32) -> Point {
@@ -877,7 +807,7 @@ impl TriangulationPass {
         debug_assert!(!inner.is_nan(), "closest point must not be on the end of the curve"); // TODO: remove and clamp to 0
 
         let root1 = (-b + inner) / (2.0*a);
-        let root2 = (-b - inner) / (2.0*a); // TODO: (?) check the distance and choose the closest root like in closest_split_point
+        let _root2 = (-b - inner) / (2.0*a); // TODO: (?) check the distance and choose the closest root like in closest_split_point
 
         root1
 
@@ -1088,57 +1018,3 @@ fn neighbours() {
     );
 
 }
-
-// #[test]
-// fn convex() {
-
-//     let points: &mut [CurvePoint] = &mut [
-//         CurvePoint::base(0, 0),
-//         CurvePoint::base(10, 0),
-//         CurvePoint::base(15, 5),
-//         CurvePoint::base(20, 10),
-//         CurvePoint::base(15, 15),
-//         CurvePoint::base(10, 20),
-//         CurvePoint::base(0, 20),
-//     ];
-
-//     points.reverse();
-
-//     let instances = &[
-//         Instance { pos: [0.0, 0.0, 0.0], texture: [1.0, 1.0, 1.0] },
-//     ];
-
-//     let mut state = Triangulator::new();
-//     state.size = Size { w: 20, h: 20 };
-//     state.triangulate(points, instances, true).unwrap();
-
-//     dbg!(&state.singular.vertices);
-
-// }
-
-// #[test]
-// fn curves() {
-
-//     let points: &mut [CurvePoint] = &mut [
-//         CurvePoint::base(10, 10),
-//         CurvePoint::control(20, 20),
-//         CurvePoint::control(20, 20),
-//         CurvePoint::control(20, 20),
-//         CurvePoint::base(10, 10),
-//     ];
-
-//     let instances = &[
-//         Instance { pos: [0.0, 0.0, 0.0], texture: [1.0, 1.0, 1.0] },
-//     ];
-
-//     let mut state = Triangulator::new();
-//     state.size = Size { w: 20, h: 20 };
-//     let result = state.curves(points, instances, true);
-
-//     assert_eq!(
-//         result,
-//         Err("invalid configuration of base/control points")
-//     );
-
-
-// }

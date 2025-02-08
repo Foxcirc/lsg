@@ -44,7 +44,7 @@ pub enum WindowEvent {
     MouseMotion { x: u16, y: u16 },
     MouseDown { x: u16, y: u16, button: MouseButton },
     MouseUp { x: u16, y: u16, button: MouseButton },
-    MouseScroll { axis: ScrollAxis, value: f64 }, // TODO: make not be float
+    MouseScroll { axis: ScrollAxis, value: i16 },
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
     TextCompose { chr: char },

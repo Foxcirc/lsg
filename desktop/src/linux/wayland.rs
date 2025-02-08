@@ -2375,16 +2375,18 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
                 let axis = match axis {
                     WEnum::Value(Axis::VerticalScroll) => ScrollAxis::Vertical,
                     WEnum::Value(Axis::HorizontalScroll) => ScrollAxis::Horizontal,
-                    WEnum::Value(..) => return,
+                    WEnum::Value(..) => return, // TODO: raise more soft-errors in general, maybe there's an "error" event
                     WEnum::Unknown(..) => return
                 };
 
                 let surface = evl.mouse_data.has_focus.as_ref().unwrap();
                 let id = get_window_id(&surface);
 
+                let adjusted_value = (value * 1000.0) as i16;
+
                 evl.events.push(Event::Window {
                     id,
-                    event: WindowEvent::MouseScroll { axis, value }
+                    event: WindowEvent::MouseScroll { axis, value: adjusted_value }
                 });
 
             },
