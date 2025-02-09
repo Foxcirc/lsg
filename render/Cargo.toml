@@ -5,8 +5,10 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+# lsg-family dependencies
 common = { path = "../common" }
-tracing = "0.1.40"
-egl = { path = "../egl" } # wayland, windows, android
+egl = { path = "../egl" }
 gl = { path = "../gl" }
-bv = "0.11.1" # bitvecs
+tracing = "0.1.40" # TODO: use tracing.workspace = true
+# bitvecs
+bv = "0.11.1"

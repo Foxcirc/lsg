@@ -39,7 +39,7 @@ void main() {
             // v = vec3(float(int(curveX * 10.0) / 10), curveY, 0.0);
             v = texture;
         }
-        Color = vec4(v, 1.0);
+        Color = vec4(v, 1.0); // TODO: make the texture include an alpha channel
     } else {
         discard;
     }

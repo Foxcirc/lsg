@@ -4,7 +4,7 @@ use std::mem::size_of;
 use crate::CurveGeometry;
 use common::*;
 use gl::AttribLocation;
-use crate::transform;
+use crate::shaper;
 
 /// A point in normalized device coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -228,7 +228,7 @@ struct ShapeRenderer {
     singular: SingularData,
     instanced: InstancedData,
     program: gl::LinkedProgram,
-    transformer: transform::Transformer,
+    transformer: shaper::GeometryShaper,
 }
 
 impl ShapeRenderer {
@@ -246,7 +246,7 @@ impl ShapeRenderer {
         gl::attach_shader(&mut builder, frag);
         let program = gl::link_program(builder).unwrap(); // TODO: compile shaders to binary in a build.rs script
 
-        let transformer = transform::Transformer::new();
+        let transformer = shaper::GeometryShaper::new();
 
         let singular = {
             let vdata = gl::gen_buffer(gl::BufferType::Array);

@@ -82,12 +82,12 @@ struct TriangulationState<'a> {
     out: &'a mut Vec<f32>,
 }
 
-pub struct Transformer {
+pub struct GeometryShaper {
     lower: LoweringPass,
     trig: TriangulationPass,
 }
 
-impl Transformer {
+impl GeometryShaper {
 
     pub fn process<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
