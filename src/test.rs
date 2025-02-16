@@ -53,11 +53,40 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     // add movable point
 
+    /*
     geometry.points.push(CurvePoint::base(40, 400));
     geometry.points.push(CurvePoint::ctrl(240, 400));
     geometry.points.push(CurvePoint::base(240, 200));
 
     geometry.shapes.push(Shape::new_instanced(4..7, 1..3));
+    geometry.instances.extend([
+        Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
+        Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
+    ]);
+
+    */
+
+    let shape = [
+        // outer sqare
+        CurvePoint::base(50, 250),
+        CurvePoint::base(50, 400),
+        CurvePoint::base(250, 400),
+        CurvePoint::base(250, 250),
+        // magic trick
+        CurvePoint::base(250, 200),
+        CurvePoint::base(250, 50),
+        CurvePoint::base(50, 50),
+        CurvePoint::base(50, 200),
+        CurvePoint::base(249, 200),
+        // return
+        CurvePoint::base(249, 250),
+    ];
+
+    geometry.points.extend(shape);
+
+    let len = geometry.points.len() as i16;
+    geometry.shapes.push(Shape::new_instanced(4..len, 1..3));
+
     geometry.instances.extend([
         Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
@@ -86,7 +115,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected?
                         println!("redrawing...");
                         window.pre_present_notify();
-                        renderer.draw(&geometry, &surface).ok();
+                        let result = renderer.draw(&geometry, &surface);
+                        if let Err(err) = result {
+                            println!("draw failed: {err:?}");
+                        }
                         // window.redraw_with_vsync(&mut evl);
                         // evl.push_redraw_test(&window);
                     },
@@ -99,6 +131,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseMotion { x, y } => {
 
+                        /*
                         if let Some(point) = geometry.points.last_mut() {
                             if point.is_base() {
                                 *point = CurvePoint::base(x as i16, y as i16);
@@ -108,6 +141,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         window.redraw_with_vsync(&mut evl);
+
+                        */
 
                     },
 
