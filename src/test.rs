@@ -77,9 +77,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         CurvePoint::base(250, 50),
         CurvePoint::base(50, 50),
         CurvePoint::base(50, 200),
-        CurvePoint::base(249, 200),
+        CurvePoint::base(250, 200),
         // return
-        CurvePoint::base(249, 250),
+        CurvePoint::base(250, 250),
     ];
 
     geometry.points.extend(shape);
@@ -113,11 +113,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Redraw => {
                         // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected?
-                        println!("redrawing...");
                         window.pre_present_notify();
                         let result = renderer.draw(&geometry, &surface);
                         if let Err(err) = result {
-                            println!("draw failed: {err:?}");
+                            tracing::error!("draw failed: {err:?}");
                         }
                         // window.redraw_with_vsync(&mut evl);
                         // evl.push_redraw_test(&window);

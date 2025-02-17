@@ -672,6 +672,14 @@ impl TriangulationPass {
         let [ia, ib, ic] = Self::neighbours(removed, idx);
         let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
 
+        // short curcuit if the triangle has zero area.
+        // we wan't to trat these as ears because this allows ren-
+        // dering seemingly disconnected areas as one shape
+        let abc = Self::triangle_area(a, b, c);
+        if abc < 1e-6 { // account for precision errors
+            return true
+        }
+
         // short curcuit if it is concave
         let convex = Self::convex([a.into(), b.into(), c.into()]);
         if !convex {
