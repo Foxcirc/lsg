@@ -35,7 +35,7 @@ void main() {
         value = -value; // invert what we are filling for concave curves
     }
 
-    float threshold = 0.002;
+    float threshold = 0.001;
     float smoothness = 0.008;
     float multiplier;
     if ((value < threshold) && isCurve) {

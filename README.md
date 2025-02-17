@@ -3,6 +3,8 @@
     <img src="https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/icon.png" alt="colourful icon with the letters 'lsg'" style="display:block; margin:auto; width: 150px">
 </div>
 
+Disclaimer: Work in progress, this is still very much unfinished!
+
 Light and Small Gui Apps
 ========================
 

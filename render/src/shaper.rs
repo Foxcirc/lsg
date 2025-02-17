@@ -596,9 +596,9 @@ impl TriangulationPass {
 
     }
 
-    const CONVEX:  [f32; 6] = [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]; // curve coords
-    const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]; // curve coords
-    const FILLED:  [f32; 6] = [2.0; 6]; // curve coords
+    const CONVEX:  [f32; 6] = [0.5, 0.5, 0.75, 0.5, 1.0, 1.0];
+    const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5];
+    const FILLED:  [f32; 6] = [2.0; 6]; // (2.0 indicates non-curve triangle)
 
     fn generate_triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
 
