@@ -53,7 +53,6 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     // add movable point
 
-    /*
     geometry.points.push(CurvePoint::base(40, 400));
     geometry.points.push(CurvePoint::ctrl(240, 400));
     geometry.points.push(CurvePoint::base(240, 200));
@@ -64,8 +63,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
     ]);
 
-    */
-
+    /*
     let shape = [
         // outer sqare
         CurvePoint::base(50, 250),
@@ -91,6 +89,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
     ]);
+    */
 
     // run the event loop
     block_on(async {

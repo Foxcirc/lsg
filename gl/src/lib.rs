@@ -35,7 +35,7 @@
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
 use num_enum::TryFromPrimitive;
-use common::Size;
+use common::{Size, Rect};
 
 #[derive(Debug)]
 pub struct FnsUnknown;
@@ -215,11 +215,15 @@ pub enum Property {
     ArrayBufferBinding         = gl::ARRAY_BUFFER_BINDING,
     ElementBufferBinding       = gl::ELEMENT_ARRAY_BUFFER_BINDING,
     VertexArrayBinding         = gl::VERTEX_ARRAY_BINDING,
-    TextureD1Binding           = gl::TEXTURE_BINDING_1D,
-    TextureD2Binding           = gl::TEXTURE_BINDING_2D,
-    TextureD3Binding           = gl::TEXTURE_BINDING_3D,
-    TextureD1ArrayBinding      = gl::TEXTURE_BINDING_1D_ARRAY,
-    TextureD2ArrayBinding      = gl::TEXTURE_BINDING_2D_ARRAY,
+
+    Texture1DBinding           = gl::TEXTURE_BINDING_1D,
+    Texture2DBinding           = gl::TEXTURE_BINDING_2D,
+    Texture3DBinding           = gl::TEXTURE_BINDING_3D,
+    Texture1DArrayBinding      = gl::TEXTURE_BINDING_1D_ARRAY,
+    Texture2DArrayBinding      = gl::TEXTURE_BINDING_2D_ARRAY,
+    Texture2DMultisampleBinding      = gl::TEXTURE_BINDING_2D_MULTISAMPLE,
+    Texture2DMultisampleArrayBinding = gl::TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY,
+
     CurrentProgram             = gl::CURRENT_PROGRAM,
     RenderBufferBinding        = gl::RENDERBUFFER_BINDING,
     UniformBufferBinding       = gl::UNIFORM_BUFFER_BINDING,
@@ -657,8 +661,12 @@ pub fn bind_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, fbo.id) };
 }
 
-pub fn bind_default_frame_buffer() {
-    unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, 0) };
+pub fn bind_read_frame_buffer(fbo: &FrameBuffer) {
+    unsafe { gl::BindFramebuffer(gl::READ_FRAMEBUFFER, fbo.id) };
+}
+
+pub fn bind_draw_frame_buffer(fbo: &FrameBuffer) {
+    unsafe { gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, fbo.id) };
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -668,14 +676,24 @@ pub enum AttachmentPoint {
     Color1 = gl::COLOR_ATTACHMENT1,
 }
 
-pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, texture: &Texture, level: usize) {
+pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, texture: &Texture, lod: usize) {
     bind_frame_buffer(fbo);
     unsafe { gl::FramebufferTexture2D(
         gl::FRAMEBUFFER,
         attachment as u32,
         texture.kind as u32,
         texture.id as u32,
-        level as i32
+        lod as i32
+    ) }
+}
+
+pub fn frame_buffer_render_buffer(fbo: &FrameBuffer, attachment: AttachmentPoint, rbo: &RenderBuffer) {
+    bind_frame_buffer(fbo);
+    unsafe { gl::FramebufferRenderbuffer(
+        gl::FRAMEBUFFER,
+        attachment as u32,
+        gl::RENDERBUFFER,
+        rbo.id,
     ) }
 }
 
@@ -684,10 +702,11 @@ pub fn draw_buffers(fbo: &FrameBuffer, buffers: &[AttachmentPoint]) {
     unsafe { gl::DrawBuffers(buffers.len() as i32, buffers.as_ptr().cast()) }
 }
 
+#[track_caller]
 pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f32]) {
     bind_frame_buffer(fbo);
-    // somebody has to be punished for creating this horrible kind of api...
-    // why is this completely different compared to ALL other functions that deal with fbo's
+    // somebody has to be seriously punished for creating this horrible api...
+    // why is this completely different compared to ALL other functions that deal with fbo's!?
     let (param1, param2) = match attachment {
         AttachmentPoint::Color0 => (gl::COLOR, 0),
         AttachmentPoint::Color1 => (gl::COLOR, 1),
@@ -697,9 +716,61 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
     unsafe { gl::ClearBufferfv(param1, param2, safe.as_ptr()) }
 }
 
+/// Copies contents from `source` to `target`. Currently only copies the **color buffer**.
+/// You don't need to bind anything yourself!
+pub fn blit_frame_buffer(target: (&FrameBuffer, Rect), source: (&FrameBuffer, Rect), filter: FilterValue) {
+    bind_draw_frame_buffer(target.0);
+    bind_read_frame_buffer(source.0);
+    unsafe { gl::BlitFramebuffer(
+        source.1.pos.x, source.1.pos.y, source.1.size.w as i32, source.1.size.h as i32, // source rect
+        target.1.pos.x, target.1.pos.y, target.1.size.w as i32, target.1.size.h as i32, // target rect
+        gl::COLOR_BUFFER_BIT,
+        filter as u32,
+    ); }
+}
+
+pub struct RenderBuffer {
+    id: u32,
+}
+
+impl Drop for RenderBuffer {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            unsafe { gl::DeleteRenderbuffers(1, &self.id) }
+        }
+    }
+}
+
+impl RenderBuffer {
+    pub const fn invalid() -> Self { Self { id: 0 } }
+    pub fn current() -> Self { // TODO: Make all the Option<Self> and remove unwrap_or(0), rn silently failing is pretty bad design
+        Self { id: get_integer_v(Property::RenderBufferBinding).unwrap_or(0) as u32 }
+    }
+}
+
+pub fn gen_render_buffer() -> RenderBuffer {
+    let mut id = 0;
+    unsafe { gl::GenRenderbuffers(1, &mut id) };
+    RenderBuffer { id }
+}
+
+pub fn bind_render_buffer(this: &RenderBuffer) {
+    unsafe { gl::BindRenderbuffer(gl::RENDERBUFFER, this.id) }
+}
+
+pub fn render_buffer_storage(this: &RenderBuffer, format: PreciseColorFormat, size: Size) {
+    bind_render_buffer(this);
+    unsafe { gl::RenderbufferStorage(gl::RENDERBUFFER, format as u32, size.w as i32, size.h as i32); }
+}
+
+pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: PreciseColorFormat, size: Size) {
+    bind_render_buffer(this);
+    unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.w as i32, size.h as i32); }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum ColorFormat {
+pub enum PreciseColorFormat {
     R8      = gl::R8,
     Rgba8   = gl::RGBA8,
     Rgba16F = gl::RGBA16F,
@@ -707,8 +778,7 @@ pub enum ColorFormat {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-// why the fuck are color and pixel format a different thing
-pub enum PixelFormat {
+pub enum BaseColorFormat { // why the fuck does this even exist...
     Rgba = gl::RGBA,
     Red  = gl::RED,
 }
@@ -716,16 +786,13 @@ pub enum PixelFormat {
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum TextureType {
-    /// 1 dimensional
-    D1        = gl::TEXTURE_1D,
-    /// 2 dimensional
-    D2        = gl::TEXTURE_2D,
-    /// 3 dimensional
-    D3        = gl::TEXTURE_3D,
-    /// 1 dimensional array
-    D1Array   = gl::TEXTURE_1D_ARRAY,
-    /// 2 dimensional array
-    D2Array  = gl::TEXTURE_2D_ARRAY,
+    Basic1D             = gl::TEXTURE_1D,
+    Basic2D             = gl::TEXTURE_2D,
+    Basic3D             = gl::TEXTURE_3D,
+    Array1D             = gl::TEXTURE_1D_ARRAY,
+    Array2D             = gl::TEXTURE_2D_ARRAY,
+    Multisample2D       = gl::TEXTURE_2D_MULTISAMPLE,
+    MultisampleArray2D  = gl::TEXTURE_2D_MULTISAMPLE_ARRAY,
 }
 
 pub struct Texture {
@@ -742,14 +809,17 @@ impl Drop for Texture {
 }
 
 impl Texture {
-    pub const fn invalid() -> Self { Self { id: 0, kind: TextureType::D1 } }
+    pub const fn invalid() -> Self { Self { id: 0, kind: TextureType::Basic1D } }
+    /// Returns the texture which is currently bound to that type.
     pub fn current(kind: TextureType) -> Self {
         match kind {
-            TextureType::D1 => Self { id: get_integer_v(Property::TextureD1Binding).unwrap_or(0) as u32, kind },
-            TextureType::D2 => Self { id: get_integer_v(Property::TextureD2Binding).unwrap_or(0) as u32, kind },
-            TextureType::D3 => Self { id: get_integer_v(Property::TextureD3Binding).unwrap_or(0) as u32, kind },
-            TextureType::D1Array => Self { id: get_integer_v(Property::TextureD1ArrayBinding).unwrap_or(0) as u32, kind },
-            TextureType::D2Array => Self { id: get_integer_v(Property::TextureD2ArrayBinding).unwrap_or(0) as u32, kind },
+            TextureType::Basic1D => Self { id: get_integer_v(Property::Texture1DBinding).unwrap_or(0) as u32, kind },
+            TextureType::Basic2D => Self { id: get_integer_v(Property::Texture2DBinding).unwrap_or(0) as u32, kind },
+            TextureType::Basic3D => Self { id: get_integer_v(Property::Texture3DBinding).unwrap_or(0) as u32, kind },
+            TextureType::Array1D => Self { id: get_integer_v(Property::Texture1DArrayBinding).unwrap_or(0) as u32, kind },
+            TextureType::Array2D => Self { id: get_integer_v(Property::Texture2DArrayBinding).unwrap_or(0) as u32, kind },
+            TextureType::Multisample2D      => Self { id: get_integer_v(Property::Texture2DMultisampleBinding).unwrap_or(0) as u32, kind },
+            TextureType::MultisampleArray2D => Self { id: get_integer_v(Property::Texture2DMultisampleArrayBinding).unwrap_or(0) as u32, kind },
         }
     }
 }
@@ -764,34 +834,48 @@ pub fn bind_texture(texture: &Texture) {
     unsafe { gl::BindTexture(texture.kind as u32, texture.id) };
 }
 
-pub fn tex_image_2d(texture: &Texture, level: usize, fcolor: ColorFormat, size: Size, fpixel: PixelFormat, kind: DataType) {
+pub fn tex_image_2d(texture: &Texture, lod: usize, fcolor: PreciseColorFormat, size: Size, fpixel: BaseColorFormat, kind: DataType) {
     bind_texture(texture);
     unsafe { gl::TexImage2D(
         texture.kind as u32,
-        level as i32,
+        lod as i32,
         fcolor as i32,
         size.w as i32, size.h as i32,
-        0,
+        0, // "must always be 0"
         fpixel as u32,
         kind as u32,
         null()
     ) }
 }
 
+/// Not available in ES versions.
+pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: PreciseColorFormat, size: Size) {
+    bind_texture(texture);
+    unsafe { gl::TexImage2DMultisample(
+        texture.kind as u32,
+        samples as i32,
+        fcolor as u32,
+        size.w as i32,
+        size.h as i32,
+        1,
+    ); }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum TextureProperty {
+pub enum FilterKind {
     MagFilter = gl::TEXTURE_MAG_FILTER,
     MinFilter = gl::TEXTURE_MIN_FILTER,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum TexturePropertyValue {
+pub enum FilterValue {
     Linear = gl::LINEAR,
+    Nearest = gl::NEAREST,
 }
 
-pub fn tex_parameter_i(texture: &Texture, property: TextureProperty, value: TexturePropertyValue) {
+pub fn tex_parameter_i(texture: &Texture, property: FilterKind, value: FilterValue) {
     bind_texture(texture);
     unsafe { gl::TexParameteri(
         texture.kind as u32,

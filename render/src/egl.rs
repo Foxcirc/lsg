@@ -117,7 +117,8 @@ struct CompositeRenderer {
     vao: gl::VertexArray,
     #[allow(unused)] // to keep it alive
     vbo: gl::Buffer,
-    texture: gl::Texture,
+    // texture: gl::Texture,
+    rbo: gl::RenderBuffer,
     program: gl::LinkedProgram,
 }
 impl CompositeRenderer {
@@ -167,13 +168,15 @@ impl CompositeRenderer {
         };
 
         let fbo = gl::gen_frame_buffer();
+        let rbo = gl::gen_render_buffer();
 
         Ok(Self {
             fbo,
             current: Size::new(0, 0),
             vao,
             vbo,
-            texture: gl::Texture::invalid(),
+            // texture: gl::Texture::invalid(),
+            rbo,
             program,
         })
 
@@ -184,15 +187,20 @@ impl CompositeRenderer {
         // (re)create composition texture if necessary
         if size != self.current {
 
-            let texture = gl::gen_texture(gl::TextureType::D2);
+            gl::render_buffer_storage_multisample(&self.rbo, 4, gl::PreciseColorFormat::Rgba8, size);
+            gl::frame_buffer_render_buffer(&self.fbo, gl::AttachmentPoint::Color0, &self.rbo);
+
+            /*
+            let texture = gl::gen_texture(gl::TextureType::Basic2D);
             gl::tex_image_2d(&texture, 0, gl::ColorFormat::Rgba8, size, gl::PixelFormat::Rgba, gl::DataType::UByte);
             gl::tex_parameter_i(&texture, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
             gl::tex_parameter_i(&texture, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
 
             gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &texture, 0);
+            */
 
             // drop the old one and keep the new one alive
-            self.texture = texture;
+            // self.texture = texture;
             self.current = size;
 
         }
@@ -201,11 +209,16 @@ impl CompositeRenderer {
 
     pub fn draw(&mut self, target: &gl::FrameBuffer) {
 
+        let rect = Rect::new(TodoFuckMePoint::ORIGIN, self.current);
+        gl::blit_frame_buffer((target, rect), (&self.fbo, rect), gl::FilterValue::Nearest);
+
+        /*
         gl::disable(gl::Capability::Blend);
         gl::active_texture(0, &self.texture);
 
         gl::clear(target, 0.0, 0.0, 0.0, 1.0);
         gl::draw_arrays(target, &self.program, &self.vao, gl::Primitive::Triangles, 0, 6);
+        */
 
     }
 

@@ -7,5 +7,7 @@
 pub mod shared;
 pub use shared::*;
 
+pub mod svg;
+
 pub(crate) mod shaper;
 pub(crate) use shaper::*;
