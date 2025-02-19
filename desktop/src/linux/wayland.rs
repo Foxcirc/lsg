@@ -1939,16 +1939,16 @@ fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, mut guard: Mu
         frac_scale_data.viewport.set_destination(width as i32, height as i32);
     };
 
+    if !guard.already_got_redraw_event {
+        guard.already_got_redraw_event = true;
+        evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
+    }
+
     // foreward the final configuration state to the user
     evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
         size: Size { w: width, h: height },
         flags: guard.flags
     } });
-
-    if !guard.already_got_redraw_event {
-        guard.already_got_redraw_event = true;
-        evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Redraw });
-    }
 
 }
 
