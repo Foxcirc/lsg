@@ -971,6 +971,7 @@ pub fn uniform_4f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: 
 #[repr(u32)]
 pub enum Capability {
     Blend = gl::BLEND,
+    AlphaToCoverage = gl::SAMPLE_ALPHA_TO_COVERAGE,
 }
 
 pub fn enable(capability: Capability) {

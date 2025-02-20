@@ -12,7 +12,7 @@ void main() {
     float curveX = curvePos.x;
     float curveY = curvePos.y;
 
-    // calculate if this shape is even part of a curve
+    // calculate if this shape is even a curve-triangle
     bool isCurve = curveX != 2.0;
 
     // extract convexity information out of the curvePos
@@ -29,23 +29,29 @@ void main() {
         convex = false;
     }
 
-    // magic curve rescaling equation
+    // decide if we are inside the curve
     float value = curveY - pow(curveX, 2.0);
-    if (!convex) {
-        value = -value; // invert what we are filling for concave curves
+    if (!convex) { // invert what we are filling for concave curves
+        value = -value;
     }
 
-    float threshold = 0.001;
-    float smoothness = 0.008;
     float multiplier;
-    if ((value < threshold) && isCurve) {
-        multiplier = smoothstep(threshold - smoothness, threshold + smoothness, value);
-    } else {
+    if (value < 0.0 && isCurve) { // outside the curve (completely transparent)
+        multiplier = 0.0;
+    } else if (value < 1.0 / 500.0 && isCurve) { // anti-aliasing
+        multiplier = 0.5;
+    } else if (value < 3.0 / 500.0 && isCurve) { // anti-aliasing
+        multiplier = 0.8;
+    } else { // inside the curuve
         multiplier = 1.0;
     }
 
-    float alpha = 1.0; // TODO: add alpha channel to texture
-    Color = vec4(texture, alpha * multiplier);
+    float red = texture.r;
+    if (isCurve) {
+        red = curveX;
+    }
 
+    float alpha = 1.0; // TODO: add alpha channel to texture
+    Color = vec4(red, texture.gb, alpha * multiplier);
 
 }
