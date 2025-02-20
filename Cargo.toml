@@ -5,7 +5,7 @@ description = "light and small gui apps"
 edition = "2021"
 
 [workspace]
-members = [ "common","desktop", "egl", "gl", "render", "text"]
+members = [ "common","desktop", "egl", "gl", "render", "text", "widget"]
 package.version = "0.1.0"
 package.edition = "2021"
 package.authors = ["foxcirc"]
