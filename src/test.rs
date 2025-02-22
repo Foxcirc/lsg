@@ -2,7 +2,6 @@
 //! Interactive test to try out features that are currently being worked on.
 
 use futures_lite::future::block_on;
-use render::{CurveGeometry, CurvePoint, Instance, Shape};
 use tracing::debug;
 
 use desktop::*;
@@ -151,10 +150,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
-                            match shape.is_singular() {
-                                true => shape.polygon.end += 1,
-                                false => shape.polygon.end -= 1,
-                            }
+                            shape.polygon.end += 1;
                         }
 
                         debug!("add point {:?}", geometry.points.last().unwrap());
@@ -171,10 +167,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
-                            match shape.is_singular() {
-                                true => shape.polygon.end += 1,
-                                false => shape.polygon.end -= 1,
-                            }
+                            shape.polygon.end += 1;
                         }
 
                         debug!("add control point {:?}", geometry.points.last().unwrap());

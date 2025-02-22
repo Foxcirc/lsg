@@ -8,8 +8,6 @@ use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
 use common::*;
 
-use crate::{CurveGeometry, CurvePoint, GlPoint, Instance, Shape};
-
 // TODO: Idea for interop with this an my gl library: Add a struct that is a kind of of "description" of the vertex data layout
 // used by an algorithm. Basically Transformer provides this kind of description which the renderer then uses to setup its buffers in a simple way
 // this way layout difference bugs would be prevented
@@ -170,7 +168,7 @@ impl LoweringPass {
         self.output.instances.extend_from_slice(instances);
 
         // save the start index so we later know which geometry belongs to the current shape
-        let shape_start = self.output.points.len() as i16;
+        let shape_start = self.output.points.len() as u16;
 
         let mut idx = 0;
         loop {
@@ -316,7 +314,7 @@ impl LoweringPass {
 
         }
 
-        let shape_end = self.output.points.len() as i16;
+        let shape_end = self.output.points.len() as u16;
 
         // generate the output shape, with updated indices
         match shape.is_singular() {

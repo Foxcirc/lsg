@@ -1,33 +1,8 @@
 
 use std::mem::size_of;
 
-use crate::CurveGeometry;
 use common::*;
-use gl::AttribLocation;
-use crate::shaper;
-
-/// A point in normalized device coordinates.
-#[derive(Debug, Clone, Copy)]
-pub struct GlPoint {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl GlPoint {
-
-    pub fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-
-    /// Convert to normalized device coordinates using the given window size.
-    pub fn from(p: Point, size: Size) -> Self {
-        Self {
-            x:       2.0 * (p.x as f32 / size.w  as f32) - 1.0,
-            y: 1.0 - 2.0 * (p.y as f32 / size.h as f32)
-        }
-    }
-
-}
+use crate::GeometryShaper;
 
 pub struct GlSurface {
     inner: egl::v2::Surface,
@@ -153,7 +128,7 @@ impl CompositeRenderer {
             let vbo = gl::gen_buffer(gl::BufferType::Array);
 
             let f = size_of::<f32>();
-            gl::vertex_attrib_pointer(&vao, &vbo, AttribLocation::new(0), 2, gl::DataType::Float, false, 2*f, 0);
+            gl::vertex_attrib_pointer(&vao, &vbo, gl::AttribLocation::new(0), 2, gl::DataType::Float, false, 2*f, 0);
 
            // a single full screen rect
             let vertices: [f32; 12] = [
@@ -241,7 +216,7 @@ struct ShapeRenderer {
     singular: SingularData,
     instanced: InstancedData,
     program: gl::LinkedProgram,
-    transformer: shaper::GeometryShaper,
+    transformer: GeometryShaper,
 }
 
 impl ShapeRenderer {
@@ -259,7 +234,7 @@ impl ShapeRenderer {
         gl::attach_shader(&mut builder, frag);
         let program = gl::link_program(builder).unwrap(); // TODO: compile shaders to binary in a build.rs script
 
-        let transformer = shaper::GeometryShaper::new();
+        let transformer = GeometryShaper::new();
 
         let singular = {
             let vdata = gl::gen_buffer(gl::BufferType::Array);
