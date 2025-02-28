@@ -344,7 +344,7 @@ pub mod v2 {
             self.damage_rects.clear();
             self.damage_rects.extend_from_slice(damage.rects);
             for rect in self.damage_rects.iter_mut() {
-                rect.pos.y = surface.size.h as i32 - rect.pos.y - rect.size.h as i32;
+                rect.pos.y = surface.size.h as isize - rect.pos.y - rect.size.h as isize;
             }
 
             if let Some(func) = self.instance.swap_buffers_with_damage {

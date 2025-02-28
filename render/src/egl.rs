@@ -184,7 +184,7 @@ impl CompositeRenderer {
 
     pub fn draw(&mut self, target: &gl::FrameBuffer) {
 
-        let rect = Rect::new(TodoFuckMePoint::ORIGIN, self.current);
+        let rect = Rect::new(PhysicalPoint::ORIGIN, self.current);
         gl::blit_frame_buffer((target, rect), (&self.fbo, rect), gl::FilterValue::Nearest);
 
         /*

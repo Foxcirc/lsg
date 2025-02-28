@@ -38,7 +38,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         CurvePoint::base(500, 500),
         CurvePoint::base(500, 0),
     ]);
-    geometry.shapes.push(Shape::new_singular(0..4, 0));
+    geometry.shapes.push(Shape::singular(0..4, 0));
     geometry.instances.push(Instance {
         pos: [0.0, 0.0, 0.5],
         texture: [0.1, 0.1, 0.14],
@@ -56,7 +56,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     geometry.points.push(CurvePoint::ctrl(240, 400));
     geometry.points.push(CurvePoint::base(240, 200));
 
-    geometry.shapes.push(Shape::new_instanced(4..7, 1..3));
+    geometry.shapes.push(Shape::instanced(4..7, 1..3));
     geometry.instances.extend([
         Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },

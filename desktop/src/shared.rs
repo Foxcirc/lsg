@@ -84,7 +84,7 @@ pub enum DndEvent {
 #[derive(Debug)]
 pub enum CursorStyle {
     Hidden,
-    Custom { icon: CustomIcon, hotspot: Point },
+    Custom { icon: CustomIcon, hotspot: PhysicalPoint },
     Predefined { shape: CursorShape }
 }
 

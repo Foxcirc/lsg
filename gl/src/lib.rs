@@ -716,14 +716,14 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
     unsafe { gl::ClearBufferfv(param1, param2, safe.as_ptr()) }
 }
 
-/// Copies contents from `source` to `target`. Currently only copies the **color buffer**.
+/// Copy a region from `source` to `target`. Currently only copies the **color buffer**.
 /// You don't need to bind anything yourself!
 pub fn blit_frame_buffer(target: (&FrameBuffer, Rect), source: (&FrameBuffer, Rect), filter: FilterValue) {
     bind_draw_frame_buffer(target.0);
     bind_read_frame_buffer(source.0);
     unsafe { gl::BlitFramebuffer(
-        source.1.pos.x, source.1.pos.y, source.1.size.w as i32, source.1.size.h as i32, // source rect
-        target.1.pos.x, target.1.pos.y, target.1.size.w as i32, target.1.size.h as i32, // target rect
+        source.1.pos.x as i32, source.1.pos.y as i32, source.1.size.w as i32, source.1.size.h as i32, // source rect
+        target.1.pos.x as i32, target.1.pos.y as i32, target.1.size.w as i32, target.1.size.h as i32, // target rect
         gl::COLOR_BUFFER_BIT,
         filter as u32,
     ); }

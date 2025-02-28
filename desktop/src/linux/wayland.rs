@@ -449,8 +449,8 @@ impl<T: 'static + Send> BaseWindow<T> {
 
         let shared = Arc::new(Mutex::new(WindowShared {
             id,
-            new_width:  size.w,
-            new_height: size.h,
+            new_width:  size.w as u32,
+            new_height: size.h as u32,
             flags: ConfigureFlags::default(),
             redraw_requested: false,
             frame_callback_registered: false,
@@ -1020,7 +1020,7 @@ impl CustomIcon {
         // some basic checks that the dimensions of the data match the specified size
 
         debug_assert!(
-            data.len() as u32 == size.w * size.h * bytes_per_pixel as u32,
+            data.len() == size.w * size.h * bytes_per_pixel as usize,
             "length of data doesn't match specified dimensions and format"
         );
 
@@ -1136,6 +1136,8 @@ impl<T: 'static + Send> LayerWindow<T> {
 
     /// # Errors
     /// Will return `Unsupported` if the neceserry extension (ZwlrLayerShellV1) is not present.
+    /// # Panics
+    /// `size` must be < u32::MAX
     pub fn new(evl: &mut EventLoop<T>, size: Size, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, EvlError> {
 
         let base = BaseWindow::new(evl, size);
@@ -1162,7 +1164,7 @@ impl<T: 'static + Send> LayerWindow<T> {
             &evb.qh, Arc::clone(&base.shared)
         );
 
-        zwlr_surface.set_size(size.w, size.h);
+        zwlr_surface.set_size(size.w as u32, size.h as u32);
 
         base.wl_surface.commit();
 
@@ -1474,7 +1476,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> f
             },
             WlOutputEvent::Mode { flags, width, height, refresh } => {
                 if flags.into_result().is_ok_and(|it| it.contains(WlOutputMode::Current)) {
-                        guard.size = Size { w: width as u32, h: height as u32 };
+                        guard.size = Size { w: width as usize, h: height as usize };
                     guard.refresh = refresh as u32;
                 }
             },
@@ -1946,7 +1948,7 @@ fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, mut guard: Mu
 
     // foreward the final configuration state to the user
     evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
-        size: Size { w: width, h: height },
+        size: Size { w: width as usize, h: height as usize },
         flags: guard.flags
     } });
 
@@ -1984,11 +1986,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
     }
 }
 
-// global events
 impl<T: 'static + Send> wayland_client::Dispatch<WlCompositor, ()> for WaylandState<T> { ignore!(WlCompositor, ()); }
-
-// surface events (like moving onto an output etc.)
 impl<T: 'static + Send> wayland_client::Dispatch<WlSurface, ()> for WaylandState<T> { ignore!(WlSurface, ()); }
+impl<T: 'static + Send> wayland_client::Dispatch<WlRegion, ()> for WaylandState<T> { ignore!(WlRegion, ()); }
 
 impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> for WaylandState<T> {
     fn event(
@@ -2012,10 +2012,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> 
     }
 }
 
-// region events
-impl<T: 'static + Send> wayland_client::Dispatch<WlRegion, ()> for WaylandState<T> { ignore!(WlRegion, ()); }
-
-// input events
 impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandState<T> {
     fn event(
             evl: &mut Self,
@@ -2435,10 +2431,10 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut WaylandState<T>, id: Wi
 
 #[derive(Debug)]
 pub enum EvlError {
-    // TODO: document variants
+    // TODO: rework the error system
     Unsupported { name: &'static str, },
     InvalidLocale { value: String },
-    Dbus { msg: String },
+    Dbus { msg: String }, // TODO: remove this, as this is an implementation specific detail
     Fatal { msg: String },
 }
 

@@ -55,17 +55,11 @@ pub struct InstancedData {
 }
 
 #[derive(Clone, Copy)]
-enum ShapeKind<'a> {
-    /// will be inserted per-vertex
-    Singular(&'a Instance),
-    /// will only be inserted per-instance
-    Instanced,
-}
-
-#[derive(Clone, Copy)]
 struct ShapeMetadata<'a> {
-    pub kind: ShapeKind<'a>,
-    /// Window size
+    pub kind: ShapeKind,
+    /// only needed for singular shapes here
+    pub instance: &'a Instance,
+    /// window size
     pub size: Size,
 }
 
@@ -129,23 +123,10 @@ impl LoweringPass {
         self.output.clear();
 
         for shape in &geometry.shapes {
-
-            // geometry is valid up to this index
-            // let start = [
-            //     self.lowered.points.len(),
-            //     self.lowered..len(),
-            // ];
-
             match self.process_one_shape(shape, geometry) {
                 Ok(..) => (),
-                // restore the valid geometry on error
-                Err(..) => {
-                    // self.singular.vertices.truncate(start[0]);
-                    // self.instanced.vertices.truncate(start[1]);
-                    self.errors += 1;
-                }
+                Err(..) => self.errors += 1,
             }
-
         }
 
         &self.output
@@ -176,33 +157,27 @@ impl LoweringPass {
             let len = points.len();
 
             // get the point at idx and the four points "after" it in the polygon
-            let [ia, ib, ic, id] = [
-                (idx + 0) % len,
-                (idx + 1) % len,
-                (idx + 2) % len,
-                (idx + 3) % len,
+            let section = [
+                points[(idx + 0) % len],
+                points[(idx + 1) % len],
+                points[(idx + 2) % len],
+                points[(idx + 3) % len],
             ];
 
-            let [a, b, c, d] = [
-                points[ia], points[ib],
-                points[ic], points[id]
-            ];
+            let [a, b, c, d] = section.map(|it| Point::from(it));
 
-            // how many points to skip for the next iteration
-            let increment;
+            let increment; // how many points to skip for the next iteration
 
-            if a.is_base() && !b.is_base() && c.is_base() {
-
-                // quadratic curve case
+            // 1: quadratic curve
+            if section[0].kind() == PointKind::Base &&
+               section[1].kind() == PointKind::Ctrl &&
+               section[2].kind() == PointKind::Base {
 
                 increment = 2;
 
-                // appends the points of the curve, which can be considered
+                // append the points of the curve, which can be considered
                 // a "curve triangle" in this case
-
-                self.output.points.push(a);
-                self.output.points.push(b);
-                self.output.points.push(c);
+                self.output.points.extend(section);
 
                 // if points are intersecting the curve triangle, we have
                 // to split up the triangle to avoid artifacts
@@ -240,7 +215,7 @@ impl LoweringPass {
 
                                 // split the curve triangle
                                 let split_at = TriangulationPass::closest_split_point([sa.into(), sb.into(), sc.into()], (*point).into());
-                                let [first, second] = TriangulationPass::split_quadratic([sa.into(), sb.into(), sc.into()], split_at - 0.01); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
+                                let [first, second] = TriangulationPass::split_quadratic([sa.into(), sb.into(), sc.into()], split_at); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
 
                                 // insert the first curve triangle by replacing the original sub triangle
                                 self.output.points[isa] = CurvePoint::base(first[0].x as i16, first[0].y as i16);
@@ -261,9 +236,11 @@ impl LoweringPass {
 
                 self.output.points.pop(); // pop the last point since it will be addad again next iteration
 
-            } else if a.is_base() && !b.is_base() && !c.is_base() && d.is_base() {
-
-                // cubic curve case
+            // 2: cubic curve
+            } else if section[0].kind() == PointKind::Base &&
+                      section[0].kind() == PointKind::Ctrl &&
+                      section[0].kind() == PointKind::Ctrl &&
+                      section[0].kind() == PointKind::Base {
 
                 // we split the cubic curve into pieces and
                 // then degree reduce it to a quadratic curve
@@ -284,26 +261,29 @@ impl LoweringPass {
                     let [curve1, curve2] = TriangulationPass::split_cubic(curve_to_split, normalized_t_value as f32);
 
                     // degree reduce by averaging
-                    let new_ctrl_point = Point::new(
-                        -0.25*curve1[0].x + 0.75*curve1[1].x + 0.75*curve1[2].x -0.25*curve1[3].x,
-                        -0.25*curve1[0].y + 0.75*curve1[1].y + 0.75*curve1[2].y -0.25*curve1[3].y
-                    );
+                    let new_ctrl_point_x = -0.25*curve1[0].x + 0.75*curve1[1].x + 0.75*curve1[2].x -0.25*curve1[3].x;
+                    let new_ctrl_point_y = -0.25*curve1[0].y + 0.75*curve1[1].y + 0.75*curve1[2].y -0.25*curve1[3].y;
 
                     // push p1 and p2. the last point will be pushed on in the next iteration
                     self.output.points.push(CurvePoint::base(curve1[0].x as i16, curve1[0].y as i16)); // TODO: this cast is soooooo dirty, f32 to i16? realy???
-                    self.output.points.push(CurvePoint::ctrl(new_ctrl_point.x as i16, new_ctrl_point.y as i16));
+                    self.output.points.push(CurvePoint::ctrl(new_ctrl_point_x as i16, new_ctrl_point_y as i16));
 
                     curve_to_split = curve2;
                     previous_t_value = t_value;
 
                 }
 
-            } else if !a.is_base() && !b.is_base() && !c.is_base() {
-                // invalid case
+            // 3: invalid case
+            } else if section[0].kind() == PointKind::Ctrl &&
+                      section[0].kind() == PointKind::Ctrl &&
+                      section[0].kind() == PointKind::Ctrl {
+
                 todo!("error: three contol points in a row");
+
+
+            // 4: "normal line" case
             } else {
-                // "normal line" case
-                self.output.points.push(a);
+                self.output.points.push(section[0]);
                 increment = 1;
             }
 
@@ -317,9 +297,9 @@ impl LoweringPass {
         let shape_end = self.output.points.len() as u16;
 
         // generate the output shape, with updated indices
-        match shape.is_singular() {
-            true  => self.output.shapes.push(Shape::new_singular(shape_start..shape_end, shape.instances_range().start)),
-            false => self.output.shapes.push(Shape::new_instanced(shape_start..shape_end, shape.instances_range())),
+        match shape.kind() == ShapeKind::Singular {
+            true  => self.output.shapes.push(Shape::singular(shape_start..shape_end, shape.instances_range().start)),
+            false => self.output.shapes.push(Shape::instanced(shape_start..shape_end, shape.instances_range())),
             //                                                                             ^^^^ just hand the instances indices through
         }
 
@@ -403,7 +383,6 @@ impl TriangulationPass {
             .unwrap_or_default();
 
         if points.len() < 3 {
-            // return Err("shape with less then three points")
             return Err(())
         }
 
@@ -412,20 +391,18 @@ impl TriangulationPass {
             .unwrap_or_default();
 
         if instances.len() == 0 {
-            // return Err("shape without any instances")
             return Err(())
         }
 
         // save at what position we were in the instances list
         let start = self.instanced.vertices.len();
 
-        // this determines which kind of vertices are generated
-        let kind = match shape.is_singular() {
-            true => ShapeKind::Singular(&instances[0]),
-            false => ShapeKind::Instanced,
+        // the shape kind determines which kind of vertices are generated
+        let meta = ShapeMetadata {
+            kind: shape.kind(),
+            instance: &instances[0],
+            size
         };
-
-        let meta = ShapeMetadata { kind, size };
 
         // reset our state
         self.ears.clear();
@@ -435,18 +412,22 @@ impl TriangulationPass {
 
         Self::triangulate_curves(points, meta, CurvesState {
             removed: &mut self.removed,
-            out: if shape.is_singular() { &mut self.singular.vertices }
-                 else { &mut self.instanced.vertices },
+            out: match shape.kind() {
+                ShapeKind::Singular => &mut self.singular.vertices,
+                ShapeKind::Instanced => &mut self.instanced.vertices,
+            }
         })?;
 
         Self::triangulate_body(points, meta, TriangulationState {
             removed: &mut self.removed,
             ears: &mut self.ears,
-            out: if shape.is_singular() { &mut self.singular.vertices }
-                 else { &mut self.instanced.vertices },
+            out: match shape.kind() {
+                ShapeKind::Singular => &mut self.singular.vertices,
+                ShapeKind::Instanced => &mut self.instanced.vertices,
+            }
         })?;
 
-        if !shape.is_singular() {
+        if shape.kind() == ShapeKind::Instanced {
             for it in instances {
                 self.instanced.instances.extend([
                     it.pos[0], it.pos[1], it.pos[2], // offsetX, offsetY, z
@@ -475,26 +456,23 @@ impl TriangulationPass {
         let mut idx = 0;
         loop {
 
-            // get the point at idx and the four points "after" it in the polygon
-            let [ia, ib, ic, id] = [
-                (idx + 0) % len,
-                (idx + 1) % len,
-                (idx + 2) % len,
-                (idx + 3) % len,
+            let section = [
+                points[(idx + 0) % len],
+                points[(idx + 1) % len],
+                points[(idx + 2) % len],
             ];
 
-            let [a, b, c, d] = [
-                points[ia], points[ib],
-                points[ic], points[id]
-            ];
+            let [a, b, c] = section.map(|it| Point::from(it));
 
             let increment; // how many points to skip for the next iteration
 
-            if a.is_base() && !b.is_base() && c.is_base() {
+            // quadratic curve
+            // (cubic curve has been lowered away!)
+            if section[0].kind() == PointKind::Base &&
+               section[1].kind() == PointKind::Ctrl &&
+               section[2].kind() == PointKind::Base {
 
                 increment = 2;
-
-                // quadratic curve case
 
                 // render a the curve triangle. the range of the "uvs" decides
                 // which side of the curve get's filled by the shader
@@ -503,17 +481,16 @@ impl TriangulationPass {
 
                 // mark all convex curved triangles as removed,
                 // so they are not triangulated later
-                state.removed.set(ib as u64, convex);
+                state.removed.set((idx + 1) as u64, convex);
+                //                 ^^^^^^ idx of the ctrl point
 
                 Self::generate_triangle(
                     a.into(), b.into(), c.into(), Self::uvs_for_convexity(convex),
                     meta, &mut state.out
                 );
 
-            } else if a.is_base() && !b.is_base() && !c.is_base() && d.is_base() {
-                unreachable!();
+            // simple line, which can be skipped
             } else {
-                // not a bézier curve, just a line, so just continue
                 increment = 1; // TODO: check for three control points in a row, which would be invalid. right now just causes the control points to be treated as base points
             }
 
@@ -600,39 +577,36 @@ impl TriangulationPass {
 
     fn generate_triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
 
+        let i = meta.instance;
         let [ga, gb, gc] = [GlPoint::from(a, meta.size), GlPoint::from(b, meta.size), GlPoint::from(c, meta.size)];
 
         match meta.kind {
-            ShapeKind::Singular(i) => {
-                out.extend([
-                    ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2],
-                    gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2],
-                    gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]
-                ]);
-            },
-            ShapeKind::Instanced => {
-                out.extend([
-                    ga.x, ga.y, uvs[0], uvs[1],
-                    gb.x, gb.y, uvs[2], uvs[3],
-                    gc.x, gc.y, uvs[4], uvs[5]
-                ]);
-            }
+            ShapeKind::Singular => out.extend([
+                ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2],
+                gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2],
+                gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]
+            ]),
+            ShapeKind::Instanced => out.extend([
+                ga.x, ga.y, uvs[0], uvs[1],
+                gb.x, gb.y, uvs[2], uvs[3],
+                gc.x, gc.y, uvs[4], uvs[5]
+            ]),
         }
 
     }
 
-    /// Behaviour is unspecified if all indices are marked as removed.
+    /// Infinitely loops if all indices are marked as removed.
     pub(self) fn neighbours(removed: &BitVec, idx: usize) -> [usize; 3] {
 
         let len = removed.len(); // removed.len() == polygon.len()
 
-        #[cfg(debug_assertions)]
-        {
-            let mut count = 0;
-            for idx in 0..len { if removed[idx] { count += 1 } }
-            assert!(len > 2, "`neighbours` called with < elements");
-            assert!(count <= len - 2, "`neighbtbours` called with < 2 elements alive, just {} out of {:?}", len - count, removed);
-        }
+        // #[cfg(debug_assertions)]
+        // {
+        //     let mut count = 0;
+        //     for idx in 0..len { if removed[idx] { count += 1 } }
+        //     assert!(len > 2, "`neighbours` called with < 3 elements");
+        //     assert!(count <= len - 2, "`neighbtbours` called with < 2 elements alive (just {} out of {:?})", len - count, removed);
+        // }
 
         let mut indices: [usize; 3] = [0; 3];
 

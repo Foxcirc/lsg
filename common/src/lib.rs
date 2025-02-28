@@ -5,60 +5,84 @@ use std::{fmt, ops::Range};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rect {
-    pub pos: TodoFuckMePoint,
+    pub pos: PhysicalPoint,
     pub size: Size,
 }
 
 impl Rect {
-    pub const INFINITE: Self = Self::new(TodoFuckMePoint::ORIGIN, Size::INFINITE);
-    pub const fn new(pos: TodoFuckMePoint, size: Size) -> Self {
+    pub const INFINITE: Self = Self::new(PhysicalPoint::ORIGIN, Size::INFINITE);
+    pub const fn new(pos: PhysicalPoint, size: Size) -> Self {
         Self { pos, size }
     }
-    pub const fn new2(x: i32, y: i32, w: u32, h: u32) -> Self {
-        Self { pos: TodoFuckMePoint::new(x, y), size: Size::new(w, h) }
+    pub const fn new2(x: isize, y: isize, w: usize, h: usize) -> Self {
+        Self { pos: PhysicalPoint::new(x, y), size: Size::new(w, h) }
     }
 }
 
 #[derive(Debug, Default, Clone, Copy,PartialEq, Eq)]
 pub struct Size {
-    pub w: u32,
-    pub h: u32
+    pub w: usize,
+    pub h: usize
 }
 
 impl Size {
-    pub const INFINITE: Self = Self::new(u32::MAX, u32::MAX);
-    pub const fn new(w: u32, h: u32) -> Self { Self { w, h } }
+    pub const INFINITE: Self = Self::new(usize::MAX, usize::MAX);
+    pub const fn new(w: usize, h: usize) -> Self { Self { w, h } }
 }
 
-/// A point in physical window coordinates.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct TodoFuckMePoint { // TODO: remove Point and make this the default and clean up the mess in egl/shaper (sometimes using float sometimes curvePoint sometimes I think why am I doing this)
-    pub x: i32,
-    pub y: i32,
+/// A point on a window, in physical coordinates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalPoint {
+    pub x: isize,
+    pub y: isize,
 }
 
-impl TodoFuckMePoint {
+impl PhysicalPoint {
     pub const ORIGIN: Self = Self::new(0, 0);
-    pub const fn new(x: i32, y: i32) -> Self {
+    pub const fn new(x: isize, y: isize) -> Self {
         Self { x, y }
     }
 }
 
-/// A point in physical window coordinates.
+impl From<Point> for PhysicalPoint {
+    fn from(value: Point) -> Self {
+        Self::new(value.x as isize, value.y as isize)
+    }
+}
+
+/// Convert discarding curve information.
+impl From<CurvePoint> for PhysicalPoint {
+    fn from(value: CurvePoint) -> Self {
+        Self::new(value.x() as isize, value.y() as isize)
+    }
+}
+
+/// A mathematical point.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Point {
-    pub x: f32, // TODO: use i16?
+    pub x: f32,
     pub y: f32,
 }
 
 impl Point {
     pub const ZERO: Self = Self::new(0.0, 0.0);
-    pub const ORIGIN: Self = Self::ZERO;
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
 }
 
+impl From<PhysicalPoint> for Point {
+    fn from(value: PhysicalPoint) -> Self {
+        Self::new(value.x as f32, value.y as f32)
+    }
+}
+
+/// Convert discarding curve information.
+impl From<CurvePoint> for Point {
+    fn from(value: CurvePoint) -> Self {
+        Self::new(value.x() as f32, value.y() as f32)
+    }
+}
 
 /// Area of a window that has to be redrawn.
 pub struct Damage<'s> { // TODO: move to renderer?
@@ -98,13 +122,13 @@ impl CurveGeometry {
     }
 }
 
-/// A point on a curve.
+/// A point with additional curve information
+///
 /// Can represent base (on-curve) and control (off-curve) points.
-/// The coordinates are in physical window coordinates but to save space, there are some quirks:
+/// To save space on the GPU, here are some quirks with `x` and `y`:
 /// - **positive**: base point
 /// - **negative**: control point
 /// - i16::MAX/-i16::MAX means zero
-/// - y-flipped, so y is growing downwards
 /// Be careful not to invalidate any invariants of the fields when
 /// you modify their values.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -122,10 +146,10 @@ pub struct CurvePoint {
 
 impl fmt::Debug for CurvePoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_base() {
-            write!(f, "BasePoint {{{}, {}}}", self.x(), self.y())
+        if self.kind() == PointKind::Base {
+            write!(f, "BasePoint [{}, {}]", self.x(), self.y())
         } else {
-            write!(f, "CtlrPoint {{{}, {}}}", self.x(), self.y())
+            write!(f, "CtlrPoint [{}, {}]", self.x(), self.y())
         }
     }
 }
@@ -134,7 +158,7 @@ impl CurvePoint {
 
     /// Construct a new base point.
     ///
-    /// ### Panics
+    /// ### Panic
     /// Only accepts positive values that are not i16::MAX.
     #[track_caller]
     pub fn base(mut x: i16, mut y: i16) -> Self {
@@ -149,7 +173,7 @@ impl CurvePoint {
 
     /// Construct a new control point.
     ///
-    /// ### Panics
+    /// ### Panic
     /// Only accepts positive values that are not i16::MAX.
     #[track_caller]
     pub fn ctrl(mut x: i16, mut y: i16) -> Self {
@@ -173,17 +197,19 @@ impl CurvePoint {
     }
 
     #[inline(always)]
-    pub fn is_base(&self) -> bool {
-        self.x > 0
+    pub fn kind(&self) -> PointKind {
+        match self.x > 0 {
+            true => PointKind::Base,
+            false => PointKind::Ctrl,
+        }
     }
 
 }
 
-/// Convert to basic point. Discarding curve information.
-impl From<CurvePoint> for Point {
-    fn from(value: CurvePoint) -> Self {
-        Self::new(value.x() as f32, value.y() as f32)
-    }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PointKind {
+    Base,
+    Ctrl,
 }
 
 /// Description of what points and instances make up a shape.
@@ -198,7 +224,7 @@ pub struct Shape {
 impl Shape {
 
     #[track_caller]
-    pub const fn new_singular(polygon: Range<u16>, instance: u16) -> Self {
+    pub const fn singular(polygon: Range<u16>, instance: u16) -> Self {
         Self {
             polygon,
             instances: instance..instance + 1,
@@ -209,7 +235,7 @@ impl Shape {
     ///   - **0**: ZERO shape
     ///   - **1**: singular shape
     #[track_caller]
-    pub const fn new_instanced(polygon: Range<u16>, instances: Range<u16>) -> Self {
+    pub const fn instanced(polygon: Range<u16>, instances: Range<u16>) -> Self {
         Self {
             polygon,
             instances,
@@ -228,12 +254,19 @@ impl Shape {
         .. self.instances.end
     }
 
-    /// `true`: singular, or zero
-    /// `false`: instanced
-    pub fn is_singular(&self) -> bool {
-        self.instances.len() <= 1
+    pub fn kind(&self) -> ShapeKind {
+        match self.instances.len() <= 1 {
+            true => ShapeKind::Singular,
+            false => ShapeKind::Instanced,
+        }
     }
 
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ShapeKind {
+    Singular,
+    Instanced,
 }
 
 /// A single instance of a shape. This can be used to render the same
