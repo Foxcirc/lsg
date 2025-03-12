@@ -196,7 +196,7 @@ pub enum KbInteractivity {
     Exclusive
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: derive the right traits to all those classes
 pub enum Key {
     Escape,
     Tab,

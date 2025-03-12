@@ -17,9 +17,10 @@ package.authors = ["foxcirc"]
 # edition = "2021" # the default seems to be 2015
 
 [dependencies]
+common  = { path = "common"  }
 desktop = { path = "desktop" }
 render  = { path = "render"  }
-common  = { path = "common"  }
+widget  = { path = "widget"  }
 
 [dev-dependencies]
 async-executor = "1.8.0"

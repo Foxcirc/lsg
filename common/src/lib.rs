@@ -1,5 +1,5 @@
 
-use std::{fmt, ops::Range};
+use std::{fmt, ops::{self, Range}};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -81,6 +81,13 @@ impl From<PhysicalPoint> for Point {
 impl From<CurvePoint> for Point {
     fn from(value: CurvePoint) -> Self {
         Self::new(value.x() as f32, value.y() as f32)
+    }
+}
+
+impl ops::Mul<f32> for Point {
+    type Output = Point;
+    fn mul(self, rhs: f32) -> Self::Output {
+        Self::new(self.x * rhs, self.y * rhs)
     }
 }
 
@@ -184,6 +191,14 @@ impl CurvePoint {
         if x == 0 { x = i16::MAX };
         if y == 0 { y = i16::MAX };
         Self { x: -x, y: -y }
+    }
+
+    pub fn base_from_point(pt: Point) -> Self {
+        Self::base(pt.x as i16, pt.y as i16)
+    }
+
+    pub fn ctrl_from_point(pt: Point) -> Self {
+        Self::base(pt.x as i16, pt.y as i16)
     }
 
     #[inline(always)]

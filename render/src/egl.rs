@@ -71,9 +71,12 @@ impl GlRenderer {
         let size = surface.inner.size();
         gl::resize_viewport(size);
 
+        gl::polygon_mode(gl::PolygonMode::Line);
+
         // we need to update the size before rendering with the ShapeRenderer
         // so self.composite.fbo is initialized properly
         self.composite.update(size);
+        gl::clear(&self.composite.fbo, 0.0, 0.0, 0.0, 1.0);
 
         self.shape.draw(size, geometry, &self.composite.fbo)?; // draw the new geometry ontop of the old one
         self.composite.draw(&gl::FrameBuffer::default()); // final full-screen composition pass
@@ -216,7 +219,7 @@ struct ShapeRenderer {
     singular: SingularData,
     instanced: InstancedData,
     program: gl::LinkedProgram,
-    transformer: GeometryShaper,
+    shaper: GeometryShaper,
 }
 
 impl ShapeRenderer {
@@ -268,7 +271,7 @@ impl ShapeRenderer {
         };
 
         Ok(Self {
-            transformer,
+            shaper: transformer,
             singular,
             instanced,
             program,
@@ -277,8 +280,9 @@ impl ShapeRenderer {
     }
 
     fn draw<'s>(&'s mut self, size: Size, geometry: &CurveGeometry, target: &gl::FrameBuffer) -> Result<Damage<'s>, RenderError> {
+        // TODO:              ^^^^^^^ make this also use an `update` func that updated the size, so its in line with the other renderer
 
-        let result = self.transformer.process(geometry, size);
+        let result = self.shaper.process(geometry, size);
 
         // assure that we've gotten valid geometry
         result.check().map_err(|msg| RenderError::InvalidInput(msg.into()))?;

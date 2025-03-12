@@ -238,9 +238,9 @@ impl LoweringPass {
 
             // 2: cubic curve
             } else if section[0].kind() == PointKind::Base &&
-                      section[0].kind() == PointKind::Ctrl &&
-                      section[0].kind() == PointKind::Ctrl &&
-                      section[0].kind() == PointKind::Base {
+                      section[1].kind() == PointKind::Ctrl &&
+                      section[2].kind() == PointKind::Ctrl &&
+                      section[3].kind() == PointKind::Base {
 
                 // we split the cubic curve into pieces and
                 // then degree reduce it to a quadratic curve
@@ -275,8 +275,8 @@ impl LoweringPass {
 
             // 3: invalid case
             } else if section[0].kind() == PointKind::Ctrl &&
-                      section[0].kind() == PointKind::Ctrl &&
-                      section[0].kind() == PointKind::Ctrl {
+                      section[1].kind() == PointKind::Ctrl &&
+                      section[2].kind() == PointKind::Ctrl {
 
                 todo!("error: three contol points in a row");
 
@@ -524,11 +524,11 @@ impl TriangulationPass {
         let mut counter = 0;
         loop {
 
-            if counter < len {
+            if counter < len { // increment counter
                 counter += 1;
-            } else {
-                // if !changes { return Err("polygon not ccw or intersecting lines") };
+            } else { // reset counter
                 if !changes { return Err(()) }
+                // if !changes { return Err("polygon not ccw or intersecting lines") };
                 changes = false;
                 counter = 1;
             }
@@ -644,28 +644,32 @@ impl TriangulationPass {
         let [ia, ib, ic] = Self::neighbours(removed, idx);
         let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
 
-        // short curcuit if the triangle has zero area.
-        // we wan't to trat these as ears because this allows ren-
+        // we don't avoid branches here, so we can short circuit
+
+        // A. short curcuit if the triangle has zero area.
+        // we wan't to treat these as ears because this allows ren-
         // dering seemingly disconnected areas as one shape
         let abc = Self::triangle_area(a, b, c);
         if abc < 1e-6 { // account for precision errors
             return true
         }
 
-        // short curcuit if it is concave
+        // B. short curcuit if it is concave.
         let convex = Self::convex([a.into(), b.into(), c.into()]);
         if !convex {
             return false
         }
 
-        let mut intersects = false;
+        // C. otherwise test for any intersections.
         for point in polygon.iter() {
-            if ![a, b, c].contains(point) {
-                intersects |= Self::triangle_intersects_point([a, b, c], *point)
+            if ![a, b, c].contains(point) &&
+               Self::triangle_intersects_point([a, b, c], *point) {
+                return false
             }
         }
 
-        !intersects
+        // it passed all tests! it is an ear!
+        true
 
     }
 
@@ -709,6 +713,8 @@ impl TriangulationPass {
 
     /// If `point` lies within the triangle `trig`.
     /// Y-flipped version.
+    ///
+    /// Considers points that lie exactly on an edge as outside.
     fn triangle_intersects_point(trig: [CurvePoint; 3], point: CurvePoint) -> bool { // TODO: use Point not CurvePoint
 
         let abc = Self::triangle_area(trig[0], trig[1], trig[2]);
@@ -719,8 +725,11 @@ impl TriangulationPass {
 
         let total = pab + pbc + pca;
 
-        // using a small epsilon to account for floating-point precision errors
-        (total - abc).abs() < 1e-6
+        // small epsilon, to account for precision errors
+        const EPS: f32 = 1e-6;
+
+        (total - abc).abs() < EPS && // general area check
+        pab > EPS && pbc > EPS && pca > EPS // points on an edge should be considered outside
 
     }
 

@@ -418,6 +418,7 @@ dependencies = [
  "render",
  "tracing",
  "tracing-subscriber",
+ "widget",
 ]
 
 [[package]]
