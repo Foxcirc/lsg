@@ -92,9 +92,9 @@ pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
 
 pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
-    // step 1:
-    // - split path into its connected sub-sections
-    // - convert commands to list of points
+    // Step 1:
+    // Convert commands to list of points and split the path into sub-sections that need to be
+    // connected by an invisible line. Holes or filled regions inside holes are considered sub-sections.
 
     let mut sections: Vec<Section> = Vec::new();
     let mut current: Vec<CurvePoint> = Vec::new();
@@ -151,16 +151,16 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
     }
 
 
-    // last section won't have a move command after it,
-    // so push it here
+    // last section won't have a move command after it to trigger the push, so push it here
     current.dedup();
     sections.push(Section {
         points: current,
         ..Default::default()
     });
 
-    // step 2:
-    // - compute signed area and direction (cw/ccw)
+    // Step 2:
+    // Compute signed area and direction (cw/ccw). This is used to decide which regions should
+    // be filled in the third step.
 
     for section in &mut sections {
 
@@ -181,8 +181,10 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
     }
 
-    // step 3:
-    // - determine which sections are filled and which are empty
+    // Step 3:
+    // Determine which sections are filled and which are empty.
+    // We do this by checking how many sections are completely outside of the section
+    // identified by `oidx`.
 
     for oidx in 0..sections.len() {
 
@@ -193,8 +195,7 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
             if oidx == iidx { continue };
 
-            // we only need to test once point, since we assume
-            // no self-intersections
+            // we only need to test one point, since we assume no self-intersections
             let test = sections[oidx].points[0];
 
             // the total winding number
@@ -223,18 +224,22 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
     }
 
-    // step 4:
-    // - connect all the sections into one shape
+    // Step 4:
+    // Connect all the sections into one shape by drawing invisible lines between them.
 
-    println!("there are {} areas in total", sections.len());
+    println!("there are {} sections in total", sections.len());
     println!("{sections:#?}");
+
+    // ############################
+    // sections.truncate(4);
+    sections = sections.drain(0..4).collect();
 
     let mut result: Vec<CurvePoint> = Vec::new();
     let mut tmp: Vec<CurvePoint> = Vec::new();
 
     // append the first section
     if sections.len() > 0 {
-        let section = sections.remove(3);
+        let section = sections.remove(0);
         let reverse = section.fill && section.direction == SectionDirection::Cw ||
                       !section.fill && section.direction == SectionDirection::Ccw;
         if !reverse { result.extend_from_slice(&section.points) }
@@ -242,9 +247,9 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
     }
 
     // result.pop();
-    println!("result: {:#?}", &result);
+    // println!("result: {:#?}", &result);
 
-    return result;
+    // return result;
 
     // connect the other sections
     let mut count = 0;
@@ -289,14 +294,16 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
         // if we found one, otherwise try the next section
         if let Some(con) = spot {
 
-            // let x = Some(&con).map(|it| (it.iidx, result[it.iidx], it.oidx, new_section.points[it.oidx])).expect("valid connection spot");
-            // println!("CONNECTING <result> to <relative-sidx {new_section_idx}>, at ({}, {:?} => {}, {:?})", x.0, x.1, x.2, x.3);
+            let x = Some(&con).map(|it| (it.iidx, result[it.iidx], it.oidx, new_section.points[it.oidx])).expect("valid connection spot");
+            println!("CONNECTING <result> to <relative-sidx {new_section_idx}>, at ({}, {:?} => {}, {:?})", x.0, x.1, x.2, x.3);
 
             // first read the new section, so that the connection point
             // is at the start and the end
 
             let reverse = new_section.fill && new_section.direction == SectionDirection::Cw ||
                           !new_section.fill && new_section.direction == SectionDirection::Ccw;
+
+            println!("NEEDS REVERSE: {reverse}");
 
             let slen = new_section.points.len();
             let iter = PossiblyReversed::new(con.oidx..(slen + con.oidx + 1), reverse);

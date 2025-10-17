@@ -4,12 +4,6 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
-[[test]]
-name = "test"
-path = "src/test.rs"
-harness = false
-edition = "2021" # why is 2015 the default?
-
 [features]
 default = ["signals"]
 signals = ["async-signals"]
@@ -46,4 +40,3 @@ tracing-subscriber = { version = "0.3.18", default-features = false, features = 
 
 gl = { path = "../gl" } # TODO: remove?
 render = { path = "../render" }
-

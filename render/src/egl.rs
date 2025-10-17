@@ -71,7 +71,7 @@ impl GlRenderer {
         let size = surface.inner.size();
         gl::resize_viewport(size);
 
-        gl::polygon_mode(gl::PolygonMode::Line);
+        gl::polygon_mode(gl::PolygonMode::Fill);
 
         // we need to update the size before rendering with the ShapeRenderer
         // so self.composite.fbo is initialized properly

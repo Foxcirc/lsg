@@ -208,7 +208,7 @@ impl LoweringPass {
                         // check for any intersections
                         for point in points.iter() {
                             if ![sa, sb, sc].contains(point) &&
-                                TriangulationPass::triangle_intersects_point([sa, sb, sc], *point) {
+                            TriangulationPass::triangle_intersects_point([sa, sb, sc], *point) == IntersectionRelation::Inside {
 
                                 was_split = true;
                                 max_depth += 1;
@@ -416,7 +416,7 @@ impl TriangulationPass {
                 ShapeKind::Singular => &mut self.singular.vertices,
                 ShapeKind::Instanced => &mut self.instanced.vertices,
             }
-        })?;
+        });
 
         Self::triangulate_body(points, meta, TriangulationState {
             removed: &mut self.removed,
@@ -446,7 +446,7 @@ impl TriangulationPass {
     }
 
     /// Calculate triangles that should be rendered as curves.
-    fn triangulate_curves(points: &[CurvePoint], meta: ShapeMetadata, mut state: CurvesState) -> Result<(), ()> {
+    fn triangulate_curves(points: &[CurvePoint], meta: ShapeMetadata, mut state: CurvesState) {
 
         let len = points.len();
         debug_assert!(len >= 3);
@@ -499,7 +499,7 @@ impl TriangulationPass {
 
         }
 
-        Ok(())
+        // Ok(())
 
     }
 
@@ -520,14 +520,23 @@ impl TriangulationPass {
 
         // remove ears and recalculate neighbours
 
+        eprintln!("points: {:?}", points);
+
         let mut changes = false; // used to check for errors
         let mut counter = 0;
         loop {
 
+            eprintln!("start of iteration, ears: {:?}, removed: {:?}", &state.ears, &state.removed);
+
             if counter < len { // increment counter
                 counter += 1;
             } else { // reset counter
-                if !changes { return Err(()) }
+                if !changes {
+                    eprintln!("errored out, removed: {:?}", &state.removed);
+                    eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !state.removed.get(*idx as u64)).collect::<Vec<_>>());
+                    return Err(())
+                }
+                eprintln!("-> wrapping...");
                 // if !changes { return Err("polygon not ccw or intersecting lines") };
                 changes = false;
                 counter = 1;
@@ -547,13 +556,25 @@ impl TriangulationPass {
                     break
                 };
 
+                let area = Self::triangle_area(points[ia], points[ib], points[ic]);
+
+                println!("made an ear out of points: [{}, {}, {}], area: {}", ia, ib, ic, area);
+
                 Self::generate_triangle(
                     points[ia].into(), points[ib].into(), points[ic].into(),
                     Self::FILLED, meta, &mut state.out
                 );
 
-                // mark the point as self.removed
+                // mark the point as removed
                 state.removed.set(ib as u64, true);
+
+                let mut x = 0;
+                for idx in 0..state.removed.len() {
+                    let it = state.removed[idx];
+                    if it { x += 1 }
+                }
+
+                if x == 7 { break }
 
                 // recalculate the neighbors
                 let ear = Self::ear(points, &state.removed, ia);
@@ -595,6 +616,34 @@ impl TriangulationPass {
 
     }
 
+    /// Computes the direct neightbours of this index, wrapping around if neccessary.
+    #[track_caller]
+    pub(self) fn direct_neighbours(len: usize, idx: usize) -> [usize; 3] {
+        // TODO: do this more efficiently
+        if idx == 0 {
+            [len - 1, idx, idx + 1]
+        } else if idx == len - 1 {
+            [idx - 1, idx, 0]
+        } else {
+            debug_assert!(idx <= len, "idx should be <= len");
+            [idx - 1, idx, idx + 1]
+        }
+    }
+
+    /// Computes the neightbours of this index, wrapping around if neccessary and
+    /// considering which other items have already been marked as removed.
+    ///
+    /// # Example
+    /// Assuming a dataset of length `4` some example outputs of this function would be:
+    // +-----+-------------------+-------------+
+    // | idx |      removed      | neightbours |
+    // +-----+-------------------+-------------+
+    // |   1 | 0 0 0 0           | [0, 1, 2]   |
+    // |   1 | 1 0 0 0 [3, 1, 2] |             |
+    // |   0 | 0 0 0 0           | [3, 0, 1]   |
+    // +-----+-------------------+-------------+
+    //
+    /// # Caution
     /// Infinitely loops if all indices are marked as removed.
     pub(self) fn neighbours(removed: &BitVec, idx: usize) -> [usize; 3] {
 
@@ -641,14 +690,15 @@ impl TriangulationPass {
     /// Y-flipped version.
     fn ear(polygon: &[CurvePoint], removed: &BitVec, idx: usize) -> bool {
 
-        let [ia, ib, ic] = Self::neighbours(removed, idx);
-        let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
-
-        // we don't avoid branches here, so we can short circuit
+        let [a, b, c] = {
+            let [a, b, c] = Self::neighbours(removed, idx);
+            [polygon[a], polygon[b], polygon[c]]
+        };
 
         // A. short curcuit if the triangle has zero area.
-        // we wan't to treat these as ears because this allows ren-
-        // dering seemingly disconnected areas as one shape
+        // we want to treat these as valid ears because this allows
+        // rendering seemingly disconnected areas as one shape by connecting them
+        // using an invisible zero area ear
         let abc = Self::triangle_area(a, b, c);
         if abc < 1e-6 { // account for precision errors
             return true
@@ -661,14 +711,75 @@ impl TriangulationPass {
         }
 
         // C. otherwise test for any intersections.
-        for point in polygon.iter() {
-            if ![a, b, c].contains(point) &&
-               Self::triangle_intersects_point([a, b, c], *point) {
-                return false
+        for (pidx, point) in polygon.iter().enumerate() {
+
+            if ![a, b, c].contains(point) {
+
+                match Self::triangle_intersects_point([a, b, c], *point) {
+
+                    // if there are points that would lie withing this ear, it is invalid
+                    IntersectionRelation::Inside => return false,
+
+                    // if there are are points lying on the edge of this ear it is only valid if their
+                    // connecting edges also lie outside the ear. to illustrate this:
+                    //              o                              o       P
+                    //            /   \                          /   \   .
+                    //      P   .  .  . X                      /       X  . . . . P
+                    //        /       .   \                  /           \
+                    //      /       .       \              /               \
+                    //    O - - - . - - - - - O          O - - - - - - - - - O
+                    //         P
+                    //           INVALID                        VALID
+                    // the point X in the left triangle would be invalid because the edges . . . . connecting it to
+                    // it's neightbour P are inside the ear. the same point X in the right triangle would be valid
+                    // because the edges . . . . are outside the ear.
+                    IntersectionRelation::OnEdge(edge) => {
+
+                        // compute the normal vector of the edge we are touching
+                        let normal = match edge {
+                            TriangleEdge::AB => [-(b.y() - a.y()) as f32, b.x() as f32 - a.x() as f32],
+                            TriangleEdge::BC => [-(c.y() - b.y()) as f32, c.x() as f32 - b.x() as f32],
+                            TriangleEdge::AC => [-(c.y() - a.y()) as f32, c.x() as f32 - a.x() as f32],
+                        };
+
+                        // we use the direct neightbours here because we are interested in the edges this point is guaranteed to
+                        // be "connected" to at the end. we don't care about the edges of the actual ears generated.
+                        let [pa, pb, pc] = {
+                            let [a, b, c] = Self::direct_neighbours(removed.len() as usize, pidx);
+                            [polygon[a], polygon[b], polygon[c]]
+                        };
+
+                        // use that to check if the vector from the touching point to it's
+                        // neighbours would go inside the ear triangle
+                        for neightbour in [pa, pc] {
+
+                            let dot = ((neightbour.x - point.x) as f32 * normal[0]) +
+                                      ((neightbour.y - point.y) as f32 * normal[1]);
+
+                            const EPS: f32 = 1e-6;
+
+                            eprintln!("recalculating ear at #{}... point #{}, was on an edge of our ear ({:?}), dot = {}, edge-kind = {:?}", idx, pidx, [a, b, c], dot, edge);
+
+                            // eprintln!("edgevec-xy: {:?}, normalvec: {:?}", [(neightbour.x - point.x) as f32, (neightbour.y - point.y) as f32], normal);
+
+                            // if the angle between the vectors is < 90° the edge moves into the triangle
+                            if dot < -EPS {
+                                return false
+                            }
+
+                        }
+
+                    }
+
+                    IntersectionRelation::Outside => continue,
+
+                }
+
+            } else {
+                continue
             }
         }
 
-        // it passed all tests! it is an ear!
         true
 
     }
@@ -715,7 +826,7 @@ impl TriangulationPass {
     /// Y-flipped version.
     ///
     /// Considers points that lie exactly on an edge as outside.
-    fn triangle_intersects_point(trig: [CurvePoint; 3], point: CurvePoint) -> bool { // TODO: use Point not CurvePoint
+    fn triangle_intersects_point(trig: [CurvePoint; 3], point: CurvePoint) -> IntersectionRelation { // TODO: use Point not CurvePoint
 
         let abc = Self::triangle_area(trig[0], trig[1], trig[2]);
 
@@ -728,8 +839,22 @@ impl TriangulationPass {
         // small epsilon, to account for precision errors
         const EPS: f32 = 1e-6;
 
-        (total - abc).abs() < EPS && // general area check
-        pab > EPS && pbc > EPS && pca > EPS // points on an edge should be considered outside
+        if (total - abc).abs() < EPS {
+            if pab < EPS {
+                IntersectionRelation::OnEdge(TriangleEdge::AB)
+            } else if pbc < EPS {
+                IntersectionRelation::OnEdge(TriangleEdge::BC)
+            } else if pca < EPS {
+                IntersectionRelation::OnEdge(TriangleEdge::AC)
+            } else {
+                IntersectionRelation::Inside
+            }
+        } else {
+            IntersectionRelation::Outside
+        }
+
+        // (total - abc).abs() < EPS // && // general area check
+        // pab > EPS && pbc > EPS && pca > EPS // points on an edge should be considered outside
 
     }
 

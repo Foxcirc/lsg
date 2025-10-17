@@ -138,6 +138,9 @@ impl CurveGeometry {
 /// - i16::MAX/-i16::MAX means zero
 /// Be careful not to invalidate any invariants of the fields when
 /// you modify their values.
+
+// TODO: use +-1 to represent zero instead of +-MAX, then we only have to subtract/add one, or do smth different and represent it using u16
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CurvePoint {
     /// - **positive**: base point
@@ -154,9 +157,9 @@ pub struct CurvePoint {
 impl fmt::Debug for CurvePoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.kind() == PointKind::Base {
-            write!(f, "BasePoint [{}, {}]", self.x(), self.y())
+            write!(f, "BasePoint({}, {})", self.x(), self.y())
         } else {
-            write!(f, "CtlrPoint [{}, {}]", self.x(), self.y())
+            write!(f, "CtlrPoint({}, {})", self.x(), self.y())
         }
     }
 }
@@ -276,6 +279,23 @@ impl Shape {
         }
     }
 
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntersectionRelation {
+    /// Non-Intesecting
+    Outside,
+    /// Intesecting
+    Inside,
+    /// Point lies on an edge
+    OnEdge(TriangleEdge),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriangleEdge {
+    AB,
+    BC,
+    AC
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
