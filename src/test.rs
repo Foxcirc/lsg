@@ -52,43 +52,53 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     // add movable point
 
-    /*
     geometry.points.push(CurvePoint::base(40, 400));
     geometry.points.push(CurvePoint::ctrl(240, 400));
     geometry.points.push(CurvePoint::base(240, 200));
 
     geometry.shapes.push(Shape::instanced(4..7, 1..3));
-    */
-    geometry.instances.extend([
-        Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
-        Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
-    ]);
-
-    let shape = [
-        // outer sqare
-        CurvePoint::base(50, 250),
-        CurvePoint::base(50, 400),
-        CurvePoint::base(250, 400),
-        CurvePoint::base(250, 250),
-        // magic trick
-        CurvePoint::base(250, 200),
-        CurvePoint::base(250, 50),
-        CurvePoint::base(50, 50),
-        CurvePoint::base(50, 200),
-        CurvePoint::base(250, 200),
-        // return
-        CurvePoint::base(250, 250),
-    ];
-
-    geometry.points.extend(shape);
-
-    let len = geometry.points.len() as i16;
-    geometry.shapes.push(Shape::instanced(4..len as u16, 1..3));
 
     geometry.instances.extend([
         Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
     ]);
+
+    // let shape = [
+    //     // outer sqare
+    //     CurvePoint::base(50, 250),
+    //     CurvePoint::base(50, 400),
+    //     CurvePoint::base(250, 400),
+    //     CurvePoint::base(250, 250),
+    //     // magic trick
+    //     CurvePoint::base(250, 200),
+    //     CurvePoint::base(250, 50),
+    //     CurvePoint::base(50, 50),
+    //     CurvePoint::base(50, 200),
+    //     CurvePoint::base(250, 200),
+    //     // return
+    //     CurvePoint::base(250, 250),
+    // ];
+
+    // let shape = [
+    //     CurvePoint::base(100, 100),
+    //     CurvePoint::base(100, 50),
+    //     CurvePoint::base(120, 50),
+    //     CurvePoint::base(40, 70),
+    //     CurvePoint::base(40, 80),
+    //     CurvePoint::base(130, 80),
+    //     CurvePoint::base(130, 40),
+    //     CurvePoint::base(120, 40),
+    // ];
+
+    // geometry.points.extend(shape);
+
+    // let len = geometry.points.len() as i16;
+    // geometry.shapes.push(Shape::instanced(4..len as u16, 1..3));
+
+    // geometry.instances.extend([
+    //     Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
+    //     Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
+    // ]);
 
     // const TEST2: &str = "M3 18H21V6H3V18ZM1 5C1 4.44772 1.44772 4 2 4H22C22.5523 4 23 4.44772 23 5V19C23 19.5523 22.5523 20 22 20H2C1.44772 20 1 19.5523 1 19V5ZM9 10C9 9.44772 8.55228 9 8 9C7.44772 9 7 9.44772 7 10C7 10.5523 7.44772 11 8 11C8.55228 11 9 10.5523 9 10ZM11 10C11 11.6569 9.65685 13 8 13C6.34315 13 5 11.6569 5 10C5 8.34315 6.34315 7 8 7C9.65685 7 11 8.34315 11 10ZM8.0018 16C7.03503 16 6.1614 16.3907 5.52693 17.0251L4.11272 15.6109C5.10693 14.6167 6.4833 14 8.0018 14C9.52031 14 10.8967 14.6167 11.8909 15.6109L10.4767 17.0251C9.84221 16.3907 8.96858 16 8.0018 16ZM16.2071 14.7071L20.2071 10.7071L18.7929 9.29289L15.5 12.5858L13.7071 10.7929L12.2929 12.2071L14.7929 14.7071L15.5 15.4142L16.2071 14.7071Z";
 
@@ -121,10 +131,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::Redraw => {
                         // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected?
                         window.pre_present_notify();
-                        geometry.shapes.last_mut().map(|it| {
-                            it.polygon.end = 4 + shape_take_part;
-                            println!("points to render: {:?}", geometry.points.get(it.polygon.start as usize .. it.polygon.end as usize));
-                        });
+                        // geometry.shapes.last_mut().map(|it| {
+                        //     it.polygon.end = 4 + shape_take_part;
+                        //     println!("points to render: {:?}", geometry.points.get(it.polygon.start as usize .. it.polygon.end as usize));
+                        // });
                         let result = renderer.draw(&geometry, &surface);
                         if let Err(err) = result {
                             tracing::error!("draw failed: {err:?}");

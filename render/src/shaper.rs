@@ -520,23 +520,24 @@ impl TriangulationPass {
 
         // remove ears and recalculate neighbours
 
-        eprintln!("points: {:?}", points);
+        // eprintln!("points: {:?}", points);
 
+        let mut zero_counter = 0;
         let mut changes = false; // used to check for errors
         let mut counter = 0;
         loop {
 
-            eprintln!("start of iteration, ears: {:?}, removed: {:?}", &state.ears, &state.removed);
+            // eprintln!("start of iteration, ears: {:?}, removed: {:?}", &state.ears, &state.removed);
 
             if counter < len { // increment counter
                 counter += 1;
             } else { // reset counter
                 if !changes {
-                    eprintln!("errored out, removed: {:?}", &state.removed);
-                    eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !state.removed.get(*idx as u64)).collect::<Vec<_>>());
+                    // eprintln!("errored out, removed: {:?}", &state.removed);
+                    // eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !state.removed.get(*idx as u64)).collect::<Vec<_>>());
                     return Err(())
                 }
-                eprintln!("-> wrapping...");
+                // eprintln!("-> wrapping...");
                 // if !changes { return Err("polygon not ccw or intersecting lines") };
                 changes = false;
                 counter = 1;
@@ -556,25 +557,20 @@ impl TriangulationPass {
                     break
                 };
 
-                let area = Self::triangle_area(points[ia], points[ib], points[ic]);
+                // we do not generate verticies for zero-area triangles
+                if Self::triangle_area(points[ia], points[ib], points[ic]).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
 
-                println!("made an ear out of points: [{}, {}, {}], area: {}", ia, ib, ic, area);
+                    Self::generate_triangle(
+                        points[ia].into(), points[ib].into(), points[ic].into(),
+                        Self::FILLED, meta, &mut state.out
+                    );
 
-                Self::generate_triangle(
-                    points[ia].into(), points[ib].into(), points[ic].into(),
-                    Self::FILLED, meta, &mut state.out
-                );
+                }
+
+                // println!("made an ear out of points: [{}, {}, {}], area: {}", ia, ib, ic, area);
 
                 // mark the point as removed
                 state.removed.set(ib as u64, true);
-
-                let mut x = 0;
-                for idx in 0..state.removed.len() {
-                    let it = state.removed[idx];
-                    if it { x += 1 }
-                }
-
-                if x == 7 { break }
 
                 // recalculate the neighbors
                 let ear = Self::ear(points, &state.removed, ia);
@@ -592,9 +588,9 @@ impl TriangulationPass {
 
     }
 
-    const CONVEX:  [f32; 6] = [0.5, 0.5, 0.75, 0.5, 1.0, 1.0];
-    const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5];
-    const FILLED:  [f32; 6] = [2.0; 6]; // (2.0 indicates non-curve triangle)
+    const CONVEX:  [f32; 6] = [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]; // (0.5-1.0 indicates convex to the shader)
+    const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]; // (0.0-0.5 indicates concave to the shader)
+    const FILLED:  [f32; 6] = [2.0; 6]; // (2.0 indicates non-curve triangle to the shader)
 
     fn generate_triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
 
@@ -635,13 +631,13 @@ impl TriangulationPass {
     ///
     /// # Example
     /// Assuming a dataset of length `4` some example outputs of this function would be:
-    // +-----+-------------------+-------------+
-    // | idx |      removed      | neightbours |
-    // +-----+-------------------+-------------+
-    // |   1 | 0 0 0 0           | [0, 1, 2]   |
-    // |   1 | 1 0 0 0 [3, 1, 2] |             |
-    // |   0 | 0 0 0 0           | [3, 0, 1]   |
-    // +-----+-------------------+-------------+
+    // +-----+---------+-------------+
+    // | idx | removed | neightbours |
+    // +-----+---------+-------------+
+    // |   1 | 0 0 0 0 | [0, 1, 2]   |
+    // |   1 | 1 0 0 0 | [3, 1, 2]   |
+    // |   0 | 0 0 0 0 | [3, 0, 1]   |
+    // +-----+---------+-------------+
     //
     /// # Caution
     /// Infinitely loops if all indices are marked as removed.
@@ -758,7 +754,7 @@ impl TriangulationPass {
 
                             const EPS: f32 = 1e-6;
 
-                            eprintln!("recalculating ear at #{}... point #{}, was on an edge of our ear ({:?}), dot = {}, edge-kind = {:?}", idx, pidx, [a, b, c], dot, edge);
+                            // eprintln!("recalculating ear at #{}... point #{}, was on an edge of our ear ({:?}), dot = {}, edge-kind = {:?}", idx, pidx, [a, b, c], dot, edge);
 
                             // eprintln!("edgevec-xy: {:?}, normalvec: {:?}", [(neightbour.x - point.x) as f32, (neightbour.y - point.y) as f32], normal);
 
