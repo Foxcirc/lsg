@@ -186,7 +186,7 @@ pub fn get_integer_v(property: Property) -> Result<usize, PropertyUnknown> {
     }
 }
 
-#[derive(Debug, Clone, Copy,PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     major: usize,
     minor: usize,
@@ -235,6 +235,7 @@ pub enum Property {
 
 }
 
+#[derive(Debug)]
 pub struct Shader {
     id: u32
 }
@@ -306,7 +307,7 @@ pub struct ShaderError {
 impl fmt::Debug for ShaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f,
-            "ShaderError {{\n\tkind: {:?}Shader,\n\tmsg: {}\n}}",
+            "ShaderError {{ kind: {:?}, tmsg: {}}}",
             self.kind, self.msg.to_string_lossy().trim_end_matches("\n")
         )
     }
@@ -315,7 +316,7 @@ impl fmt::Debug for ShaderError {
 impl fmt::Display for ShaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f,
-            "in {:?}, {}", self.kind, self.msg.to_string_lossy().trim_end_matches("\n")
+            "shader compilation error in {:?}, {}", self.kind, self.msg.to_string_lossy().trim_end_matches("\n")
         )
     }
 }
@@ -330,6 +331,7 @@ pub enum ShaderType {
     Compute = gl::COMPUTE_SHADER
 }
 
+#[derive(Debug)]
 pub struct Program {
     id: u32,
     shaders: Vec<Shader>,
@@ -420,6 +422,7 @@ impl fmt::Display for LinkError {
 
 impl StdError for LinkError {}
 
+#[derive(Debug)]
 pub struct LinkedProgram {
     pub(crate) id: u32,
 }
@@ -454,7 +457,7 @@ pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<AttribLoca
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct AttribLocation {
     pub index: u32,
 }
@@ -474,6 +477,7 @@ impl From<u32> for AttribLocation {
 #[derive(Debug)]
 pub struct AttribUnknown;
 
+#[derive(Debug)]
 pub struct VertexArray {
     id: u32
 }
@@ -509,10 +513,9 @@ pub fn gen_buffer(kind: BufferType) -> Buffer {
     Buffer { id, kind }
 }
 
-/// This function doesn't perform type-checking, it accepts a slice of any type
-/// and hands it out as bytes.
-/// This is not unsafe, since all bytes are valid numbers, but may cause nasty bugs, so
-/// be careful to pass in the right type here.
+/// This function doesn't perform type-checking, it accepts a slice of any type and hands it out as bytes.
+/// This is not unsafe, since all bytes are valid numbers for OpenGL, but can still be unintuitive.
+/// In order to correctly handle vertex layout and avoid bugs use [`AttribStorage`].
 pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
 
     bind_buffer(buffer);
@@ -530,6 +533,7 @@ pub fn bind_buffer(this: &Buffer) {
     unsafe { gl::BindBuffer(this.kind as u32, this.id) }
 }
 
+#[derive(Debug)]
 pub struct Buffer {
     id: u32,
     kind: BufferType,
@@ -554,6 +558,38 @@ impl Buffer {
     }
 }
 
+// TODO: add a "vertex layout specification" mechanism that allows:
+// - auto-generating the aproapriate vertex-attrib_... calls from the spec
+// - verifying that the correct data is passed when using VertexStorage
+// in that way a "renderer" can assure that the vertex data it gets is in the correct layout, a clean cooperation between shaper and renderer
+
+/// This utility type acts as a buffer to store your vertex data. This should
+/// make appending vertex attributes with multiple different types easier.
+#[derive(Debug, Default)]
+pub struct AttribStorage {
+    pub inner: Vec<u8>,
+}
+
+impl AttribStorage {
+
+    pub fn new() -> Self {
+        Self { inner: Vec::new() }
+    }
+
+    pub fn extend_f<const N: usize>(&mut self, vals: [f32; N]) {
+        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+    }
+
+    pub fn extend_i<const N: usize>(&mut self, vals: [i32; N]) {
+        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+    }
+
+    pub fn extend_u<const N: usize>(&mut self, vals: [u32; N]) {
+        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+    }
+
+}
+
 pub fn vertex_attrib_1f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib1f(loc.into().index, x) };
@@ -569,7 +605,17 @@ pub fn vertex_attrib_3f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f3
     unsafe { gl::VertexAttrib3f(loc.into().index, x, y, z) };
 }
 
-#[derive(Default)]
+pub fn vertex_attrib_1i(vao: &VertexArray, loc: impl Into<AttribLocation>, x: i32) {
+    bind_vertex_array(vao);
+    unsafe { gl::VertexAttribI1i(loc.into().index, x) };
+}
+
+pub fn vertex_attrib_1u(vao: &VertexArray, loc: impl Into<AttribLocation>, x: u32) {
+    bind_vertex_array(vao);
+    unsafe { gl::VertexAttribI1ui(loc.into().index, x) };
+}
+
+#[derive(Debug, Default)]
 pub struct VertexAttribs {
     pub loc: AttribLocation,
     pub count: usize,
@@ -579,9 +625,12 @@ pub struct VertexAttribs {
     pub start: usize,
 }
 
-/// The array will also be enabled immediatly using `EnableVertexAttribArray`.
-/// Remember `stride` is in bytes!
-/// There is also a more structured version [`vertex_attrib_pointer2`].
+/// Specify a vertex attribute.
+///
+/// # Caveats
+/// - The attribute will be immediatly `enabled`.
+/// - Remember `stride` is in bytes!
+/// - There is no special variant for integer types.
 #[track_caller]
 pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<AttribLocation>, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
@@ -592,14 +641,30 @@ pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<Att
 
     let index = loc.into().index;
 
-    unsafe { gl::VertexAttribPointer(
-        index,
-        count as i32,
-        kind as u32,
-        normalize as u8,
-        stride as i32,
-        start as *const _,
-    ) };
+    if kind == DataType::F32 {
+
+        unsafe { gl::VertexAttribPointer(
+            index,
+            count as i32,
+            kind as u32,
+            normalize as u8,
+            stride as i32,
+            start as *const _,
+        ) };
+
+    } else {
+
+        // why **the FUCK** is there another function for this and there is no warning
+        // when using the other function with an integer data type
+        unsafe { gl::VertexAttribIPointer(
+            index,
+            count as i32,
+            kind as u32,
+            stride as i32,
+            start as *const _,
+        ) };
+
+    };
 
     unsafe { gl::EnableVertexAttribArray(index) };
 
@@ -632,6 +697,7 @@ pub fn vertex_attrib_divisor(vao: &VertexArray, location: u32, divisor: Divisor)
     unsafe { gl::VertexAttribDivisor(location, value) };
 }
 
+#[derive(Debug)]
 pub struct FrameBuffer {
     id: u32,
 }
@@ -644,8 +710,13 @@ impl Drop for FrameBuffer {
     }
 }
 
+impl Default for FrameBuffer {
+    fn default() -> Self {
+        Self { id: 0 }
+    }
+}
+
 impl FrameBuffer {
-    pub const fn default() -> Self { Self { id: 0 } }
     pub fn current() -> Self {
         Self { id: get_integer_v(Property::FrameBufferBinding).unwrap_or(0) as u32 }
     }
@@ -729,6 +800,7 @@ pub fn blit_frame_buffer(target: (&FrameBuffer, Rect), source: (&FrameBuffer, Re
     ); }
 }
 
+#[derive(Debug)]
 pub struct RenderBuffer {
     id: u32,
 }
@@ -795,6 +867,7 @@ pub enum TextureType {
     MultisampleArray2D  = gl::TEXTURE_2D_MULTISAMPLE_ARRAY,
 }
 
+#[derive(Debug)]
 pub struct Texture {
     id: u32,
     kind: TextureType,
@@ -892,12 +965,15 @@ pub fn active_texture(location: usize, texture: &Texture) {
     bind_texture(texture);
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum DataType {
     #[default]
-    Float = gl::FLOAT,
-    UByte = gl::UNSIGNED_BYTE,
+    F32 = gl::FLOAT,
+    I8 = gl::BYTE,
+    U8 = gl::UNSIGNED_BYTE,
+    I32 = gl::INT,
+    U32 = gl::UNSIGNED_INT,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -928,7 +1004,7 @@ pub fn uniform_location(program: &LinkedProgram, name: &str) -> Result<UniformLo
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct UniformLocation {
     pub index: u32,
 }

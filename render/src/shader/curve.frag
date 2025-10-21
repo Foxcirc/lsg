@@ -4,6 +4,7 @@ precision mediump float;
 
 in vec2 curvePos;
 in vec3 texture;
+in vec3 barycentric;
 
 out vec4 Color;
 
@@ -36,22 +37,24 @@ void main() {
     }
 
     float multiplier;
-    if (value < 0.0 && isCurve) { // outside the curve (completely transparent)
-        multiplier = 0.0;
-    } else if (value < 1.0 / 500.0 && isCurve) { // anti-aliasing
-        multiplier = 0.5;
-    } else if (value < 3.0 / 500.0 && isCurve) { // anti-aliasing
-        multiplier = 0.8;
-    } else { // inside the curuve
-        multiplier = 1.0;
-    }
-
-    float red = texture.r;
     if (isCurve) {
-        red = curveX;
+        if (value < 0.0) {
+            multiplier = 0.0;
+        } else {
+
+            float width = fwidth(value);
+            float coverage = smoothstep(0.0, width, value);
+
+            multiplier = coverage;
+
+        }
+    } else {
+        float edgeDistance = min(min(barycentric.x, barycentric.y), barycentric.z);
+        float width = fwidth(edgeDistance);
+        multiplier = smoothstep(0.0, width, edgeDistance);
     }
 
     float alpha = 1.0; // TODO: add alpha channel to texture
-    Color = vec4(red, texture.gb, alpha * multiplier);
+    Color = vec4(texture.rgb, alpha * multiplier);
 
 }

@@ -7,6 +7,7 @@
 use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
 use common::*;
+use gl::AttribStorage;
 
 // TODO: Idea for interop with this an my gl library: Add a struct that is a kind of of "description" of the vertex data layout
 // used by an algorithm. Basically Transformer provides this kind of description which the renderer then uses to setup its buffers in a simple way
@@ -35,22 +36,22 @@ impl<'a> OutputGeometry<'a> {
 }
 
 pub struct SingularOutputGeometry<'a> {
-    pub vertices: &'a [f32],
+    pub vertices: &'a AttribStorage,
 }
 
 pub struct InstancedOutputGeometry<'a> {
-    pub vertices:  &'a [f32],
-    pub instances: &'a [f32],
+    pub vertices:  &'a AttribStorage,
+    pub instances: &'a AttribStorage,
     pub commands:  &'a [gl::DrawArraysIndirectCommand],
 }
 
 pub struct SingularData {
-    pub vertices: Vec<f32>,
+    pub vertices: AttribStorage,
 }
 
 pub struct InstancedData {
-    pub vertices:  Vec<f32>,
-    pub instances: Vec<f32>,
+    pub vertices:  AttribStorage,
+    pub instances: AttribStorage,
     pub commands:  Vec<gl::DrawArraysIndirectCommand>,
 }
 
@@ -65,13 +66,13 @@ struct ShapeMetadata<'a> {
 
 struct CurvesState<'a> {
     removed: &'a mut BitVec,
-    out: &'a mut Vec<f32>,
+    out: &'a mut AttribStorage,
 }
 
 struct TriangulationState<'a> {
     removed: &'a mut BitVec,
     ears: &'a mut BitVec,
-    out: &'a mut Vec<f32>,
+    out: &'a mut AttribStorage,
 }
 
 pub struct GeometryShaper {
@@ -177,7 +178,7 @@ impl LoweringPass {
 
                 // append the points of the curve, which can be considered
                 // a "curve triangle" in this case
-                self.output.points.extend(section);
+                self.output.points.extend_from_slice(&section[..3]);
 
                 // if points are intersecting the curve triangle, we have
                 // to split up the triangle to avoid artifacts
@@ -287,7 +288,7 @@ impl LoweringPass {
                 increment = 1;
             }
 
-            // TODO: what happens if a point is duplicated in the input? does it triangulate correctly?
+            // TODO: what happens if a point is duplicated in the input? does it triangulate correctly? yes
 
             idx += increment;
             if idx >= len { break };
@@ -326,8 +327,8 @@ impl TriangulationPass {
         Self {
             ears: BitVec::new(),
             removed: BitVec::new(),
-            singular: SingularData { vertices: Vec::new() },
-            instanced: InstancedData { vertices: Vec::new(), instances: Vec::new(), commands: Vec::new() },
+            singular: SingularData { vertices: AttribStorage::new() },
+            instanced: InstancedData { vertices: AttribStorage::new(), instances: AttribStorage::new(), commands: Vec::new() },
             errors: 0,
         }
     }
@@ -335,9 +336,9 @@ impl TriangulationPass {
     pub fn process_geometry<'s>(&'s mut self, geometry: &CurveGeometry, size: Size) -> OutputGeometry<'s> {
 
         // reset the state
-        self.singular.vertices.clear();
-        self.instanced.vertices.clear();
-        self.instanced.instances.clear();
+        self.singular.vertices.inner.clear();
+        self.instanced.vertices.inner.clear();
+        self.instanced.instances.inner.clear();
         self.instanced.commands.clear();
         self.errors = 0;
 
@@ -346,8 +347,8 @@ impl TriangulationPass {
 
             // geometry is valid up to this index
             let start = [
-                self.singular.vertices.len(),
-                self.instanced.vertices.len(),
+                self.singular.vertices.inner.len(),
+                self.instanced.vertices.inner.len(),
             ];
 
             // generate the mesh now
@@ -355,8 +356,8 @@ impl TriangulationPass {
                 Ok(..) => (),
                 // restore the valid geometry on error
                 Err(..) => {
-                    self.singular.vertices.truncate(start[0]);
-                    self.instanced.vertices.truncate(start[1]);
+                    self.singular.vertices.inner.truncate(start[0]);
+                    self.instanced.vertices.inner.truncate(start[1]);
                     self.errors += 1;
                 }
             }
@@ -395,7 +396,7 @@ impl TriangulationPass {
         }
 
         // save at what position we were in the instances list
-        let start = self.instanced.vertices.len();
+        let start = self.instanced.vertices.inner.len();
 
         // the shape kind determines which kind of vertices are generated
         let meta = ShapeMetadata {
@@ -429,14 +430,14 @@ impl TriangulationPass {
 
         if shape.kind() == ShapeKind::Instanced {
             for it in instances {
-                self.instanced.instances.extend([
+                self.instanced.instances.extend_f([
                     it.pos[0], it.pos[1], it.pos[2], // offsetX, offsetY, z
                     it.texture[0], it.texture[1], it.texture[2],
                 ]);
                 self.instanced.commands.push(gl::DrawArraysIndirectCommand::new(
-                    (self.instanced.vertices.len() - start) / 4, // vertex count
+                    (self.instanced.vertices.inner.len() - start) / 5, // vertex count
                     instances.len(), // instance count
-                    start / 4, // start index
+                    start / 5, // start index
                 ))
             }
         }
@@ -485,7 +486,7 @@ impl TriangulationPass {
                 //                 ^^^^^^ idx of the ctrl point
 
                 Self::generate_triangle(
-                    a.into(), b.into(), c.into(), Self::uvs_for_convexity(convex),
+                    a.into(), b.into(), c.into(), [false; 3], Self::uvs_for_convexity(convex), // TODO: anti-aliasing for curve triangles (adjacency)
                     meta, &mut state.out
                 );
 
@@ -522,7 +523,6 @@ impl TriangulationPass {
 
         // eprintln!("points: {:?}", points);
 
-        let mut zero_counter = 0;
         let mut changes = false; // used to check for errors
         let mut counter = 0;
         loop {
@@ -560,9 +560,25 @@ impl TriangulationPass {
                 // we do not generate verticies for zero-area triangles
                 if Self::triangle_area(points[ia], points[ib], points[ic]).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
 
+                    dbg!([ia, ib, ic]);
+
+                    // we need to compute adjacency information for every edge of the triangle,
+                    // since it is needed for anti-aliasing later. specifically we only
+                    // want to anti alias edges which are actually on the outside of the shape
+                    let edges = [[ia, ib], [ib, ic], [ic, ia]];
+                    let mut is_outer_edge = [false; 3];
+                    for (idx, edge) in edges.iter().enumerate() {
+                        // check if the points are direct neightbours
+                        // TODO: optimize
+                        if (edge[1].checked_sub(edge[0]).unwrap_or(0) == 1 || (edge[0] == len - 1 && edge[1] == 0) || (edge[1] == len - 1 && edge[0] == 0)) &&
+                        points[edge[0]].kind() == PointKind::Base && points[edge[1]].kind() == PointKind::Base { // concave curve trigs do NOT count as outside TODO: explain further
+                            is_outer_edge[idx] = true;
+                        }
+                    }
+
                     Self::generate_triangle(
                         points[ia].into(), points[ib].into(), points[ic].into(),
-                        Self::FILLED, meta, &mut state.out
+                        is_outer_edge, Self::FILLED, meta, &mut state.out
                     );
 
                 }
@@ -588,26 +604,39 @@ impl TriangulationPass {
 
     }
 
+    // TODO: should curve and non-curve triangles be rendered in two different passes, so we can save on the vertex size (emit the curve "uvs"). this should be done when good benchmarking is in place
+
     const CONVEX:  [f32; 6] = [0.5, 0.5, 0.75, 0.5, 1.0, 1.0]; // (0.5-1.0 indicates convex to the shader)
     const CONCAVE: [f32; 6] = [0.0, 0.0, 0.25, 0.0, 0.5, 0.5]; // (0.0-0.5 indicates concave to the shader)
-    const FILLED:  [f32; 6] = [2.0; 6]; // (2.0 indicates non-curve triangle to the shader)
+    const FILLED:  [f32; 6] = [2.0, 2.0, 3.0,  3.0, 4.0, 4.0]; // (>2.0 indicates non-curve triangle and also stores the 'index % 3' of the vertex so the vertex shader can generate barycentric coordinates for anti-aliasing)
 
-    fn generate_triangle(a: Point, b: Point, c: Point, uvs: [f32; 6], meta: ShapeMetadata, out: &mut Vec<f32>) {
+    fn generate_triangle(a: Point, b: Point, c: Point, is_outer_edge: [bool; 3], uvs: [f32; 6], meta: ShapeMetadata, out: &mut AttribStorage) {
 
         let i = meta.instance;
         let [ga, gb, gc] = [GlPoint::from(a, meta.size), GlPoint::from(b, meta.size), GlPoint::from(c, meta.size)];
+        let flags = ((is_outer_edge[0] as u32) << 0) |
+                    ((is_outer_edge[1] as u32) << 1) |
+                    ((is_outer_edge[2] as u32) << 2);
+
+        dbg!(flags, is_outer_edge);
 
         match meta.kind {
-            ShapeKind::Singular => out.extend([
-                ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2],
-                gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2],
-                gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]
-            ]),
-            ShapeKind::Instanced => out.extend([
-                ga.x, ga.y, uvs[0], uvs[1],
-                gb.x, gb.y, uvs[2], uvs[3],
-                gc.x, gc.y, uvs[4], uvs[5]
-            ]),
+            ShapeKind::Singular => {
+                out.extend_f([ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2]]);
+                out.extend_u([flags]);
+                out.extend_f([gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2]]);
+                out.extend_u([flags]);
+                out.extend_f([gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]]);
+                out.extend_u([flags]);
+            }
+            ShapeKind::Instanced => {
+                out.extend_f([ga.x, ga.y, uvs[0], uvs[1]]);
+                out.extend_u([flags]);
+                out.extend_f([gb.x, gb.y, uvs[2], uvs[3]]);
+                out.extend_u([flags]);
+                out.extend_f([gc.x, gc.y, uvs[4], uvs[5]]);
+                out.extend_u([flags]);
+            }
         }
 
     }

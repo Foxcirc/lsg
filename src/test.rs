@@ -32,17 +32,17 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut geometry = CurveGeometry::new();
 
-    geometry.points.extend([
-        CurvePoint::base(0, 0),
-        CurvePoint::base(0, 500),
-        CurvePoint::base(500, 500),
-        CurvePoint::base(500, 0),
-    ]);
-    geometry.shapes.push(Shape::singular(0..4, 0));
-    geometry.instances.push(Instance {
-        pos: [0.0, 0.0, 0.5],
-        texture: [0.1, 0.1, 0.14],
-    });
+    // geometry.points.extend([
+    //     CurvePoint::base(0, 0),
+    //     CurvePoint::base(0, 500),
+    //     CurvePoint::base(500, 500),
+    //     CurvePoint::base(500, 0),
+    // ]);
+    // geometry.shapes.push(Shape::singular(0..4, 0));
+    // geometry.instances.push(Instance {
+    //     pos: [0.0, 0.0, 0.5],
+    //     texture: [0.1, 0.1, 0.14],
+    // });
 
     // initial render
 
@@ -53,10 +53,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     // add movable point
 
     geometry.points.push(CurvePoint::base(40, 400));
-    geometry.points.push(CurvePoint::ctrl(240, 400));
+    geometry.points.push(CurvePoint::base(240, 400));
     geometry.points.push(CurvePoint::base(240, 200));
 
-    geometry.shapes.push(Shape::instanced(4..7, 1..3));
+    geometry.shapes.push(Shape::instanced(0..3, 0..2));
+    // geometry.shapes.push(Shape::singular(4..7, 1));
 
     geometry.instances.extend([
         Instance { pos: [0.0, 0.0, 0.1], texture: [0.85, 0.75, 0.35] },
@@ -129,12 +130,13 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Window { event, .. } => match event {
 
                     WindowEvent::Redraw => {
-                        // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected?
+                        // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected? (I think it was blocking in eglSwapBuffers but it should be fixed I think, still need to check tho)
                         window.pre_present_notify();
                         // geometry.shapes.last_mut().map(|it| {
                         //     it.polygon.end = 4 + shape_take_part;
                         //     println!("points to render: {:?}", geometry.points.get(it.polygon.start as usize .. it.polygon.end as usize));
                         // });
+                        dbg!(&geometry.points);
                         let result = renderer.draw(&geometry, &surface);
                         if let Err(err) = result {
                             tracing::error!("draw failed: {err:?}");

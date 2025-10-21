@@ -131,7 +131,7 @@ impl CompositeRenderer {
             let vbo = gl::gen_buffer(gl::BufferType::Array);
 
             let f = size_of::<f32>();
-            gl::vertex_attrib_pointer(&vao, &vbo, gl::AttribLocation::new(0), 2, gl::DataType::Float, false, 2*f, 0);
+            gl::vertex_attrib_pointer(&vao, &vbo, gl::AttribLocation::new(0), 2, gl::DataType::F32, false, 2*f, 0);
 
            // a single full screen rect
             let vertices: [f32; 12] = [
@@ -243,9 +243,11 @@ impl ShapeRenderer {
             let vdata = gl::gen_buffer(gl::BufferType::Array);
             let vao = gl::gen_vertex_array();
             let f = size_of::<f32>();
-            gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::Float, false, 8*f, 0*f); // x, y, z
-            gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::Float, false, 8*f, 3*f); // curveX, curveY
-            gl::vertex_attrib_pointer(&vao, &vdata, 2, 3, gl::DataType::Float, false, 8*f, 5*f); // textureX, textureY, textureLayer
+            gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::F32, false, 9*f, 0*f); // x, y, z
+            gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 9*f, 3*f); // curveX, curveY
+            gl::vertex_attrib_pointer(&vao, &vdata, 2, 3, gl::DataType::F32, false, 9*f, 5*f); // textureX, textureY, textureLayer
+            gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 9*f, 8*f); // flags TODO: document
+            // gl::vertex_attrib_1u(&vao, 3, 1);
             SingularData { vao, vdata }
         };
 
@@ -256,17 +258,18 @@ impl ShapeRenderer {
             let vao = gl::gen_vertex_array();
             let f = size_of::<f32>();
             // vertex data
-            gl::vertex_attrib_pointer(&vao, &vdata, 0, 2, gl::DataType::Float, false, 4*f, 0*f); // x, y
-            gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::Float, false, 4*f, 2*f); // curveX, curveY
+            gl::vertex_attrib_pointer(&vao, &vdata, 0, 2, gl::DataType::F32, false, 5*f, 0*f); // x, y
+            gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 5*f, 2*f); // curveX, curveY
+            gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 5*f, 4*f); // flags TODO: document
             // instance data
-            gl::vertex_attrib_pointer(&vao, &idata, 3, 3, gl::DataType::Float, false, 6*f, 0*f); // offsetX, offsetY, z
-            gl::vertex_attrib_pointer(&vao, &idata, 4, 3, gl::DataType::Float, false, 6*f, 3*f); // textureX, textureY, textureLayer
-            gl::vertex_attrib_divisor(&vao, 3, gl::Divisor::PerInstances(1));
+            gl::vertex_attrib_pointer(&vao, &idata, 4, 3, gl::DataType::F32, false, 6*f, 0*f); // offsetX, offsetY, z
+            gl::vertex_attrib_pointer(&vao, &idata, 5, 3, gl::DataType::F32, false, 6*f, 3*f); // textureX, textureY, textureLayer
             gl::vertex_attrib_divisor(&vao, 4, gl::Divisor::PerInstances(1));
+            gl::vertex_attrib_divisor(&vao, 5, gl::Divisor::PerInstances(1));
             // default value for attrib that is not passed for instanced shapes
             // this is used to distingluish between an instanced and non instanced call in the vertex shader
-            gl::vertex_attrib_3f(&vao, 3, -1.0, -1.0, -1.0);
             gl::vertex_attrib_3f(&vao, 4, -1.0, -1.0, -1.0);
+            gl::vertex_attrib_3f(&vao, 5, -1.0, -1.0, -1.0);
             InstancedData { vao, vdata, idata, commands }
         };
 
@@ -292,16 +295,16 @@ impl ShapeRenderer {
 
         // render all non-instanced shapes
         let r = &result.singular;
-        if result.singular.vertices.len() > 0 {
-            gl::buffer_data(&self.singular.vdata, r.vertices, gl::DrawHint::Dynamic);
-            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, r.vertices.len() / 7);
+        if result.singular.vertices.inner.len() > 0 {
+            gl::buffer_data(&self.singular.vdata, &r.vertices.inner, gl::DrawHint::Dynamic);
+            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, r.vertices.inner.len() / 9);
         }
 
         // render all instanced shapes
         let r = &result.instanced;
         if r.commands.len() > 0 {
-            gl::buffer_data(&self.instanced.vdata,    &r.vertices,  gl::DrawHint::Dynamic);
-            gl::buffer_data(&self.instanced.idata,    &r.instances, gl::DrawHint::Dynamic);
+            gl::buffer_data(&self.instanced.vdata,    &r.vertices.inner,  gl::DrawHint::Dynamic);
+            gl::buffer_data(&self.instanced.idata,    &r.instances.inner, gl::DrawHint::Dynamic);
             gl::buffer_data(&self.instanced.commands, &r.commands,  gl::DrawHint::Dynamic);
             gl::draw_arrays_indirect(target, &self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
         }
