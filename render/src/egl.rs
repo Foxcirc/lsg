@@ -71,8 +71,6 @@ impl GlRenderer {
         let size = surface.inner.size();
         gl::resize_viewport(size);
 
-        gl::polygon_mode(gl::PolygonMode::Fill);
-
         // we need to update the size before rendering with the ShapeRenderer
         // so self.composite.fbo is initialized properly
         self.composite.update(size);
@@ -165,7 +163,7 @@ impl CompositeRenderer {
         // (re)create composition texture if necessary
         if size != self.current {
 
-            gl::render_buffer_storage_multisample(&self.rbo, 4, gl::PreciseColorFormat::Rgba8, size);
+            gl::render_buffer_storage(&self.rbo, gl::PreciseColorFormat::Rgba8, size);
             gl::frame_buffer_render_buffer(&self.fbo, gl::AttachmentPoint::Color0, &self.rbo);
 
             /*

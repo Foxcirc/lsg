@@ -4,10 +4,11 @@ Current TODO's and roadmap to keep my sanity
 
 - curve rendering:
   - add cached instances ✅
-  - add support for cubic curves
+  - fix curve splitting
+  - fix support for cubic curves
   - write it in a compute shader and benchmark
   - cleanup and good documentation!
-  - anti-aliasing
+  - anti-aliasing ✅
 - implement svg support
 - fix redrawing (so that it makes sense) ✅
 - simple ttf/otf text rendering

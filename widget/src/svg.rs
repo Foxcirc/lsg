@@ -1,5 +1,5 @@
 
-use std::{f64::consts::PI, iter::Rev, mem};
+use std::{f64::consts::PI, iter::{once, Rev}, mem};
 
 use common::*;
 
@@ -80,7 +80,6 @@ struct Section {
     area: usize,
     direction: SectionDirection,
     fill: bool,
-    connected: bool,
 }
 
 pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
@@ -108,7 +107,7 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
                 // create a new sub area, if we already collected some points
                 if current.len() > 0 {
                     let mut points = mem::take(&mut current);
-                    points.dedup();
+                    points.dedup(); // TODO: avoid these dedups
                     sections.push(Section {
                         points,
                         ..Default::default()
@@ -151,7 +150,8 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
     }
 
 
-    // last section won't have a move command after it to trigger the push, so push it here
+    // The last section won't have a move command after it,
+    // to trigger the push, so we push it here.
     current.dedup();
     sections.push(Section {
         points: current,
@@ -159,8 +159,8 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
     });
 
     // Step 2:
-    // Compute signed area and direction (cw/ccw). This is used to decide which regions should
-    // be filled in the third step.
+    // Compute signed area and direction (cw/ccw). This is used to
+    // decide which regions should be filled in the third step.
 
     for section in &mut sections {
 
@@ -184,24 +184,24 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
     // Step 3:
     // Determine which sections are filled and which are empty.
     // We do this by checking how many sections are completely outside of the section
-    // identified by `oidx`.
+    // identified by `outer_idx`.
 
-    for oidx in 0..sections.len() {
+    for outer_idx in 0..sections.len() {
 
         // the number of sections the `oidx` section is contained inside of
         let mut parents = 0;
 
-        for iidx in 0..sections.len() {
+        for inner_idx in 0..sections.len() {
 
-            if oidx == iidx { continue };
+            if outer_idx == inner_idx { continue };
 
             // we only need to test one point, since we assume no self-intersections
-            let test = sections[oidx].points[0];
+            let test = sections[outer_idx].points[0];
 
             // the total winding number
             let mut winding = 0.0;
 
-            let points = &sections[iidx].points;
+            let points = &sections[inner_idx].points;
             for idx in 0..points.len() {
                 let p1 = points[idx];
                 let p2 = points[(idx + 1) % points.len()];
@@ -220,19 +220,74 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
         }
 
         // fill using even-odd rule, for now
-        sections[oidx].fill = parents % 2 == 0;
+        sections[outer_idx].fill = parents % 2 == 0;
 
     }
 
     // Step 4:
     // Connect all the sections into one shape by drawing invisible lines between them.
 
+    // TODO: Could this step generate any meaningfull information for ear clipping later on? Would be nice to save some costs.
+
     println!("there are {} sections in total", sections.len());
     println!("{sections:#?}");
 
+    let mut result: Vec<CurvePoint> = Vec::new();
+    let mut removed: Vec<bool> = Vec::new();
+    removed.resize(sections.len(), false);
+
+    // Push the first section. All other sections will be connected
+    // to this section one after another.
+    if sections.len() > 0 {
+        let section = sections.remove(0); // TODO: benchmark with swap_remove vs. remove
+        let reverse = section.fill && section.direction == SectionDirection::Cw ||
+                      !section.fill && section.direction == SectionDirection::Ccw;
+        if !reverse { result.extend_from_slice(&section.points) }
+        else        { result.extend(section.points.iter().rev()) }
+    }
+
+    // We try to make a connection between any point in the already
+    // generated result and a point from another section.
+    for (section_idx, section) in sections.iter().enumerate() {
+
+        if let Some(connection) = find_connection_spot(&result, &section.points, &sections) {
+
+            let mut new = Vec::new();
+
+            // 1. connection edge, from RESULT -> SECTION
+
+            // new.extend([result[connection.lhs], section.points[connection.rhs]]);
+
+            // 2. SECTION from connection.rhs
+
+            dbg!(&connection);
+
+            for point in result.iter().skip(connection.lhs).chain(result.iter().take(connection.lhs + 1)) {
+                new.push(*point);
+            }
+
+            let reverse = section.fill && section.direction == SectionDirection::Cw ||
+                          !section.fill && section.direction == SectionDirection::Ccw;
+            let idx = if !reverse { connection.rhs } else { section.points.len() - 1 - connection.rhs };
+            let iter = PossiblyReversed::new(section.points.iter(), reverse);
+            for point in iter.clone().skip(idx).chain(iter.take(idx + 1)) {
+                new.push(*point);
+            }
+            // TODO: mark section as removed
+
+            return  new
+
+        }
+
+    }
+
+    todo!()
+
     // ############################
     // sections.truncate(4);
-    sections = sections.drain(0..4).collect();
+    // sections = sections.drain(0..1).collect();
+
+    /*
 
     let mut result: Vec<CurvePoint> = Vec::new();
     let mut tmp: Vec<CurvePoint> = Vec::new();
@@ -281,12 +336,17 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
                         let lhs = check_section.points[idx];
                         let rhs = check_section.points[(idx + 1) % check_section.points.len()];
                         if edges_intersect((*outer_point).into(), (*inner_point).into(), lhs.into(), rhs.into()) {
+                            // println!("")
                             continue 'search; // this point doesn't work
                         }
                     }
                 }
+                let hatred = edges_intersect((*outer_point).into(), (*inner_point).into(), sections[0].points[1].into(), sections[0].points[2].into());
+                dbg!(hatred);
+                    // println!("")
                 // yay, a connection is possible
                 spot = Some(ConnectionSpot { oidx: outer_idx, iidx: inner_index });
+                break;
             }
         }
 
@@ -338,8 +398,57 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
     result
 
+    */
+
 }
 
+/// Finds indices in `lhs` and `rhs` where a new edge could be created without intersecting any
+/// of the edges present in `sections`.
+fn find_connection_spot(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Section]) -> Option<ConnectionSpot> {
+
+    // Check every possible edge between the sections.
+    for (outer_point_idx, outer_point) in lhs.iter().enumerate() {
+        'x: for (inner_point_idx, inner_point) in rhs.iter().enumerate() {
+
+            let connection_edge = [*outer_point, *inner_point].map(Point::from);
+
+            // Verify that no other edge intersects this possible connection.
+            //
+            // We do not need to check for intersections with the infinitely-thin connection strips that
+            // were already generated, since these intersections are actually allowed by the later triangulation stages.
+
+            for check_section in sections.iter() {
+                for check_edge in pair_windows_wrapping(&check_section.points) {
+                    if edges_intersect(connection_edge, check_edge.map(Point::from)) {
+                        continue 'x;
+                    }
+                }
+            }
+
+            // Since we didn't  `continue` above no intersections were found and this
+            // connection is valid.
+
+            return Some(ConnectionSpot {
+                lhs: outer_point_idx,
+                rhs: inner_point_idx,
+            })
+
+        }
+    }
+
+    None
+
+}
+
+#[track_caller]
+fn pair_windows_wrapping<T: Clone + Copy>(slice: &[T]) -> impl Iterator<Item = [T; 2]> {
+    let len =  slice.len();
+    let final_pair = [slice[0], slice[len - 1]];
+    debug_assert!(len >= 2, "slice must have at least two items");
+    slice.windows(2).map(|it| [it[0], it[1]]).chain(once(final_pair))
+}
+
+#[derive(Clone)]
 enum PossiblyReversed<I: DoubleEndedIterator> {
     Normal(I),
     Rev(Rev<I>),
@@ -368,9 +477,10 @@ impl<I: DoubleEndedIterator> Iterator for PossiblyReversed<I> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 struct ConnectionSpot {
-    pub oidx: usize,
-    pub iidx: usize,
+    pub lhs: usize,
+    pub rhs: usize,
 }
 
 /// * +1.0 = CW
@@ -383,7 +493,9 @@ fn three_point_orientation(a: Point, b: Point, c: Point) -> f32 {
 
 /// Simple test for intersection.
 /// If the edges overlap on one point that doesn't count as intersecting.
-fn edges_intersect(a: Point, b: Point, c: Point, d: Point) -> bool {
+fn edges_intersect(lhs: [Point; 2], rhs: [Point; 2]) -> bool {
+    let [a, b] = lhs;
+    let [c, d] = rhs;
     let abc = three_point_orientation(a, b, c);
     let abd = three_point_orientation(a, b, d);
     let cda = three_point_orientation(c, d, a);
@@ -423,7 +535,7 @@ fn test_edges_intersect() {
         ([Point::new(900.0, 1000.0), Point::new(100.0, 500.0),  Point::new(300.0, 1800.0), Point::new(300.0, 600.0)], true),
     ];
     for (idx, (input, expected)) in test_cases.into_iter().enumerate() {
-        let result = edges_intersect(input[0], input[1], input[2], input[3]);
+        let result = edges_intersect([input[0], input[1]], [input[2], input[3]]);
         assert_eq!(expected, result, "test case idx: {}", idx);
     }
 }

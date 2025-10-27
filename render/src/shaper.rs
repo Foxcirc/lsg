@@ -560,7 +560,7 @@ impl TriangulationPass {
                 // we do not generate verticies for zero-area triangles
                 if Self::triangle_area(points[ia], points[ib], points[ic]).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
 
-                    dbg!([ia, ib, ic]);
+                    // dbg!([ia, ib, ic]);
 
                     // we need to compute adjacency information for every edge of the triangle,
                     // since it is needed for anti-aliasing later. specifically we only
@@ -618,7 +618,7 @@ impl TriangulationPass {
                     ((is_outer_edge[1] as u32) << 1) |
                     ((is_outer_edge[2] as u32) << 2);
 
-        dbg!(flags, is_outer_edge);
+        // dbg!(flags, is_outer_edge);
 
         match meta.kind {
             ShapeKind::Singular => {
@@ -749,12 +749,12 @@ impl TriangulationPass {
                     // connecting edges also lie outside the ear. to illustrate this:
                     //              o                              o       P
                     //            /   \                          /   \   .
-                    //      P   .  .  . X                      /       X  . . . . P
+                    //      P   .  .  . X                      /       X  .  .  .  P
                     //        /       .   \                  /           \
                     //      /       .       \              /               \
                     //    O - - - . - - - - - O          O - - - - - - - - - O
                     //         P
-                    //           INVALID                        VALID
+                    //      XPP INVALID EAR                  XPP VALID EAR
                     // the point X in the left triangle would be invalid because the edges . . . . connecting it to
                     // it's neightbour P are inside the ear. the same point X in the right triangle would be valid
                     // because the edges . . . . are outside the ear.

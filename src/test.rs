@@ -9,7 +9,7 @@ use common::*;
 
 #[test]
 fn interactive() -> Result<(), Box<dyn std::error::Error>> {
-    EventLoop::run(app, "interactive-test")?
+    EventLoop::run(app, "interactive test")?
 }
 
 fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
@@ -32,25 +32,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut geometry = CurveGeometry::new();
 
-    // geometry.points.extend([
-    //     CurvePoint::base(0, 0),
-    //     CurvePoint::base(0, 500),
-    //     CurvePoint::base(500, 500),
-    //     CurvePoint::base(500, 0),
-    // ]);
-    // geometry.shapes.push(Shape::singular(0..4, 0));
-    // geometry.instances.push(Instance {
-    //     pos: [0.0, 0.0, 0.5],
-    //     texture: [0.1, 0.1, 0.14],
-    // });
-
-    // initial render
-
-    // window.pre_present_notify();
-    // renderer.draw(&perwindow).expect("first render should be error-free");
-    // window.redraw_with_vsync();
-
-    // add movable point
+    /* add basic triangle to extend by clicking
 
     geometry.points.push(CurvePoint::base(40, 400));
     geometry.points.push(CurvePoint::base(240, 400));
@@ -64,34 +46,46 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         Instance { pos: [1.0, 0.0, 0.4], texture: [0.7, 0.0, 0.15] },
     ]);
 
-    // let shape = [
-    //     // outer sqare
-    //     CurvePoint::base(50, 250),
-    //     CurvePoint::base(50, 400),
-    //     CurvePoint::base(250, 400),
-    //     CurvePoint::base(250, 250),
-    //     // magic trick
-    //     CurvePoint::base(250, 200),
-    //     CurvePoint::base(250, 50),
-    //     CurvePoint::base(50, 50),
-    //     CurvePoint::base(50, 200),
-    //     CurvePoint::base(250, 200),
-    //     // return
-    //     CurvePoint::base(250, 250),
-    // ];
+    */
 
-    // let shape = [
-    //     CurvePoint::base(100, 100),
-    //     CurvePoint::base(100, 50),
-    //     CurvePoint::base(120, 50),
-    //     CurvePoint::base(40, 70),
-    //     CurvePoint::base(40, 80),
-    //     CurvePoint::base(130, 80),
-    //     CurvePoint::base(130, 40),
-    //     CurvePoint::base(120, 40),
-    // ];
+    /* shape with two disconnected areas
 
-    // geometry.points.extend(shape);
+    let shape = [
+        // outer sqare
+        CurvePoint::base(50, 250),
+        CurvePoint::base(50, 400),
+        CurvePoint::base(250, 400),
+        CurvePoint::base(250, 250),
+        // magic trick
+        CurvePoint::base(250, 200),
+        CurvePoint::base(250, 50),
+        CurvePoint::base(50, 50),
+        CurvePoint::base(50, 200),
+        CurvePoint::base(250, 200),
+        // return
+        CurvePoint::base(250, 250),
+    ];
+
+    geometry.points.extend(shape);
+
+    */
+
+    /* shape with allowed self intersection
+
+    let shape = [
+        CurvePoint::base(100, 100),
+        CurvePoint::base(100, 50),
+        CurvePoint::base(120, 50),
+        CurvePoint::base(40, 70),
+        CurvePoint::base(40, 80),
+        CurvePoint::base(130, 80),
+        CurvePoint::base(130, 40),
+        CurvePoint::base(120, 40),
+    ];
+
+    geometry.points.extend(shape);
+
+    */
 
     // let len = geometry.points.len() as i16;
     // geometry.shapes.push(Shape::instanced(4..len as u16, 1..3));
@@ -104,17 +98,21 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     // const TEST2: &str = "M3 18H21V6H3V18ZM1 5C1 4.44772 1.44772 4 2 4H22C22.5523 4 23 4.44772 23 5V19C23 19.5523 22.5523 20 22 20H2C1.44772 20 1 19.5523 1 19V5ZM9 10C9 9.44772 8.55228 9 8 9C7.44772 9 7 9.44772 7 10C7 10.5523 7.44772 11 8 11C8.55228 11 9 10.5523 9 10ZM11 10C11 11.6569 9.65685 13 8 13C6.34315 13 5 11.6569 5 10C5 8.34315 6.34315 7 8 7C9.65685 7 11 8.34315 11 10ZM8.0018 16C7.03503 16 6.1614 16.3907 5.52693 17.0251L4.11272 15.6109C5.10693 14.6167 6.4833 14 8.0018 14C9.52031 14 10.8967 14.6167 11.8909 15.6109L10.4767 17.0251C9.84221 16.3907 8.96858 16 8.0018 16ZM16.2071 14.7071L20.2071 10.7071L18.7929 9.29289L15.5 12.5858L13.7071 10.7929L12.2929 12.2071L14.7929 14.7071L15.5 15.4142L16.2071 14.7071Z";
 
     // const TEST_SVG_PATH: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM12 20C16.42 20 20 16.42 20 12C20 7.58 16.42 4 12 4C7.58 4 4 7.58 4 12C4 16.42 7.58 20 12 20ZM13 12V16H11V12H8L12 8L16 12H13Z";
-    // let (_, parsed_path) = widget::svg::parser::path(TEST2).expect("valid svg path");
-    // let mut points = widget::svg::path_to_shape(parsed_path);
 
     let mut shape_scale_factor = 0.1;
     let mut shape_take_part = 0;
 
-    // widget::svg::scale_all_points(&mut points, shape_scale_factor);
-    // dbg!(&points);
+    const SIMPLE_SVG: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
 
-    // geometry.points.extend(points);
-    // geometry.shapes.push(Shape::instanced(4..7 as u16, 1..3));
+    let (_, parsed_path) = widget::svg::parser::path(SIMPLE_SVG).expect("valid svg path");
+    let mut points = widget::svg::path_to_shape(parsed_path);
+
+    widget::svg::scale_all_points(&mut points, shape_scale_factor);
+    dbg!(&points);
+
+    geometry.shapes.push(Shape::singular(0..points.len() as u16, 0));
+    geometry.instances.push(Instance { pos: [0.1, 0.0, 1.0], texture: [0.7; 3] });
+    geometry.points.extend(points);
 
     // run the event loop
     block_on(async {
@@ -136,7 +134,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         //     it.polygon.end = 4 + shape_take_part;
                         //     println!("points to render: {:?}", geometry.points.get(it.polygon.start as usize .. it.polygon.end as usize));
                         // });
-                        dbg!(&geometry.points);
+                        // dbg!(&geometry.points);
                         let result = renderer.draw(&geometry, &surface);
                         if let Err(err) = result {
                             tracing::error!("draw failed: {err:?}");
