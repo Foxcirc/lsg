@@ -219,14 +219,14 @@ impl LoweringPass {
                                 let [first, second] = TriangulationPass::split_quadratic([sa.into(), sb.into(), sc.into()], split_at); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
 
                                 // insert the first curve triangle by replacing the original sub triangle
-                                self.output.points[isa] = CurvePoint::new(first[0].x as u16, first[0].y as u16, PointKind::Base);
-                                self.output.points[isb] = CurvePoint::new(first[1].x as u16, first[1].y as u16, PointKind::Ctrl);
-                                self.output.points[isc] = CurvePoint::new(first[2].x as u16, first[2].y as u16, PointKind::Base);
+                                self.output.points[isa] = CurvePoint::new(first[0].x as u16, first[0].y as u16, PointKind::Base, PointVisibility::Visible);
+                                self.output.points[isb] = CurvePoint::new(first[1].x as u16, first[1].y as u16, PointKind::Ctrl, PointVisibility::Visible);
+                                self.output.points[isc] = CurvePoint::new(first[2].x as u16, first[2].y as u16, PointKind::Base, PointVisibility::Visible);
 
                                 // insert the second curve triangle at the end
-                                self.output.points.push(CurvePoint::new(second[0].x as u16, second[0].y as u16, PointKind::Base));
-                                self.output.points.push(CurvePoint::new(second[1].x as u16, second[1].y as u16, PointKind::Ctrl));
-                                self.output.points.push(CurvePoint::new(second[2].x as u16, second[2].y as u16, PointKind::Base));
+                                self.output.points.push(CurvePoint::new(second[0].x as u16, second[0].y as u16, PointKind::Base, PointVisibility::Visible));
+                                self.output.points.push(CurvePoint::new(second[1].x as u16, second[1].y as u16, PointKind::Ctrl, PointVisibility::Visible));
+                                self.output.points.push(CurvePoint::new(second[2].x as u16, second[2].y as u16, PointKind::Base, PointVisibility::Visible));
 
                             }
                         }
@@ -266,8 +266,8 @@ impl LoweringPass {
                     let new_ctrl_point_y = -0.25*curve1[0].y + 0.75*curve1[1].y + 0.75*curve1[2].y -0.25*curve1[3].y;
 
                     // push p1 and p2. the last point will be pushed on in the next iteration
-                    self.output.points.push(CurvePoint::new(curve1[0].x as u16, curve1[0].y as u16, PointKind::Base)); // TODO: this cast is soooooo dirty
-                    self.output.points.push(CurvePoint::new(new_ctrl_point_x as u16, new_ctrl_point_y as u16, PointKind::Ctrl));
+                    self.output.points.push(CurvePoint::new(curve1[0].x as u16, curve1[0].y as u16, PointKind::Base, PointVisibility::Visible)); // TODO: this cast is soooooo dirty
+                    self.output.points.push(CurvePoint::new(new_ctrl_point_x as u16, new_ctrl_point_y as u16, PointKind::Ctrl, PointVisibility::Visible));
 
                     curve_to_split = curve2;
                     previous_t_value = t_value;
@@ -654,14 +654,14 @@ impl TriangulationPass {
 
     /// Computes the direct neightbours of this index, wrapping around if neccessary.
     #[track_caller]
-    pub(self) fn direct_neighbours(len: usize, idx: usize) -> [usize; 3] {
+    pub(self) fn direct_neighbours(len: usize, idx: usize) -> [usize; 2] {
         if idx == 0 {
-            [len - 1, idx, idx + 1]
+            [len - 1, idx + 1]
         } else if idx == len - 1 {
-            [idx - 1, idx, 0]
+            [idx - 1, 0]
         } else {
             debug_assert!(idx <= len, "idx should be <= len");
-            [idx - 1, idx, idx + 1]
+            [idx - 1, idx + 1]
         }
     }
 
@@ -738,6 +738,21 @@ impl TriangulationPass {
             return true
         }
 
+        // A.2. two or more "invisible" points must make a zero-area ear
+        //
+        // this is, to prevent the invisible connection lines between different geometry
+        // from forming ears between each other in rare cases.
+
+        let invisibles = [a, b, c].iter().filter(|it|
+            it.visibility() == PointVisibility::Invisible
+        ).count();
+
+        if invisibles == 2 {
+            return abc < 1e-6;
+        } else if invisibles > 0 {
+            return false
+        }
+
         // B. short curcuit if it is concave.
         let convex = Self::convex([a.into(), b.into(), c.into()]);
         if !convex {
@@ -788,6 +803,7 @@ impl TriangulationPass {
                     // - the vector must must inside the ear in respect to ALL edges
                     // - moving to the LEFT of the edge means moving INSIDE the ear
                     let invalid = nbs.iter().any(|nb| edges.iter().all(|edge|
+                        // Y-Inverted version (MovingLeft vs. MovingRight)
                         two_vector_relation(*edge, [*point, *nb]) == TwoVectorRelation::MovingLeft
                     ));
 

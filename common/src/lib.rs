@@ -136,8 +136,8 @@ impl CurveGeometry {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CurvePoint {
     /// # Layout
-    /// [flag, x-pos, y-pos]
-    ///  2bit  15bit  15bit
+    /// [kind, vis, x-pos, y-pos]
+    ///  1bit  1bit 15bit  15bit
     inner: u32,
 }
 
@@ -153,24 +153,31 @@ impl fmt::Debug for CurvePoint {
 
 impl CurvePoint {
 
-    pub const ZERO: Self = Self::new(0, 0, PointKind::Base);
+    pub const ZERO: Self = Self::new(0, 0, PointKind::Base, PointVisibility::Visible);
 
+    /// Creates a new point. The point will be `Visible` by default.
     /// # Panic (debug-assertions)
     /// X and Y must be smaller then u16::MAX / 2 since they
     /// are stored as 15-bit numbers internally.
-    pub const fn new(x: u16, y: u16, kind: PointKind) -> Self {
+    pub const fn new(x: u16, y: u16, kind: PointKind, vis: PointVisibility) -> Self {
 
         debug_assert!(x < 32767, "x must be < u16::MAX / 2");
         debug_assert!(y < 32767, "y must be < u16::MAX / 2");
 
-        let flag = match kind {
+        let f1 = match kind {
             PointKind::Base => 0b00,
             PointKind::Ctrl => 0b01,
         };
 
-        let inner = ((flag as u32 & 0b11  ) << 0 ) |
-                    ((x    as u32 & 0x7fff) << 2 ) |
-                    ((y    as u32 & 0x7fff) << 17);
+        let f2 = match vis {
+            PointVisibility::Visible => 0b0,
+            PointVisibility::Invisible => 0b1,
+        };
+
+        let inner = ((f1 as u32 & 0b1)    << 0 ) |
+                    ((f2 as u32 & 0b1)    << 1 ) |
+                    ((x  as u32 & 0x7fff) << 2 ) |
+                    ((y  as u32 & 0x7fff) << 17);
 
         Self { inner }
     }
@@ -184,10 +191,19 @@ impl CurvePoint {
     }
 
     pub fn kind(&self) -> PointKind {
-        let flag = (self.inner >> 0) & 0b11;
+        let flag = (self.inner >> 0) & 0b1;
         match flag {
-            0b00 => PointKind::Base,
-            0b01 => PointKind::Ctrl,
+            0b0 => PointKind::Base,
+            0b1 => PointKind::Ctrl,
+            _ => unreachable!()
+        }
+    }
+
+    pub fn visibility(&self) -> PointVisibility {
+        let visbility = (self.inner >> 1) & 0b1;
+        match visbility {
+            0b0 => PointVisibility::Visible,
+            0b1 => PointVisibility::Invisible,
             _ => unreachable!()
         }
     }
@@ -197,111 +213,35 @@ impl CurvePoint {
 /// Lossy conversion, see `new` for more details.
 impl CurvePointFrom<PhysicalPoint> for CurvePoint {
     #[track_caller]
-    fn convert(point: PhysicalPoint, kind: PointKind) -> Self {
-        Self::new(point.x as u16, point.y as u16, kind)
+    fn convert(point: PhysicalPoint, kind: PointKind, vis: PointVisibility) -> Self {
+        Self::new(point.x as u16, point.y as u16, kind, vis)
     }
 }
 
 /// Lossy conversion, see `new` for more details.
 impl CurvePointFrom<Point> for CurvePoint {
     #[track_caller]
-    fn convert(point: Point, kind: PointKind) -> Self {
-        Self::new(point.x as u16, point.y as u16, kind)
+    fn convert(point: Point, kind: PointKind, vis: PointVisibility) -> Self {
+        Self::new(point.x as u16, point.y as u16, kind, vis)
     }
 }
 
 pub trait CurvePointFrom<T> {
-    fn convert(t: T, kind: PointKind) -> Self;
+    fn convert(t: T, kind: PointKind, vis: PointVisibility) -> Self;
 }
-
-/*
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct CurvePoint {
-    /// - **positive**: base point
-    /// - **negative**: control point
-    /// - i16::MAX/-i16::MAX means zero
-    x: i16,
-    /// - **positive**: base point
-    /// - **negative**: control point
-    /// - i16::MAX/-i16::MAX means zero
-    /// - y-flipped, so y is growing downwards
-    y: i16,
-}
-
-impl CurvePoint {
-
-    /// Construct a new curve point.
-    ///
-    /// ### Panic (debug-assertions)
-    /// Only accepts positive values that are not i16::MAX.
-    // #[track_caller]
-    // pub fn new(mut x: u16, mut y: u16, kind: PointKind) -> Self {
-
-    // }
-
-    /// Construct a new curve point.
-    ///
-    /// ### Panic (debug-assertions)
-    /// Only accepts positive values that are not i16::MAX.
-    #[track_caller]
-    pub fn base(mut x: i16, mut y: i16) -> Self {
-        debug_assert!(
-            x >= 0 && x < i16::MAX && y >= 0 && y < i16::MAX,
-            "coordinates must be positive and not i16::MAX"
-        ); // TODO: document that this is only enforced in debug
-        if x == 0 { x = i16::MAX };
-        if y == 0 { y = i16::MAX };
-        Self { x, y }
-    }
-
-    /// Construct a new control point.
-    ///
-    /// ### Panic (debug-assertions)
-    /// Only accepts positive values that are not i16::MAX.
-    #[track_caller]
-    pub fn ctrl(mut x: i16, mut y: i16) -> Self {
-        debug_assert!(
-            x >= 0 && x < i16::MAX && y >= 0 && y < i16::MAX,
-            "coordinates must be positive and not i16::MAX"
-        );
-        if x == 0 { x = i16::MAX };
-        if y == 0 { y = i16::MAX };
-        Self { x: -x, y: -y }
-    }
-
-    pub fn base_from_point(pt: Point) -> Self {
-        Self::base(pt.x as i16, pt.y as i16)
-    }
-
-    pub fn ctrl_from_point(pt: Point) -> Self {
-        Self::ctrl(pt.x as i16, pt.y as i16)
-    }
-
-    #[inline(always)]
-    pub fn x(&self) -> i16 {
-        self.x.abs() % i16::MAX
-    }
-
-    #[inline(always)]
-    pub fn y(&self) -> i16 {
-        self.y.abs() % i16::MAX
-    }
-
-    #[inline(always)]
-    pub fn kind(&self) -> PointKind {
-        match self.x > 0 {
-            true => PointKind::Base,
-            false => PointKind::Ctrl,
-        }
-    }
-
-}
-*/
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointKind {
     Base,
     Ctrl,
+}
+
+/// For all regular points this should be `Visible`. Invisible points are only
+/// used to create zero area ears to connect seperated geometry into one shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointVisibility {
+    Visible,
+    Invisible,
 }
 
 /// Description of what points and instances make up a shape.
