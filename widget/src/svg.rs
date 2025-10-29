@@ -83,9 +83,9 @@ struct Section {
 }
 
 pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
-    for point in shape {
-        point.x = (point.x as f32 * factor) as i16;
-        point.y = (point.y as f32 * factor) as i16;
+    for point in shape.iter_mut() {
+        let new = Point::from(*point) * factor;
+        *point = CurvePoint::convert(new, point.kind());
     }
 }
 
@@ -114,41 +114,40 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
                     });
                 }
                 // add the point
-                current.push(CurvePoint::base_from_point(p1 * 100.0));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 start = p1;
                 cursor = p1;
             },
             PathCommand::Line(p1) => {
-                current.push(CurvePoint::base_from_point(p1 * 100.0));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Horizontal(pos) => {
-                current.push(CurvePoint::base_from_point(Point::new(pos, cursor.y) * 100.0));
+                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * 100.0, PointKind::Base));
                 cursor.x = pos;
             },
             PathCommand::Vertical(pos) => {
-                current.push(CurvePoint::base_from_point(Point::new(cursor.x, pos) * 100.0));
+                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * 100.0, PointKind::Base));
                 cursor.y = pos;
             },
             PathCommand::Quadratic(ct, p1) => {
-                current.push(CurvePoint::ctrl_from_point(ct * 100.0));
-                current.push(CurvePoint::base_from_point(p1 * 100.0));
+                current.push(CurvePoint::convert(ct * 100.0, PointKind::Ctrl));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Cubic(c1, c2, p1) => {
-                current.push(CurvePoint::ctrl_from_point(c1 * 100.0));
-                current.push(CurvePoint::base_from_point(c2 * 100.0));
-                current.push(CurvePoint::base_from_point(p1 * 100.0));
+                current.push(CurvePoint::convert(c1 * 100.0, PointKind::Ctrl));
+                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Return => {
-                current.push(CurvePoint::base_from_point(start * 100.0));
+                current.push(CurvePoint::convert(start * 100.0, PointKind::Base));
                 cursor = start;
             },
         }
 
     }
-
 
     // The last section won't have a move command after it,
     // to trigger the push, so we push it here.
@@ -205,8 +204,8 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
             for idx in 0..points.len() {
                 let p1 = points[idx];
                 let p2 = points[(idx + 1) % points.len()];
-                let angle1 = ((p1.y() - test.y()) as f64).atan2((p1.x() - test.x()) as f64);
-                let angle2 = ((p2.y() - test.y()) as f64).atan2((p2.x() - test.x()) as f64);
+                let angle1 = (p1.y() as f64 - test.y() as f64).atan2(p1.x() as f64 - test.x() as f64);
+                let angle2 = (p2.y() as f64 - test.y() as f64).atan2(p2.x() as f64 - test.x() as f64);
                 let mut diff = angle2 - angle1;
                 if      diff >  PI { diff -= 2.0 * PI; }
                 else if diff < -PI { diff += 2.0 * PI; }
@@ -226,8 +225,6 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
     // Step 4:
     // Connect all the sections into one shape by drawing invisible lines between them.
-
-    // TODO: Could this step generate any meaningfull information for ear clipping later on? Would be nice to save some costs.
 
     // println!("there are {} sections in total", sections.len());
     // println!("{sections:#?}");
@@ -264,7 +261,10 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
             let reverse = section.fill && section.direction == SectionDirection::Cw ||
                           !section.fill && section.direction == SectionDirection::Ccw;
+
+            // We need to invert the connection index if the iterator is going to be reversed.
             let idx = if !reverse { spot.rhs } else { section.points.len() - 1 - spot.rhs };
+
             let iter = PossiblyReversed::new(section.points.iter(), reverse);
             for point in iter.clone().skip(idx).chain(iter.take(idx + 1)) {
                 new.push(*point);
@@ -437,26 +437,14 @@ fn test_path_to_shape() {
     const TEST: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
 
     let (_, points) = parser::path(TEST).expect("valid svg path");
-    let shape = path_to_shape(points);
+    let mut shape = path_to_shape(points);
 
-    assert_eq!(&shape, &[
-        CurvePoint::base(120, 20),
-        CurvePoint::base(64, 20),
-        CurvePoint::base(20, 120),
-        CurvePoint::base(20, 175),
-        CurvePoint::base(120, 220),
-        CurvePoint::base(175, 220),
-        CurvePoint::base(220, 120),
-        CurvePoint::base(220, 64),
-        CurvePoint::base(120, 20),
-        CurvePoint::base(160, 120),
-        CurvePoint::base(130, 120),
-        CurvePoint::base(130, 160),
-        CurvePoint::base(110, 160),
-        CurvePoint::base(110, 120),
-        CurvePoint::base(80, 120),
-        CurvePoint::base(120, 80),
-        CurvePoint::base(160, 120),
-    ]);
+    for point in shape.iter_mut() {
+        *point = CurvePoint::new(point.x() / 10, point.y() / 10, PointKind::Base);
+    }
+
+    assert_eq!(&shape,
+        &[CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(64, 20, PointKind::Base), CurvePoint::new(20, 64, PointKind::Base), CurvePoint::new(20, 120, PointKind::Base), CurvePoint::new(20, 175, PointKind::Base), CurvePoint::new(64, 220, PointKind::Base), CurvePoint::new(120, 220, PointKind::Base), CurvePoint::new(175, 220, PointKind::Base), CurvePoint::new(220, 175, PointKind::Base), CurvePoint::new(220, 120, PointKind::Base), CurvePoint::new(220, 64, PointKind::Base), CurvePoint::new(175, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 160, PointKind::Base), CurvePoint::new(110, 160, PointKind::Base), CurvePoint::new(110, 120, PointKind::Base), CurvePoint::new(80, 120, PointKind::Base), CurvePoint::new(120, 80, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base)]
+    );
 
 }

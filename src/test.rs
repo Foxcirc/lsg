@@ -87,6 +87,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     */
 
+    let p = CurvePoint::new(100, 1203, PointKind::Ctrl);
+
     // let len = geometry.points.len() as i16;
     // geometry.shapes.push(Shape::instanced(4..len as u16, 1..3));
 
@@ -189,7 +191,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
 
                         geometry.points.push(
-                            CurvePoint::base(x as i16, y as i16)
+                            CurvePoint::new(x as u16, y as u16, PointKind::Base)
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
@@ -206,7 +208,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::MouseDown { button: MouseButton::Right, x, y } => {
 
                         geometry.points.push(
-                            CurvePoint::ctrl(x as i16, y as i16)
+                            CurvePoint::new(x as u16, y as u16, PointKind::Ctrl)
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {

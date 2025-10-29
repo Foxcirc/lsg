@@ -219,14 +219,14 @@ impl LoweringPass {
                                 let [first, second] = TriangulationPass::split_quadratic([sa.into(), sb.into(), sc.into()], split_at); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
 
                                 // insert the first curve triangle by replacing the original sub triangle
-                                self.output.points[isa] = CurvePoint::base(first[0].x as i16, first[0].y as i16);
-                                self.output.points[isb] = CurvePoint::ctrl(first[1].x as i16, first[1].y as i16);
-                                self.output.points[isc] = CurvePoint::base(first[2].x as i16, first[2].y as i16);
+                                self.output.points[isa] = CurvePoint::new(first[0].x as u16, first[0].y as u16, PointKind::Base);
+                                self.output.points[isb] = CurvePoint::new(first[1].x as u16, first[1].y as u16, PointKind::Ctrl);
+                                self.output.points[isc] = CurvePoint::new(first[2].x as u16, first[2].y as u16, PointKind::Base);
 
                                 // insert the second curve triangle at the end
-                                self.output.points.push(CurvePoint::base(second[0].x as i16, second[0].y as i16));
-                                self.output.points.push(CurvePoint::ctrl(second[1].x as i16, second[1].y as i16));
-                                self.output.points.push(CurvePoint::base(second[2].x as i16, second[2].y as i16));
+                                self.output.points.push(CurvePoint::new(second[0].x as u16, second[0].y as u16, PointKind::Base));
+                                self.output.points.push(CurvePoint::new(second[1].x as u16, second[1].y as u16, PointKind::Ctrl));
+                                self.output.points.push(CurvePoint::new(second[2].x as u16, second[2].y as u16, PointKind::Base));
 
                             }
                         }
@@ -266,8 +266,8 @@ impl LoweringPass {
                     let new_ctrl_point_y = -0.25*curve1[0].y + 0.75*curve1[1].y + 0.75*curve1[2].y -0.25*curve1[3].y;
 
                     // push p1 and p2. the last point will be pushed on in the next iteration
-                    self.output.points.push(CurvePoint::base(curve1[0].x as i16, curve1[0].y as i16)); // TODO: this cast is soooooo dirty, f32 to i16? realy???
-                    self.output.points.push(CurvePoint::ctrl(new_ctrl_point_x as i16, new_ctrl_point_y as i16));
+                    self.output.points.push(CurvePoint::new(curve1[0].x as u16, curve1[0].y as u16, PointKind::Base)); // TODO: this cast is soooooo dirty
+                    self.output.points.push(CurvePoint::new(new_ctrl_point_x as u16, new_ctrl_point_y as u16, PointKind::Ctrl));
 
                     curve_to_split = curve2;
                     previous_t_value = t_value;
@@ -788,7 +788,7 @@ impl TriangulationPass {
                     // - the vector must must inside the ear in respect to ALL edges
                     // - moving to the LEFT of the edge means moving INSIDE the ear
                     let invalid = nbs.iter().any(|nb| edges.iter().all(|edge|
-                        two_vector_relation(*edge, [*point, *nb]) == TwoEdgeRelation::MovingLeft
+                        two_vector_relation(*edge, [*point, *nb]) == TwoVectorRelation::MovingLeft
                     ));
 
                     !invalid
@@ -1087,14 +1087,14 @@ impl TriangulationPass {
 ///         ⟍
 ///           ↘ rhs
 /// Here the `rhs` has the `MovingRight` relation to `lhs`.
-fn two_vector_relation(lhs: [CurvePoint; 2], rhs: [CurvePoint; 2]) -> TwoEdgeRelation {
+fn two_vector_relation(lhs: [CurvePoint; 2], rhs: [CurvePoint; 2]) -> TwoVectorRelation {
 
     // compute the normal vector of the edge we are touching. this will
     // be the LEFT normal vector since we are using the [-y, x] form.
-    let normal = [-(lhs[1].y() - lhs[0].y()), (lhs[1].x() - lhs[0].x())];
+    let normal = [-(lhs[1].y() as f32 - lhs[0].y() as f32), (lhs[1].x() as f32 - lhs[0].x() as f32)];
 
-    let dot = ((rhs[1].x() - rhs[0].x()) as f32 * normal[0] as f32) +
-              ((rhs[1].y() - rhs[0].y()) as f32 * normal[1] as f32);
+    let dot = ((rhs[1].x() as f32 - rhs[0].x() as f32) * normal[0] as f32) +
+              ((rhs[1].y() as f32 - rhs[0].y() as f32) * normal[1] as f32);
 
     // dot product rules:
     // dot == 0 → parallel
@@ -1104,16 +1104,16 @@ fn two_vector_relation(lhs: [CurvePoint; 2], rhs: [CurvePoint; 2]) -> TwoEdgeRel
     const EPS: f32 = 1e-6;
 
     if dot < EPS && dot > -EPS {
-        TwoEdgeRelation::Parallel
+        TwoVectorRelation::Parallel
     } else if dot < EPS {
-        TwoEdgeRelation::MovingLeft
+        TwoVectorRelation::MovingLeft
     } else {
-        TwoEdgeRelation::MovingRight
+        TwoVectorRelation::MovingRight
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TwoEdgeRelation {
+enum TwoVectorRelation {
     MovingLeft,
     MovingRight,
     Parallel,

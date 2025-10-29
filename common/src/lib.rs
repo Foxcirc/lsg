@@ -10,7 +10,7 @@ pub struct Rect {
 }
 
 impl Rect {
-    pub const INFINITE: Self = Self::new(PhysicalPoint::ORIGIN, Size::INFINITE);
+    pub const INFINITE: Self = Self::new(PhysicalPoint::ZERO, Size::INFINITE);
     pub const fn new(pos: PhysicalPoint, size: Size) -> Self {
         Self { pos, size }
     }
@@ -38,7 +38,7 @@ pub struct PhysicalPoint {
 }
 
 impl PhysicalPoint {
-    pub const ORIGIN: Self = Self::new(0, 0);
+    pub const ZERO: Self = Self::new(0, 0);
     pub const fn new(x: isize, y: isize) -> Self {
         Self { x, y }
     }
@@ -129,32 +129,36 @@ impl CurveGeometry {
     }
 }
 
-/// A point with additional curve information
+/// A point with additional curve information.
 ///
-/// Can represent base (on-curve) and control (off-curve) points.
-/// To save space on the GPU, here are some quirks with `x` and `y`:
-/// - **positive**: base point
-/// - **negative**: control point
-/// - i16::MAX/-i16::MAX means zero
-/// Be careful not to invalidate any invariants of the fields when
-/// you modify their values.
-
-// TODO: use +-1 to represent zero instead of +-MAX, then we only have to subtract/add one, or do smth different and represent it using u16
-
+/// Can represent base (on-curve) and control (off-curve) points using
+/// a compressed format to save space.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct CurvePointV2 {
+pub struct CurvePoint {
     /// # Layout
     /// [flag, x-pos, y-pos]
-    ///  2bit  31bit  31bit
-    inner: u64,
+    ///  2bit  15bit  15bit
+    inner: u32,
 }
 
-impl CurvePointV2 {
+impl fmt::Debug for CurvePoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.kind() == PointKind::Base {
+            write!(f, "BasePoint({}, {})", self.x(), self.y())
+        } else {
+            write!(f, "CtrlPoint({}, {})", self.x(), self.y())
+        }
+    }
+}
+
+impl CurvePoint {
+
+    pub const ZERO: Self = Self::new(0, 0, PointKind::Base);
 
     /// # Panic (debug-assertions)
     /// X and Y must be smaller then u16::MAX / 2 since they
     /// are stored as 15-bit numbers internally.
-    pub fn new(x: u16, y: u16, kind: PointKind) -> Self {
+    pub const fn new(x: u16, y: u16, kind: PointKind) -> Self {
 
         debug_assert!(x < 32767, "x must be < u16::MAX / 2");
         debug_assert!(y < 32767, "y must be < u16::MAX / 2");
@@ -164,23 +168,23 @@ impl CurvePointV2 {
             PointKind::Ctrl => 0b01,
         };
 
-        let inner = ((flag as u64 & 0b11  ) << 0 ) |
-                    ((x    as u64 & 0x7fff) << 2 ) |
-                    ((y    as u64 & 0x7fff) << 17);
+        let inner = ((flag as u32 & 0b11  ) << 0 ) |
+                    ((x    as u32 & 0x7fff) << 2 ) |
+                    ((y    as u32 & 0x7fff) << 17);
 
         Self { inner }
     }
 
-    fn x(&self) -> u16 {
-        ((self.inner >> 2)  & 0x7fff) as u16
+    pub fn x(&self) -> u16 {
+        ((self.inner >> 2) & 0x7fff) as u16
     }
 
-    fn y(&self) -> u16 {
-        ((self.inner >> 17)  & 0x7fff) as u16
+    pub fn y(&self) -> u16 {
+        ((self.inner >> 17) & 0x7fff) as u16
     }
 
-    fn kind(&self) -> PointKind {
-        let flag = ((self.inner >> 0)  & 0b11);
+    pub fn kind(&self) -> PointKind {
+        let flag = (self.inner >> 0) & 0b11;
         match flag {
             0b00 => PointKind::Base,
             0b01 => PointKind::Ctrl,
@@ -191,7 +195,7 @@ impl CurvePointV2 {
 }
 
 /// Lossy conversion, see `new` for more details.
-impl CurvePointFrom<PhysicalPoint> for CurvePointV2 {
+impl CurvePointFrom<PhysicalPoint> for CurvePoint {
     #[track_caller]
     fn convert(point: PhysicalPoint, kind: PointKind) -> Self {
         Self::new(point.x as u16, point.y as u16, kind)
@@ -199,7 +203,7 @@ impl CurvePointFrom<PhysicalPoint> for CurvePointV2 {
 }
 
 /// Lossy conversion, see `new` for more details.
-impl CurvePointFrom<Point> for CurvePointV2 {
+impl CurvePointFrom<Point> for CurvePoint {
     #[track_caller]
     fn convert(point: Point, kind: PointKind) -> Self {
         Self::new(point.x as u16, point.y as u16, kind)
@@ -222,16 +226,6 @@ pub struct CurvePoint {
     /// - i16::MAX/-i16::MAX means zero
     /// - y-flipped, so y is growing downwards
     y: i16,
-}
-
-impl fmt::Debug for CurvePoint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.kind() == PointKind::Base {
-            write!(f, "BasePoint({}, {})", self.x(), self.y())
-        } else {
-            write!(f, "CtrlPoint({}, {})", self.x(), self.y())
-        }
-    }
 }
 
 impl CurvePoint {
