@@ -85,7 +85,7 @@ struct Section {
 pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
     for point in shape.iter_mut() {
         let new = Point::from(*point) * factor;
-        *point = CurvePoint::convert(new, point.kind());
+        *point = CurvePoint::convert(new, point.kind(), point.visibility());
     }
 }
 
@@ -114,35 +114,35 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
                     });
                 }
                 // add the point
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
                 start = p1;
                 cursor = p1;
             },
             PathCommand::Line(p1) => {
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
                 cursor = p1;
             },
             PathCommand::Horizontal(pos) => {
-                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * 100.0, PointKind::Base, PointVisibility::Visible));
                 cursor.x = pos;
             },
             PathCommand::Vertical(pos) => {
-                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * 100.0, PointKind::Base, PointVisibility::Visible));
                 cursor.y = pos;
             },
             PathCommand::Quadratic(ct, p1) => {
-                current.push(CurvePoint::convert(ct * 100.0, PointKind::Ctrl));
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(ct * 100.0, PointKind::Ctrl, PointVisibility::Visible));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
                 cursor = p1;
             },
             PathCommand::Cubic(c1, c2, p1) => {
-                current.push(CurvePoint::convert(c1 * 100.0, PointKind::Ctrl));
-                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Base));
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(c1 * 100.0, PointKind::Ctrl, PointVisibility::Visible));
+                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
                 cursor = p1;
             },
             PathCommand::Return => {
-                current.push(CurvePoint::convert(start * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(start * 100.0, PointKind::Base, PointVisibility::Visible));
                 cursor = start;
             },
         }
@@ -226,21 +226,21 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
     // Step 4:
     // Connect all the sections into one shape by drawing invisible lines between them.
 
-    // println!("there are {} sections in total", sections.len());
-    // println!("{sections:#?}");
-
     let mut result: Vec<CurvePoint> = Vec::new();
+    let mut removed_count = 0;
     let mut removed: Vec<bool> = Vec::new();
     removed.resize(sections.len(), false);
 
     // Push the first section. All other sections will be connected
     // to this section one after another.
     if sections.len() > 0 {
-        let section = sections.remove(0); // TODO: benchmark with swap_remove vs. remove
+        let section = &sections[0];
         let reverse = section.fill && section.direction == SectionDirection::Cw ||
                       !section.fill && section.direction == SectionDirection::Ccw;
         if !reverse { result.extend_from_slice(&section.points) }
         else        { result.extend(section.points.iter().rev()) }
+        removed[0] = true;
+        removed_count = 1;
     }
 
     // We try to make a connection between any point in the already
@@ -259,6 +259,11 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
                 new.push(*point);
             }
 
+            new[0] = CurvePoint::new(new[0].x(), new[0].y(), new[0].kind(), PointVisibility::Invisible);
+
+            let last = new.len() - 1;
+            new[last] = CurvePoint::new(new[last].x(), new[last].y(), new[last].kind(), PointVisibility::Invisible);
+
             let reverse = section.fill && section.direction == SectionDirection::Cw ||
                           !section.fill && section.direction == SectionDirection::Ccw;
 
@@ -269,16 +274,27 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
             for point in iter.clone().skip(idx).chain(iter.take(idx + 1)) {
                 new.push(*point);
             }
+
+            new[last + 1] = CurvePoint::new(new[last + 1].x(), new[last + 1].y(), new[last + 1].kind(), PointVisibility::Invisible);
+
+            let last = new.len() - 1;
+            new[last] = CurvePoint::new(new[last].x(), new[last].y(), new[last].kind(), PointVisibility::Invisible);
+
+            result = new;
+
             // TODO: mark section as removed
             removed[section_idx] = true;
+            removed_count += 1;
 
-            return  new
+            if removed_count == sections.len() {
+                break
+            }
 
         }
 
     }
 
-    todo!()
+    result
 
 }
 
@@ -440,11 +456,11 @@ fn test_path_to_shape() {
     let mut shape = path_to_shape(points);
 
     for point in shape.iter_mut() {
-        *point = CurvePoint::new(point.x() / 10, point.y() / 10, PointKind::Base);
+        *point = CurvePoint::new(point.x() / 10, point.y() / 10, PointKind::Base, PointVisibility::Visible);
     }
 
     assert_eq!(&shape,
-        &[CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(64, 20, PointKind::Base), CurvePoint::new(20, 64, PointKind::Base), CurvePoint::new(20, 120, PointKind::Base), CurvePoint::new(20, 175, PointKind::Base), CurvePoint::new(64, 220, PointKind::Base), CurvePoint::new(120, 220, PointKind::Base), CurvePoint::new(175, 220, PointKind::Base), CurvePoint::new(220, 175, PointKind::Base), CurvePoint::new(220, 120, PointKind::Base), CurvePoint::new(220, 64, PointKind::Base), CurvePoint::new(175, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 160, PointKind::Base), CurvePoint::new(110, 160, PointKind::Base), CurvePoint::new(110, 120, PointKind::Base), CurvePoint::new(80, 120, PointKind::Base), CurvePoint::new(120, 80, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base)]
+        &[CurvePoint::new(120, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(64, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(20, 64, PointKind::Base, PointVisibility::Visible), CurvePoint::new(20, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(20, 175, PointKind::Base, PointVisibility::Visible), CurvePoint::new(64, 220, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 220, PointKind::Base, PointVisibility::Visible), CurvePoint::new(175, 220, PointKind::Base, PointVisibility::Visible), CurvePoint::new(220, 175, PointKind::Base, PointVisibility::Visible), CurvePoint::new(220, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(220, 64, PointKind::Base, PointVisibility::Visible), CurvePoint::new(175, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(160, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(130, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(130, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(130, 160, PointKind::Base, PointVisibility::Visible), CurvePoint::new(110, 160, PointKind::Base, PointVisibility::Visible), CurvePoint::new(110, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(80, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 80, PointKind::Base, PointVisibility::Visible), CurvePoint::new(160, 120, PointKind::Base, PointVisibility::Visible)]
     );
 
 }
