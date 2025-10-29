@@ -92,7 +92,7 @@ impl ops::Mul<f32> for Point {
 }
 
 /// Area of a window that has to be redrawn.
-pub struct Damage<'s> { // TODO: move to renderer?
+pub struct Damage<'s> {
     /// Empty means full damage.
     pub rects: &'s [Rect],
 }
@@ -142,16 +142,86 @@ impl CurveGeometry {
 // TODO: use +-1 to represent zero instead of +-MAX, then we only have to subtract/add one, or do smth different and represent it using u16
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CurvePointV2 {
+    /// # Layout
+    /// [flag, x-pos, y-pos]
+    ///  2bit  31bit  31bit
+    inner: u64,
+}
+
+impl CurvePointV2 {
+
+    /// # Panic (debug-assertions)
+    /// X and Y must be smaller then u16::MAX / 2 since they
+    /// are stored as 15-bit numbers internally.
+    pub fn new(x: u16, y: u16, kind: PointKind) -> Self {
+
+        debug_assert!(x < 32767, "x must be < u16::MAX / 2");
+        debug_assert!(y < 32767, "y must be < u16::MAX / 2");
+
+        let flag = match kind {
+            PointKind::Base => 0b00,
+            PointKind::Ctrl => 0b01,
+        };
+
+        let inner = ((flag as u64 & 0b11  ) << 0 ) |
+                    ((x    as u64 & 0x7fff) << 2 ) |
+                    ((y    as u64 & 0x7fff) << 17);
+
+        Self { inner }
+    }
+
+    fn x(&self) -> u16 {
+        ((self.inner >> 2)  & 0x7fff) as u16
+    }
+
+    fn y(&self) -> u16 {
+        ((self.inner >> 17)  & 0x7fff) as u16
+    }
+
+    fn kind(&self) -> PointKind {
+        let flag = ((self.inner >> 0)  & 0b11);
+        match flag {
+            0b00 => PointKind::Base,
+            0b01 => PointKind::Ctrl,
+            _ => unreachable!()
+        }
+    }
+
+}
+
+/// Lossy conversion, see `new` for more details.
+impl CurvePointFrom<PhysicalPoint> for CurvePointV2 {
+    #[track_caller]
+    fn convert(point: PhysicalPoint, kind: PointKind) -> Self {
+        Self::new(point.x as u16, point.y as u16, kind)
+    }
+}
+
+/// Lossy conversion, see `new` for more details.
+impl CurvePointFrom<Point> for CurvePointV2 {
+    #[track_caller]
+    fn convert(point: Point, kind: PointKind) -> Self {
+        Self::new(point.x as u16, point.y as u16, kind)
+    }
+}
+
+pub trait CurvePointFrom<T> {
+    fn convert(t: T, kind: PointKind) -> Self;
+}
+
+/*
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CurvePoint {
     /// - **positive**: base point
     /// - **negative**: control point
     /// - i16::MAX/-i16::MAX means zero
-    pub x: i16,
+    x: i16,
     /// - **positive**: base point
     /// - **negative**: control point
     /// - i16::MAX/-i16::MAX means zero
     /// - y-flipped, so y is growing downwards
-    pub y: i16,
+    y: i16,
 }
 
 impl fmt::Debug for CurvePoint {
@@ -166,9 +236,18 @@ impl fmt::Debug for CurvePoint {
 
 impl CurvePoint {
 
-    /// Construct a new base point.
+    /// Construct a new curve point.
     ///
-    /// ### Panic
+    /// ### Panic (debug-assertions)
+    /// Only accepts positive values that are not i16::MAX.
+    // #[track_caller]
+    // pub fn new(mut x: u16, mut y: u16, kind: PointKind) -> Self {
+
+    // }
+
+    /// Construct a new curve point.
+    ///
+    /// ### Panic (debug-assertions)
     /// Only accepts positive values that are not i16::MAX.
     #[track_caller]
     pub fn base(mut x: i16, mut y: i16) -> Self {
@@ -183,14 +262,14 @@ impl CurvePoint {
 
     /// Construct a new control point.
     ///
-    /// ### Panic
+    /// ### Panic (debug-assertions)
     /// Only accepts positive values that are not i16::MAX.
     #[track_caller]
     pub fn ctrl(mut x: i16, mut y: i16) -> Self {
         debug_assert!(
             x >= 0 && x < i16::MAX && y >= 0 && y < i16::MAX,
             "coordinates must be positive and not i16::MAX"
-        ); // TODO: document that this is only enforced in debug
+        );
         if x == 0 { x = i16::MAX };
         if y == 0 { y = i16::MAX };
         Self { x: -x, y: -y }
@@ -223,6 +302,7 @@ impl CurvePoint {
     }
 
 }
+*/
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointKind {
