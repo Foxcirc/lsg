@@ -402,7 +402,7 @@ impl TriangulationPass {
         let meta = ShapeMetadata {
             kind: shape.kind(),
             instance: &instances[0],
-            size
+            size,
         };
 
         // reset our state
@@ -523,8 +523,12 @@ impl TriangulationPass {
 
         // eprintln!("points: {:?}", points);
 
+        #[cfg(debug_assertions)]
+        let mut debug_ears_generated = 0; // TODO: is this a decent debugging mechanism
+
         let mut changes = false; // used to check for errors
         let mut counter = 0;
+
         loop {
 
             // eprintln!("start of iteration, ears: {:?}, removed: {:?}", &state.ears, &state.removed);
@@ -533,8 +537,8 @@ impl TriangulationPass {
                 counter += 1;
             } else { // reset counter
                 if !changes {
-                    // eprintln!("errored out, removed: {:?}", &state.removed);
-                    // eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !state.removed.get(*idx as u64)).collect::<Vec<_>>());
+                    eprintln!("errored out, removed: {:?}", &state.removed);
+                    eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !state.removed.get(*idx as u64)).collect::<Vec<_>>());
                     return Err(())
                 }
                 // eprintln!("-> wrapping...");
@@ -593,6 +597,13 @@ impl TriangulationPass {
                 state.ears.set(ia as u64, ear);
                 let ear = Self::ear(points, &state.removed, ic);
                 state.ears.set(ic as u64, ear);
+
+                #[cfg(debug_assertions)] {
+                    debug_ears_generated += 1;
+                    if debug_ears_generated == unsafe { crate::SHAPE_TAKE_PART } {
+                        break
+                    }
+                }
 
                 changes = true;
 
@@ -715,10 +726,9 @@ impl TriangulationPass {
     /// Y-flipped version.
     fn ear(polygon: &[CurvePoint], removed: &BitVec, idx: usize) -> bool {
 
-        let [a, b, c] = {
-            let [a, b, c] = Self::neighbours(removed, idx);
-            [polygon[a], polygon[b], polygon[c]]
-        };
+        let [ia, ib, ic] = Self::neighbours(removed, idx);
+        let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
+
 
         // A. short curcuit if the triangle has zero area.
         // we want to treat these as valid ears because this allows
@@ -735,18 +745,36 @@ impl TriangulationPass {
             return false
         }
 
+        // if [0, 1, 6].contains(&idx) {
+        //     println!("-> {:?}", (ia, ib, ic));
+        // }
+
         // C. otherwise test for any intersections.
         for (pidx, point) in polygon.iter().enumerate() {
 
-            if ![a, b, c].contains(point) {
+            // if ![a, b, c].contains(point) != ![ia, ib, ic].contains(&pidx) {
+            //     println!("the tides have turned! for pt = {:?}", (idx, point));
+            // }
+
+            // if ![a, b, c].contains(point) {
+            if ![ia, ib, ic].contains(&pidx) {
 
                 match Self::triangle_intersects_point([a, b, c], *point) {
 
                     // if there are points that would lie withing this ear, it is invalid
-                    IntersectionRelation::Inside => return false,
+                    IntersectionRelation::Inside => {
+
+                        if [a, b, c].contains(point) {
+                            println!("case we would not have hit before:");
+                            println!("simple: indices+abc+point = {:?}", ([ia, ib, ic], [a, b, c], point));
+                        }
+
+                        return false
+                    },
 
                     // if there are are points lying on the edge of this ear it is only valid if their
                     // connecting edges also lie outside the ear. to illustrate this:
+                    //
                     //              o                              o       P
                     //            /   \                          /   \   .
                     //      P   .  .  . X                      /       X  .  .  .  P
@@ -755,46 +783,62 @@ impl TriangulationPass {
                     //    O - - - . - - - - - O          O - - - - - - - - - O
                     //         P
                     //      XPP INVALID EAR                  XPP VALID EAR
+                    //
                     // the point X in the left triangle would be invalid because the edges . . . . connecting it to
                     // it's neightbour P are inside the ear. the same point X in the right triangle would be valid
                     // because the edges . . . . are outside the ear.
-                    IntersectionRelation::OnEdge(edge) => {
+                    //
+                    // this rule also generally applies to the point lying on a corner.
+                    relation @ IntersectionRelation::OnEdge(..) |
+                    relation @ IntersectionRelation::OnCorner(..) => {
 
-                        // compute the normal vector of the edge we are touching
-                        let normal = match edge {
-                            TriangleEdge::AB => [-(b.y() - a.y()) as f32, b.x() as f32 - a.x() as f32],
-                            TriangleEdge::BC => [-(c.y() - b.y()) as f32, c.x() as f32 - b.x() as f32],
-                            TriangleEdge::AC => [-(c.y() - a.y()) as f32, c.x() as f32 - a.x() as f32],
+                        let ear_edges_to_check: &[[CurvePoint; 2]] = match relation {
+                            IntersectionRelation::OnEdge(edge) => match edge {
+                                TriangleEdge::AB => &[[a, b]],
+                                TriangleEdge::BC => &[[b, c]],
+                                TriangleEdge::CA => &[[c, a]],
+                            },
+                            // IntersectionRelation::OnCorner(..) => continue,
+                            IntersectionRelation::OnCorner(corner) => match corner {
+                                TriangleCorner::A => &[[a, b], [c, a]],
+                                TriangleCorner::B => &[[b, c], [a, b]],
+                                TriangleCorner::C => &[[c, a], [b, c]],
+                            },
+                            _ => unreachable!()
                         };
 
-                        // we use the direct neightbours here because we are interested in the edges this point is guaranteed to
-                        // be "connected" to at the end. we don't care about the edges of the actual ears generated.
-                        let [pa, pb, pc] = {
-                            let [a, b, c] = Self::direct_neighbours(removed.len() as usize, pidx);
-                            [polygon[a], polygon[b], polygon[c]]
-                        };
+                        let is_moving_inside = ear_edges_to_check.iter().all(|vector| {
 
-                        // use that to check if the vector from the touching point to it's
-                        // neighbours would go inside the ear triangle
-                        for neightbour in [pa, pc] {
+                            // we use the direct neightbours here because we are interested in the
+                            // edges this point is guaranteed to be "connected" to at the end.
+                            // we don't care about the edges of the actual ears generated.
+                            let [ipa, _, ipc] = Self::direct_neighbours(removed.len() as usize, pidx);
+                            let [pa, pc] = [polygon[ipa], polygon[ipc]];
 
-                            let dot = ((neightbour.x - point.x) as f32 * normal[0]) +
-                                      ((neightbour.y - point.y) as f32 * normal[1]);
+                            for neightbour in [pa, pc] {
 
-                            const EPS: f32 = 1e-6;
+                                let relation = two_vector_relation(*vector, [*point, neightbour]);
 
-                            // eprintln!("recalculating ear at #{}... point #{}, was on an edge of our ear ({:?}), dot = {}, edge-kind = {:?}", idx, pidx, [a, b, c], dot, edge);
+                                // since the point's y coordinates are inverted, every ear will be in
+                                // clockwise rotation to this algorithm. in turn this means that the inside
+                                // of the ear is always to the left of `vector`.
+                                if relation == TwoEdgeRelation::MovingLeft {
+                                    return true
+                                } else {
+                                    return false
+                                }
 
-                            // eprintln!("edgevec-xy: {:?}, normalvec: {:?}", [(neightbour.x - point.x) as f32, (neightbour.y - point.y) as f32], normal);
-
-                            // if the angle between the vectors is < 90° the edge moves into the triangle
-                            if dot < -EPS {
-                                return false
                             }
 
+                            unreachable!()
+
+                        });
+
+                        if is_moving_inside {
+                            return false
                         }
 
-                    }
+                    },
 
                     IntersectionRelation::Outside => continue,
 
@@ -865,14 +909,19 @@ impl TriangulationPass {
         const EPS: f32 = 1e-6;
 
         if (total - abc).abs() < EPS {
-            if pab < EPS {
-                IntersectionRelation::OnEdge(TriangleEdge::AB)
-            } else if pbc < EPS {
-                IntersectionRelation::OnEdge(TriangleEdge::BC)
-            } else if pca < EPS {
-                IntersectionRelation::OnEdge(TriangleEdge::AC)
-            } else {
-                IntersectionRelation::Inside
+            match (pab < EPS, pbc < EPS, pca < EPS) {
+                // point is inside
+                (false, false, false) => return IntersectionRelation::Inside,
+                // point lies on one edge
+                (true, false, false) => return IntersectionRelation::OnEdge(TriangleEdge::AB),
+                (false, true, false) => return IntersectionRelation::OnEdge(TriangleEdge::BC),
+                (false, false, true) => return IntersectionRelation::OnEdge(TriangleEdge::CA),
+                // point lies on two edges (= on a corner)
+                (true, true, false) => return IntersectionRelation::OnCorner(TriangleCorner::B),
+                (false, true, true) => return IntersectionRelation::OnCorner(TriangleCorner::C),
+                (true, false, true) => return IntersectionRelation::OnCorner(TriangleCorner::A),
+                // deformed triangle
+                (true, true, true) => return IntersectionRelation::Outside,
             }
         } else {
             IntersectionRelation::Outside
@@ -1072,6 +1121,46 @@ impl TriangulationPass {
 
     }
 
+}
+
+/// Gives information about the way the vector `rhs` points in relation to `lhs`.
+/// # Example
+/// - - - - - - - - - - > lhs
+///     ⟍
+///       ⟍
+///         ⟍
+///           ↘ rhs
+/// Here the `rhs` has the `MovingRight` relation to `lhs`.
+fn two_vector_relation(lhs: [CurvePoint; 2], rhs: [CurvePoint; 2]) -> TwoEdgeRelation {
+
+    // compute the normal vector of the edge we are touching. this will
+    // be the LEFT normal vector since we are using the [-y, x] form.
+    let normal = [-(lhs[1].y() - lhs[0].y()), (lhs[1].x() - lhs[0].x())];
+
+    let dot = ((rhs[1].x() - rhs[0].x()) as f32 * normal[0] as f32) +
+              ((rhs[1].y() - rhs[0].y()) as f32 * normal[1] as f32);
+
+    // dot product rules:
+    // dot == 0 → parallel
+    // dot <  0 → sharp angle
+    // dot >  0 → wide angle
+
+    const EPS: f32 = 1e-6;
+
+    if dot < EPS && dot > -EPS {
+        TwoEdgeRelation::Parallel
+    } else if dot < EPS {
+        TwoEdgeRelation::MovingLeft
+    } else {
+        TwoEdgeRelation::MovingRight
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoEdgeRelation {
+    MovingLeft,
+    MovingRight,
+    Parallel,
 }
 
 #[test]

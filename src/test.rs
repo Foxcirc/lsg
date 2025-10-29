@@ -102,12 +102,15 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let mut shape_scale_factor = 0.1;
     let mut shape_take_part = 0;
 
-    const SIMPLE_SVG: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
+    // const SIMPLE_SVG: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
+    const SIMPLE_SVG: &str = "M12 8H8.001L8 20H6V8H2L7 3L12 8ZM22 16L17 21L12 16H16V4H18V16H22Z"; // "M4 3C3.44772 3 3 3.44772 3 4V20C3 20.5523 3.44772 21 4 21H20C20.5523 21 21 20.5523 21 20V4C21 3.44772 20.5523 3 20 3H4ZM16.0001 8V16.4142L12.5001 12.9142L8.70718 16.7071L7.29297 15.2929L11.0859 11.5L7.58586 8H16.0001Z";
 
     let (_, parsed_path) = widget::svg::parser::path(SIMPLE_SVG).expect("valid svg path");
     let mut points = widget::svg::path_to_shape(parsed_path);
 
     widget::svg::scale_all_points(&mut points, shape_scale_factor);
+    points.dedup();
+    unsafe { render::SHAPE_TAKE_PART = 1 };
     dbg!(&points);
 
     geometry.shapes.push(Shape::singular(0..points.len() as u16, 0));
@@ -155,8 +158,12 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         } else if key == Key::ArrowDown {
                             shape_scale_factor -= 0.01;
                         } else if key == Key::ArrowRight {
+                            unsafe { render::SHAPE_TAKE_PART += 1 };
+                            println!("{:?}", unsafe { render::SHAPE_TAKE_PART });
                             shape_take_part += 1;
                         } else if key == Key::ArrowLeft {
+                            unsafe { render::SHAPE_TAKE_PART -= 1 };
+                            println!("{:?}", unsafe { render::SHAPE_TAKE_PART });
                             shape_take_part -= 1;
                         };
                         window.redraw_with_vsync(&mut evl);

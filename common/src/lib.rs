@@ -159,7 +159,7 @@ impl fmt::Debug for CurvePoint {
         if self.kind() == PointKind::Base {
             write!(f, "BasePoint({}, {})", self.x(), self.y())
         } else {
-            write!(f, "CtlrPoint({}, {})", self.x(), self.y())
+            write!(f, "CtrlPoint({}, {})", self.x(), self.y())
         }
     }
 }
@@ -201,7 +201,7 @@ impl CurvePoint {
     }
 
     pub fn ctrl_from_point(pt: Point) -> Self {
-        Self::base(pt.x as i16, pt.y as i16)
+        Self::ctrl(pt.x as i16, pt.y as i16)
     }
 
     #[inline(always)]
@@ -289,13 +289,22 @@ pub enum IntersectionRelation {
     Inside,
     /// Point lies on an edge
     OnEdge(TriangleEdge),
+    /// Point lies on a corner.
+    OnCorner(TriangleCorner),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriangleEdge {
     AB,
     BC,
-    AC
+    CA
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriangleCorner {
+    A,
+    B,
+    C
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -136,8 +136,8 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
                 cursor = p1;
             },
             PathCommand::Cubic(c1, c2, p1) => {
-                current.push(CurvePoint::ctrl_from_point(c1 * 100.0));
-                current.push(CurvePoint::ctrl_from_point(c2 * 100.0));
+                // current.push(CurvePoint::ctrl_from_point(c1 * 100.0));
+                current.push(CurvePoint::base_from_point(c2 * 100.0));
                 current.push(CurvePoint::base_from_point(p1 * 100.0));
                 cursor = p1;
             },
@@ -205,8 +205,8 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
             for idx in 0..points.len() {
                 let p1 = points[idx];
                 let p2 = points[(idx + 1) % points.len()];
-                let angle1 = ((p1.y - test.y) as f64).atan2((p1.x - test.x) as f64);
-                let angle2 = ((p2.y - test.y) as f64).atan2((p2.x - test.x) as f64);
+                let angle1 = ((p1.y() - test.y()) as f64).atan2((p1.x() - test.x()) as f64);
+                let angle2 = ((p2.y() - test.y()) as f64).atan2((p2.x() - test.x()) as f64);
                 let mut diff = angle2 - angle1;
                 if      diff >  PI { diff -= 2.0 * PI; }
                 else if diff < -PI { diff += 2.0 * PI; }
@@ -229,8 +229,8 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
     // TODO: Could this step generate any meaningfull information for ear clipping later on? Would be nice to save some costs.
 
-    println!("there are {} sections in total", sections.len());
-    println!("{sections:#?}");
+    // println!("there are {} sections in total", sections.len());
+    // println!("{sections:#?}");
 
     let mut result: Vec<CurvePoint> = Vec::new();
     let mut removed: Vec<bool> = Vec::new();
@@ -250,30 +250,27 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
     // generated result and a point from another section.
     for (section_idx, section) in sections.iter().enumerate() {
 
-        if let Some(connection) = find_connection_spot(&result, &section.points, &sections) {
+        if removed[section_idx] {
+            continue;
+        }
+
+        if let Some(spot) = find_connection_spot(&result, &section.points, &sections) {
 
             let mut new = Vec::new();
 
-            // 1. connection edge, from RESULT -> SECTION
-
-            // new.extend([result[connection.lhs], section.points[connection.rhs]]);
-
-            // 2. SECTION from connection.rhs
-
-            dbg!(&connection);
-
-            for point in result.iter().skip(connection.lhs).chain(result.iter().take(connection.lhs + 1)) {
+            for point in result.iter().skip(spot.lhs).chain(result.iter().take(spot.lhs + 1)) {
                 new.push(*point);
             }
 
             let reverse = section.fill && section.direction == SectionDirection::Cw ||
                           !section.fill && section.direction == SectionDirection::Ccw;
-            let idx = if !reverse { connection.rhs } else { section.points.len() - 1 - connection.rhs };
+            let idx = if !reverse { spot.rhs } else { section.points.len() - 1 - spot.rhs };
             let iter = PossiblyReversed::new(section.points.iter(), reverse);
             for point in iter.clone().skip(idx).chain(iter.take(idx + 1)) {
                 new.push(*point);
             }
             // TODO: mark section as removed
+            removed[section_idx] = true;
 
             return  new
 
@@ -283,123 +280,6 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
     todo!()
 
-    // ############################
-    // sections.truncate(4);
-    // sections = sections.drain(0..1).collect();
-
-    /*
-
-    let mut result: Vec<CurvePoint> = Vec::new();
-    let mut tmp: Vec<CurvePoint> = Vec::new();
-
-    // append the first section
-    if sections.len() > 0 {
-        let section = sections.remove(0);
-        let reverse = section.fill && section.direction == SectionDirection::Cw ||
-                      !section.fill && section.direction == SectionDirection::Ccw;
-        if !reverse { result.extend_from_slice(&section.points) }
-        else        { result.extend(section.points.iter().rev()) }
-    }
-
-    // result.pop();
-    // println!("result: {:#?}", &result);
-
-    // return result;
-
-    // connect the other sections
-    let mut count = 0;
-    while sections.len() > 0 {
-
-        let new_section_idx = count % sections.len();
-        let new_section = &sections[new_section_idx];
-
-        // find a spot to connect the next section to
-        let mut spot = None;
-        for (outer_idx, outer_point) in new_section.points.iter().enumerate() {
-            'search: for (inner_index, inner_point) in result.iter().enumerate() {
-                // check if the edge from outer_point to inner_point
-                // intersects with any other edge
-                // 1. edges from temp
-                for idx in 0..result.len() {
-                    let lhs = result[idx];
-                    let rhs = result[(idx + 1) % result.len()];
-                    if edges_intersect((*outer_point).into(), (*inner_point).into(), lhs.into(), rhs.into()) {
-                        // println!("it says this intersects: {:?},{:?},{:?},{:?}", (*outer_point), (*inner_point), lhs, rhs);
-                        continue 'search; // this point doesn't work
-                    }
-                }
-                // 2. any of the edges in the remaining sections
-                for check_section_idx in 0..sections.len() {
-                    if check_section_idx == new_section_idx { continue };
-                    let check_section = &sections[check_section_idx];
-                    for idx in 0..check_section.points.len() {
-                        let lhs = check_section.points[idx];
-                        let rhs = check_section.points[(idx + 1) % check_section.points.len()];
-                        if edges_intersect((*outer_point).into(), (*inner_point).into(), lhs.into(), rhs.into()) {
-                            // println!("")
-                            continue 'search; // this point doesn't work
-                        }
-                    }
-                }
-                let hatred = edges_intersect((*outer_point).into(), (*inner_point).into(), sections[0].points[1].into(), sections[0].points[2].into());
-                dbg!(hatred);
-                    // println!("")
-                // yay, a connection is possible
-                spot = Some(ConnectionSpot { oidx: outer_idx, iidx: inner_index });
-                break;
-            }
-        }
-
-        // merge the sections at the connection spot,
-        // if we found one, otherwise try the next section
-        if let Some(con) = spot {
-
-            let x = Some(&con).map(|it| (it.iidx, result[it.iidx], it.oidx, new_section.points[it.oidx])).expect("valid connection spot");
-            println!("CONNECTING <result> to <relative-sidx {new_section_idx}>, at ({}, {:?} => {}, {:?})", x.0, x.1, x.2, x.3);
-
-            // first read the new section, so that the connection point
-            // is at the start and the end
-
-            let reverse = new_section.fill && new_section.direction == SectionDirection::Cw ||
-                          !new_section.fill && new_section.direction == SectionDirection::Ccw;
-
-            println!("NEEDS REVERSE: {reverse}");
-
-            let slen = new_section.points.len();
-            let iter = PossiblyReversed::new(con.oidx..(slen + con.oidx + 1), reverse);
-
-            for sidx in iter {
-                let spoint = new_section.points[sidx % slen];
-                tmp.push(spoint);
-            }
-
-            // then do the same with everything we already read in
-
-            let tlen = result.len();
-            let iter = con.iidx..(tlen + con.iidx + 1);
-
-            for tidx in iter {
-                let tpoint = result[tidx % tlen];
-                tmp.push(tpoint);
-            }
-
-            mem::swap(&mut result, &mut tmp);
-            tmp.clear();
-
-            sections.remove(new_section_idx); // TODO: benchmark, and test with swap_remove (which would cause fragmentation) or maybe iterate thru sections in reverse so this gets cheaper
-
-        } else {
-            // only increment if not a valid connection
-            // to avoid fragmentation
-            count += 1;
-        }
-
-    }
-
-    result
-
-    */
-
 }
 
 /// Finds indices in `lhs` and `rhs` where a new edge could be created without intersecting any
@@ -407,10 +287,19 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 fn find_connection_spot(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Section]) -> Option<ConnectionSpot> {
 
     // Check every possible edge between the sections.
-    for (outer_point_idx, outer_point) in lhs.iter().enumerate() {
-        'x: for (inner_point_idx, inner_point) in rhs.iter().enumerate() {
+    'l: for (lhs_point_idx, lhs_point) in lhs.iter().enumerate() {
+        'r: for (rhs_point_idx, rhs_point) in rhs.iter().enumerate() {
 
-            let connection_edge = [*outer_point, *inner_point].map(Point::from);
+            let connection_edge = [*lhs_point, *rhs_point].map(Point::from);
+
+            // We can't connect at a control point, since the control point always belongs to
+            // it's neightbours.
+
+            if lhs_point.kind() == PointKind::Ctrl {
+                continue 'l;
+            } else if rhs_point.kind() == PointKind::Ctrl {
+                continue 'r;
+            };
 
             // Verify that no other edge intersects this possible connection.
             //
@@ -420,7 +309,7 @@ fn find_connection_spot(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Sect
             for check_section in sections.iter() {
                 for check_edge in pair_windows_wrapping(&check_section.points) {
                     if edges_intersect(connection_edge, check_edge.map(Point::from)) {
-                        continue 'x;
+                        continue 'r;
                     }
                 }
             }
@@ -429,8 +318,8 @@ fn find_connection_spot(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Sect
             // connection is valid.
 
             return Some(ConnectionSpot {
-                lhs: outer_point_idx,
-                rhs: inner_point_idx,
+                lhs: lhs_point_idx,
+                rhs: rhs_point_idx,
             })
 
         }
@@ -483,6 +372,7 @@ struct ConnectionSpot {
     pub rhs: usize,
 }
 
+/// This function operates in normal y-space and will return inverted results in inverted y-space.
 /// * +1.0 = CW
 /// * -1.0 = CCW
 /// * 0.0  = colinear
@@ -543,11 +433,30 @@ fn test_edges_intersect() {
 #[test]
 fn test_path_to_shape() {
 
-    const TEST1: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM12 20C16.42 20 20 16.42 20 12C20 7.58 16.42 4 12 4C7.58 4 4 7.58 4 12C4 16.42 7.58 20 12 20ZM13 12V16H11V12H8L12 8L16 12H13Z";
+    // remix icons: arrow up
+    const TEST: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
 
-    const TEST2: &str = "M3 18H21V6H3V18ZM1 5C1 4.44772 1.44772 4 2 4H22C22.5523 4 23 4.44772 23 5V19C23 19.5523 22.5523 20 22 20H2C1.44772 20 1 19.5523 1 19V5ZM9 10C9 9.44772 8.55228 9 8 9C7.44772 9 7 9.44772 7 10C7 10.5523 7.44772 11 8 11C8.55228 11 9 10.5523 9 10ZM11 10C11 11.6569 9.65685 13 8 13C6.34315 13 5 11.6569 5 10C5 8.34315 6.34315 7 8 7C9.65685 7 11 8.34315 11 10ZM8.0018 16C7.03503 16 6.1614 16.3907 5.52693 17.0251L4.11272 15.6109C5.10693 14.6167 6.4833 14 8.0018 14C9.52031 14 10.8967 14.6167 11.8909 15.6109L10.4767 17.0251C9.84221 16.3907 8.96858 16 8.0018 16ZM16.2071 14.7071L20.2071 10.7071L18.7929 9.29289L15.5 12.5858L13.7071 10.7929L12.2929 12.2071L14.7929 14.7071L15.5 15.4142L16.2071 14.7071Z";
+    let (_, points) = parser::path(TEST).expect("valid svg path");
+    let shape = path_to_shape(points);
 
-    let (_, points) = parser::path(TEST2).expect("valid svg path");
-    // println!("{:?}", result)
-    let _shape = path_to_shape(points);
+    assert_eq!(&shape, &[
+        CurvePoint::base(120, 20),
+        CurvePoint::base(64, 20),
+        CurvePoint::base(20, 120),
+        CurvePoint::base(20, 175),
+        CurvePoint::base(120, 220),
+        CurvePoint::base(175, 220),
+        CurvePoint::base(220, 120),
+        CurvePoint::base(220, 64),
+        CurvePoint::base(120, 20),
+        CurvePoint::base(160, 120),
+        CurvePoint::base(130, 120),
+        CurvePoint::base(130, 160),
+        CurvePoint::base(110, 160),
+        CurvePoint::base(110, 120),
+        CurvePoint::base(80, 120),
+        CurvePoint::base(120, 80),
+        CurvePoint::base(160, 120),
+    ]);
+
 }
