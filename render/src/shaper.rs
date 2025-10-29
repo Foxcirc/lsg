@@ -624,7 +624,7 @@ impl TriangulationPass {
     fn generate_triangle(a: Point, b: Point, c: Point, is_outer_edge: [bool; 3], uvs: [f32; 6], meta: ShapeMetadata, out: &mut AttribStorage) {
 
         let i = meta.instance;
-        let [ga, gb, gc] = [GlPoint::from(a, meta.size), GlPoint::from(b, meta.size), GlPoint::from(c, meta.size)];
+        let [ga, gb, gc] = [GlPoint::convert(a, meta.size), GlPoint::convert(b, meta.size), GlPoint::convert(c, meta.size)];
         let flags = ((is_outer_edge[0] as u32) << 0) |
                     ((is_outer_edge[1] as u32) << 1) |
                     ((is_outer_edge[2] as u32) << 2);

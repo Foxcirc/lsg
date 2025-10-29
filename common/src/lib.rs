@@ -281,6 +281,12 @@ impl Shape {
 
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ShapeKind {
+    Singular,
+    Instanced,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntersectionRelation {
     /// Non-Intesecting
@@ -306,12 +312,6 @@ impl IntersectionRelation {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ShapeKind {
-    Singular,
-    Instanced,
-}
-
 /// A single instance of a shape. This can be used to render the same
 /// shape many times in different positions and with a different texture.
 #[derive(Debug, Clone)]
@@ -323,7 +323,6 @@ pub struct Instance {
 }
 
 /// A point in normalized device coordinates.
-// todo: rename to smth like NormalizedPoint
 #[derive(Debug, Clone, Copy)]
 pub struct GlPoint {
     pub x: f32,
@@ -337,7 +336,7 @@ impl GlPoint {
     }
 
     /// Convert to normalized device coordinates using the given window size.
-    pub fn from(p: Point, size: Size) -> Self {
+    pub fn convert(p: Point, size: Size) -> Self {
         Self {
             x:       2.0 * (p.x as f32 / size.w  as f32) - 1.0,
             y: 1.0 - 2.0 * (p.y as f32 / size.h as f32)
