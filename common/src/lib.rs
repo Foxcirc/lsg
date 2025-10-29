@@ -288,23 +288,22 @@ pub enum IntersectionRelation {
     /// Intesecting
     Inside,
     /// Point lies on an edge
-    OnEdge(TriangleEdge),
+    OnEdge([[CurvePoint; 2]; 1]),
     /// Point lies on a corner.
-    OnCorner(TriangleCorner),
+    OnCorner([[CurvePoint; 2]; 2]),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriangleEdge {
-    AB,
-    BC,
-    CA
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriangleCorner {
-    A,
-    B,
-    C
+impl IntersectionRelation {
+    /// All edges this intersection touched.
+    /// OnEdge => 1 edge
+    /// OnCorner => 2 edges
+    pub fn edges(&self) -> &[[CurvePoint; 2]] {
+        match self {
+            Self::Outside | Self::Inside => &[],
+            Self::OnEdge(edge) => edge,
+            Self::OnCorner(corner) => corner,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
