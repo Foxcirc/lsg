@@ -34,7 +34,6 @@
 /// but adding more is really easy and often a matter of minutes.
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
-use num_enum::TryFromPrimitive;
 use common::{Size, Rect};
 
 #[derive(Debug)]
@@ -78,9 +77,9 @@ extern "system" fn debug_callback(
         unsafe { slice::from_raw_parts(message_ptr.cast(), message_len as usize) }
     ).unwrap();
 
-    let source = DebugSource::try_from_primitive(source).unwrap();
-    let kind = DebugType::try_from_primitive(kind).unwrap();
-    let severity = DebugSeverity::try_from_primitive(severity).unwrap();
+    let source = DebugSource::try_from_u32(source).unwrap();
+    let kind = DebugType::try_from_u32(kind).unwrap();
+    let severity = DebugSeverity::try_from_u32(severity).unwrap();
 
     f(source, kind, severity, id, message);
 
@@ -143,18 +142,32 @@ pub fn debug_message_tracing_handler(source: DebugSource, _kind: DebugType, seve
 
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum DebugSeverity {
+    // BREAKING: remember to change `try_from_u32` when updating variants
     High         = gl::DEBUG_SEVERITY_HIGH,
     Medium       = gl::DEBUG_SEVERITY_MEDIUM,
     Low          = gl::DEBUG_SEVERITY_LOW,
     Notification = gl::DEBUG_SEVERITY_NOTIFICATION
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+impl DebugSeverity {
+    pub fn try_from_u32(v: u32) -> Option<Self> {
+        match v {
+            gl::DEBUG_SEVERITY_HIGH         => Some(Self::High),
+            gl::DEBUG_SEVERITY_MEDIUM       => Some(Self::Medium),
+            gl::DEBUG_SEVERITY_LOW          => Some(Self::Low),
+            gl::DEBUG_SEVERITY_NOTIFICATION => Some(Self::Notification),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum DebugType {
+    // BREAKING: remember to change `try_from_u32` when updating variants
     UndefinedBehaviour = gl::DEBUG_TYPE_UNDEFINED_BEHAVIOR,
     DeprecatedBehavior = gl::DEBUG_TYPE_DEPRECATED_BEHAVIOR,
     Error              = gl::DEBUG_TYPE_ERROR,
@@ -166,15 +179,47 @@ pub enum DebugType {
     Marker             = gl::DEBUG_TYPE_MARKER
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+impl DebugType {
+    pub fn try_from_u32(v: u32) -> Option<Self> {
+        match v {
+            gl::DEBUG_TYPE_UNDEFINED_BEHAVIOR => Some(Self::UndefinedBehaviour),
+            gl::DEBUG_TYPE_DEPRECATED_BEHAVIOR => Some(Self::DeprecatedBehavior),
+            gl::DEBUG_TYPE_ERROR => Some(Self::Error),
+            gl::DEBUG_TYPE_OTHER => Some(Self::Other),
+            gl::DEBUG_TYPE_PERFORMANCE => Some(Self::Performance),
+            gl::DEBUG_TYPE_PORTABILITY => Some(Self::Portability),
+            gl::DEBUG_TYPE_POP_GROUP => Some(Self::PopGroup),
+            gl::DEBUG_TYPE_PUSH_GROUP => Some(Self::PushGroup),
+            gl::DEBUG_TYPE_MARKER => Some(Self::Marker),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum DebugSource {
+    // BREAKING: remember to change `try_from_u32` when updating variants
     Api            = gl::DEBUG_SOURCE_API,
     Application    = gl::DEBUG_SOURCE_APPLICATION,
     Other          = gl::DEBUG_SOURCE_OTHER,
     ShaderCompiler = gl::DEBUG_SOURCE_SHADER_COMPILER,
     ThirdParty     = gl::DEBUG_SOURCE_THIRD_PARTY,
     WindowSystem   = gl::DEBUG_SOURCE_WINDOW_SYSTEM
+}
+
+impl DebugSource {
+    pub fn try_from_u32(v: u32) -> Option<Self> {
+        match v {
+            gl::DEBUG_SOURCE_API => Some(Self::Api),
+            gl::DEBUG_SOURCE_APPLICATION => Some(Self::Application),
+            gl::DEBUG_SOURCE_OTHER => Some(Self::Other),
+            gl::DEBUG_SOURCE_SHADER_COMPILER => Some(Self::ShaderCompiler),
+            gl::DEBUG_SOURCE_THIRD_PARTY => Some(Self::ThirdParty),
+            gl::DEBUG_SOURCE_WINDOW_SYSTEM => Some(Self::WindowSystem),
+            _ => None
+        }
+    }
 }
 
 pub fn get_integer_v(property: Property) -> Result<usize, PropertyUnknown> {
