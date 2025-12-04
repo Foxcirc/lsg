@@ -112,18 +112,25 @@ pub fn debug_message_control(severity: Option<DebugSeverity>, source: Option<Deb
     ) }
 }
 
-/// `msg` can't be longer then 1024 bytes
+/// # Panics
+/// `source` must be `Application` or `ThirdParty`.
+#[track_caller]
 pub fn debug_message_insert(severity: DebugSeverity, source: DebugSource, id: u32, msg: &str) {
-    let mut buf = [0; 1024];
-    let text = to_small_cstr(&mut buf, msg);
+
+    assert!(
+        matches!(source, DebugSource::Application | DebugSource::ThirdParty),
+        "`source` must be `Application` or `ThirdParty`"
+    );
+
     unsafe { gl::DebugMessageInsert(
         source as u32,
         gl::DEBUG_TYPE_OTHER,
         id,
         severity as u32,
         msg.len() as i32,
-        text.as_ptr(),
+        msg.as_ptr() as *const i8,
     ) }
+
 }
 
 pub fn debug_message_tracing_handler(source: DebugSource, _kind: DebugType, severity: DebugSeverity, _id: u32, msg: &str) {
@@ -1210,6 +1217,7 @@ pub enum PolygonMode {
     Line = gl::LINE
 }
 
+#[track_caller]
 pub fn to_small_cstr<'d>(buf: &'d mut [u8], text: &str) -> &'d CStr {
 
     let len = text.len();
