@@ -8,4 +8,4 @@ pub(crate) mod shaper;
 pub(crate) use shaper::*;
 
 
-pub static mut SHAPE_TAKE_PART: usize = 0;
+pub static mut SHAPE_TAKE_PART: usize = 0; // TODO: remove

@@ -97,7 +97,7 @@ impl Section {
 pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
     for point in shape.iter_mut() {
         let new = Point::from(*point) * factor;
-        *point = CurvePoint::convert(new, point.kind(), point.visibility());
+        *point = CurvePoint::convert(new, point.kind());
     }
 }
 
@@ -126,35 +126,35 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<Vec<CurvePoint>> {
                     });
                 }
                 // add the point
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 start = p1;
                 cursor = p1;
             },
             PathCommand::Line(p1) => {
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Horizontal(pos) => {
-                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * 100.0, PointKind::Base));
                 cursor.x = pos;
             },
             PathCommand::Vertical(pos) => {
-                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * 100.0, PointKind::Base));
                 cursor.y = pos;
             },
             PathCommand::Quadratic(ct, p1) => {
-                current.push(CurvePoint::convert(ct * 100.0, PointKind::Ctrl, PointVisibility::Visible));
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(ct * 100.0, PointKind::Ctrl));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Cubic(c1, c2, p1) => {
-                current.push(CurvePoint::convert(c1 * 100.0, PointKind::Ctrl, PointVisibility::Visible));
-                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Base, PointVisibility::Visible));
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(c1 * 100.0, PointKind::Ctrl));
+                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Return => {
-                current.push(CurvePoint::convert(start * 100.0, PointKind::Base, PointVisibility::Visible));
+                current.push(CurvePoint::convert(start * 100.0, PointKind::Base));
                 cursor = start;
             },
         }
@@ -434,35 +434,6 @@ fn pair_windows_wrapping<T: Clone + Copy>(slice: &[T]) -> impl Iterator<Item = [
     slice.windows(2).map(|it| [it[0], it[1]]).chain(once(final_pair))
 }
 
-#[derive(Clone)]
-enum PossiblyReversed<I: DoubleEndedIterator> {
-    Normal(I),
-    Rev(Rev<I>),
-}
-
-impl<I: DoubleEndedIterator> PossiblyReversed<I> {
-    pub fn new<T: IntoIterator<IntoIter = I>>(input: T, reverse: bool) -> Self {
-        let iter = input.into_iter();
-        if !reverse { Self::normal(iter) } else { Self::rev(iter) }
-    }
-    pub fn normal(iter: I) -> Self {
-        Self::Normal(iter)
-    }
-    pub fn rev(iter: I) -> Self {
-        Self::Rev(iter.rev())
-    }
-}
-
-impl<I: DoubleEndedIterator> Iterator for PossiblyReversed<I> {
-    type Item = I::Item;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Normal(iter) => iter.next(),
-            Self::Rev(iter) => iter.next()
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct ConnectionSpot {
     pub lhs: usize,
@@ -547,11 +518,11 @@ fn test_path_to_shape() {
     let mut shape = shapes.pop().unwrap();
 
     for point in shape.iter_mut() {
-        *point = CurvePoint::new(point.x() / 10, point.y() / 10, PointKind::Base, PointVisibility::Visible);
+        *point = CurvePoint::new(point.x() / 10, point.y() / 10, PointKind::Base);
     }
 
     assert_eq!(&shape,
-        &[CurvePoint::new(120, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(64, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(20, 64, PointKind::Base, PointVisibility::Visible), CurvePoint::new(20, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(20, 175, PointKind::Base, PointVisibility::Visible), CurvePoint::new(64, 220, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 220, PointKind::Base, PointVisibility::Visible), CurvePoint::new(175, 220, PointKind::Base, PointVisibility::Visible), CurvePoint::new(220, 175, PointKind::Base, PointVisibility::Visible), CurvePoint::new(220, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(220, 64, PointKind::Base, PointVisibility::Visible), CurvePoint::new(175, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 20, PointKind::Base, PointVisibility::Visible), CurvePoint::new(160, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(130, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(130, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(130, 160, PointKind::Base, PointVisibility::Visible), CurvePoint::new(110, 160, PointKind::Base, PointVisibility::Visible), CurvePoint::new(110, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(80, 120, PointKind::Base, PointVisibility::Visible), CurvePoint::new(120, 80, PointKind::Base, PointVisibility::Visible), CurvePoint::new(160, 120, PointKind::Base, PointVisibility::Visible)]
+        &[CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(64, 20, PointKind::Base), CurvePoint::new(20, 64, PointKind::Base), CurvePoint::new(20, 120, PointKind::Base), CurvePoint::new(20, 175, PointKind::Base), CurvePoint::new(64, 220, PointKind::Base), CurvePoint::new(120, 220, PointKind::Base), CurvePoint::new(175, 220, PointKind::Base), CurvePoint::new(220, 175, PointKind::Base), CurvePoint::new(220, 120, PointKind::Base), CurvePoint::new(220, 64, PointKind::Base), CurvePoint::new(175, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 160, PointKind::Base), CurvePoint::new(110, 160, PointKind::Base), CurvePoint::new(110, 120, PointKind::Base), CurvePoint::new(80, 120, PointKind::Base), CurvePoint::new(120, 80, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base)]
     );
 
 }

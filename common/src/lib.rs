@@ -137,7 +137,7 @@ impl CurveGeometry {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CurvePoint {
     /// # Layout
-    /// [kind, vis, x-pos, y-pos]
+    /// [kind, ---, x-pos, y-pos]
     ///  1bit  1bit 15bit  15bit
     inner: u32,
 }
@@ -154,13 +154,13 @@ impl fmt::Debug for CurvePoint {
 
 impl CurvePoint {
 
-    pub const ZERO: Self = Self::new(0, 0, PointKind::Base, PointVisibility::Visible);
+    pub const ZERO: Self = Self::new(0, 0, PointKind::Base);
 
     /// Creates a new point. The point will be `Visible` by default.
     /// # Panic (debug-assertions)
     /// X and Y must be smaller then u16::MAX / 2 since they
     /// are stored as 15-bit numbers internally.
-    pub const fn new(x: u16, y: u16, kind: PointKind, vis: PointVisibility) -> Self {
+    pub const fn new(x: u16, y: u16, kind: PointKind) -> Self {
 
         debug_assert!(x < 32767, "x must be < u16::MAX / 2");
         debug_assert!(y < 32767, "y must be < u16::MAX / 2");
@@ -170,10 +170,7 @@ impl CurvePoint {
             PointKind::Ctrl => 0b01,
         };
 
-        let f2 = match vis {
-            PointVisibility::Visible => 0b0,
-            PointVisibility::Invisible => 0b1,
-        };
+        let f2 = 0b0; // not used rn
 
         let inner = ((f1 as u32 & 0b1)    << 0 ) |
                     ((f2 as u32 & 0b1)    << 1 ) |
@@ -200,49 +197,32 @@ impl CurvePoint {
         }
     }
 
-    pub fn visibility(&self) -> PointVisibility {
-        let visbility = (self.inner >> 1) & 0b1;
-        match visbility {
-            0b0 => PointVisibility::Visible,
-            0b1 => PointVisibility::Invisible,
-            _ => unreachable!()
-        }
-    }
-
 }
 
 /// Lossy conversion, see `new` for more details.
 impl CurvePointFrom<PhysicalPoint> for CurvePoint {
     #[track_caller]
-    fn convert(point: PhysicalPoint, kind: PointKind, vis: PointVisibility) -> Self {
-        Self::new(point.x as u16, point.y as u16, kind, vis)
+    fn convert(point: PhysicalPoint, kind: PointKind) -> Self {
+        Self::new(point.x as u16, point.y as u16, kind)
     }
 }
 
 /// Lossy conversion, see `new` for more details.
 impl CurvePointFrom<Point> for CurvePoint {
     #[track_caller]
-    fn convert(point: Point, kind: PointKind, vis: PointVisibility) -> Self {
-        Self::new(point.x as u16, point.y as u16, kind, vis)
+    fn convert(point: Point, kind: PointKind) -> Self {
+        Self::new(point.x as u16, point.y as u16, kind)
     }
 }
 
 pub trait CurvePointFrom<T> {
-    fn convert(t: T, kind: PointKind, vis: PointVisibility) -> Self;
+    fn convert(t: T, kind: PointKind) -> Self;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointKind {
     Base,
     Ctrl,
-}
-
-/// For all regular points this should be `Visible`. Invisible points are only
-/// used to create zero area ears to connect seperated geometry into one shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PointVisibility {
-    Visible,
-    Invisible,
 }
 
 /// Description of what points and instances make up a shape.
