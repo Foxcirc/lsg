@@ -57,6 +57,7 @@ impl From<CurvePoint> for PhysicalPoint {
     }
 }
 
+// TODO: I believe we should work with integer points that have high coordinate values (eg. i32::MAX / 2 being the right side of the screen) instead of using f32 generally
 /// A mathematical point.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Point {

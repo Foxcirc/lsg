@@ -629,24 +629,16 @@ impl TriangulationPass {
                     ((is_outer_edge[1] as u32) << 1) |
                     ((is_outer_edge[2] as u32) << 2);
 
-        // dbg!(flags, is_outer_edge);
-
         match meta.kind {
             ShapeKind::Singular => {
-                out.extend_f([ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2]]);
-                out.extend_u([flags]);
-                out.extend_f([gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2]]);
-                out.extend_u([flags]);
-                out.extend_f([gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]]);
-                out.extend_u([flags]);
+                out.extend_f([ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], uvs[0], uvs[1], i.texture[0], i.texture[1], i.texture[2]]); out.extend_u([flags]);
+                out.extend_f([gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], uvs[2], uvs[3], i.texture[0], i.texture[1], i.texture[2]]); out.extend_u([flags]);
+                out.extend_f([gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], uvs[4], uvs[5], i.texture[0], i.texture[1], i.texture[2]]); out.extend_u([flags]);
             }
             ShapeKind::Instanced => {
-                out.extend_f([ga.x, ga.y, uvs[0], uvs[1]]);
-                out.extend_u([flags]);
-                out.extend_f([gb.x, gb.y, uvs[2], uvs[3]]);
-                out.extend_u([flags]);
-                out.extend_f([gc.x, gc.y, uvs[4], uvs[5]]);
-                out.extend_u([flags]);
+                out.extend_f([ga.x, ga.y, uvs[0], uvs[1]]); out.extend_u([flags]);
+                out.extend_f([gb.x, gb.y, uvs[2], uvs[3]]); out.extend_u([flags]);
+                out.extend_f([gc.x, gc.y, uvs[4], uvs[5]]); out.extend_u([flags]);
             }
         }
 
@@ -738,20 +730,20 @@ impl TriangulationPass {
             return true
         }
 
-        // A.2. two or more "invisible" points must make a zero-area ear
-        //
-        // this is, to prevent the invisible connection lines between different geometry
-        // from forming ears between each other in rare cases.
+        // // A.2. two or more "invisible" points must make a zero-area ear
+        // //
+        // // this is, to prevent the invisible connection lines between different geometry
+        // // from forming ears between each other in rare cases.
 
-        let invisibles = [a, b, c].iter().filter(|it|
-            it.visibility() == PointVisibility::Invisible
-        ).count();
+        // let invisibles = [a, b, c].iter().filter(|it|
+        //     it.visibility() == PointVisibility::Invisible
+        // ).count();
 
-        if invisibles == 2 {
-            return abc < 1e-6;
-        } else if invisibles > 0 {
-            return false
-        }
+        // if invisibles == 2 {
+        //     return abc < 1e-6;
+        // } else if invisibles > 0 {
+        //     return false
+        // }
 
         // B. short curcuit if it is concave.
         let convex = Self::convex([a.into(), b.into(), c.into()]);

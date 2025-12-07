@@ -1,5 +1,5 @@
 
-use std::{f64::consts::PI, iter::{once, Rev}, mem};
+use std::{f64::consts::PI, iter::{Rev, once}, mem, process::Output};
 
 use common::*;
 
@@ -76,10 +76,22 @@ enum SectionDirection {
 
 #[derive(Debug, Default)]
 struct Section {
-    points: Vec<CurvePoint>,
-    area: usize,
-    direction: SectionDirection,
-    fill: bool,
+    pub points: Vec<CurvePoint>,
+    pub area: usize,
+    pub direction: SectionDirection,
+    pub level: usize,
+    pub group: usize,
+}
+
+impl Section {
+    pub fn should_be_filled(&self) -> bool {
+        self.level % 2 == 0
+    }
+    pub fn should_be_reversed(&self) -> bool {
+        let fill = self.should_be_filled();
+         fill && self.direction == SectionDirection::Cw ||
+        !fill && self.direction == SectionDirection::Ccw
+    }
 }
 
 pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
@@ -89,7 +101,7 @@ pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
     }
 }
 
-pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
+pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<Vec<CurvePoint>> {
 
     // Step 1:
     // Convert commands to list of points and split the path into sub-sections that need to be
@@ -187,120 +199,189 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<CurvePoint> {
 
     for outer_idx in 0..sections.len() {
 
-        // the number of sections the `oidx` section is contained inside of
+        // the number of sections the `outer_idx` section is contained inside of
         let mut parents = 0;
 
         for inner_idx in 0..sections.len() {
 
             if outer_idx == inner_idx { continue };
 
-            // we only need to test one point, since we assume no self-intersections
-            let test = sections[outer_idx].points[0];
+            // we only need to check one point, since we assume no self-intersections
+            let point = sections[outer_idx].points[0];
+            let polygon = &sections[inner_idx].points;
 
-            // the total winding number
-            let mut winding = 0.0;
-
-            let points = &sections[inner_idx].points;
-            for idx in 0..points.len() {
-                let p1 = points[idx];
-                let p2 = points[(idx + 1) % points.len()];
-                let angle1 = (p1.y() as f64 - test.y() as f64).atan2(p1.x() as f64 - test.x() as f64);
-                let angle2 = (p2.y() as f64 - test.y() as f64).atan2(p2.x() as f64 - test.x() as f64);
-                let mut diff = angle2 - angle1;
-                if      diff >  PI { diff -= 2.0 * PI; }
-                else if diff < -PI { diff += 2.0 * PI; }
-                winding += diff;
-            }
-
-            if winding.abs() > 1e-5 {
+            if point_inside_polygon(point, polygon) {
                 parents += 1;
             }
 
         }
 
-        // fill using even-odd rule, for now
-        sections[outer_idx].fill = parents % 2 == 0;
+        // we fill using the even-odd rule, for now
+        sections[outer_idx].level = parents;
+
+        // some sections will need to be reversed to be filled correctly by the renderer since
+        // in lsg's world:
+        // left-winding = filled
+        // right-winding = hole
+
+        if sections[outer_idx].should_be_reversed() {
+            sections[outer_idx].points.reverse();
+        }
 
     }
 
     // Step 4:
-    // Connect all the sections into one shape by drawing invisible lines between them.
+    // Group sections together based on their level and which other sections
+    // they contain, so that every group contains a filled section and its holes.
 
-    let mut result: Vec<CurvePoint> = Vec::new();
-    let mut removed_count = 0;
     let mut removed: Vec<bool> = Vec::new();
     removed.resize(sections.len(), false);
 
-    // Push the first section. All other sections will be connected
-    // to this section one after another.
-    if sections.len() > 0 {
-        let section = &sections[0];
-        let reverse = section.fill && section.direction == SectionDirection::Cw ||
-                      !section.fill && section.direction == SectionDirection::Ccw;
-        if !reverse { result.extend_from_slice(&section.points) }
-        else        { result.extend(section.points.iter().rev()) }
-        removed[0] = true;
-        removed_count = 1;
-    }
+    let mut group_counter = 0;
+    let mut outer_idx = 0;
+    while outer_idx < sections.len() {
 
-    // We try to make a connection between any point in the already
-    // generated result and a point from another section.
-    for (section_idx, section) in sections.iter().enumerate() {
+        let inner_level = sections[outer_idx].level + 1;
 
-        if removed[section_idx] {
-            continue;
-        }
+        let fill = sections[outer_idx].should_be_filled();
+        if fill && !removed[outer_idx] {
 
-        if let Some(spot) = find_connection_spot(&result, &section.points, &sections) {
+            // Now put all sections at level - 1 that are inside
+            // the outer section into the same group.
 
-            let mut new = Vec::new();
+            sections[outer_idx].group = group_counter;
 
-            for point in result.iter().skip(spot.lhs).chain(result.iter().take(spot.lhs + 1)) {
-                new.push(*point);
+            let mut inner_idx = 0;
+            while inner_idx < sections.len() {
+
+                let fill = sections[inner_idx].should_be_filled();
+                if !fill && !removed[inner_idx] {
+
+                    let point = sections[inner_idx].points[0];
+                    let polygon = &sections[outer_idx].points;
+
+                    if sections[inner_idx].level == inner_level &&
+                       point_inside_polygon(point, polygon)
+                    {
+                        sections[inner_idx].group = group_counter;
+                        removed[inner_idx] = true;
+                    }
+
+                }
+
+                inner_idx += 1;
+
             }
 
-            new[0] = CurvePoint::new(new[0].x(), new[0].y(), new[0].kind(), PointVisibility::Invisible);
-
-            let last = new.len() - 1;
-            new[last] = CurvePoint::new(new[last].x(), new[last].y(), new[last].kind(), PointVisibility::Invisible);
-
-            let reverse = section.fill && section.direction == SectionDirection::Cw ||
-                          !section.fill && section.direction == SectionDirection::Ccw;
-
-            // We need to invert the connection index if the iterator is going to be reversed.
-            let idx = if !reverse { spot.rhs } else { section.points.len() - 1 - spot.rhs };
-
-            let iter = PossiblyReversed::new(section.points.iter(), reverse);
-            for point in iter.clone().skip(idx).chain(iter.take(idx + 1)) {
-                new.push(*point);
-            }
-
-            new[last + 1] = CurvePoint::new(new[last + 1].x(), new[last + 1].y(), new[last + 1].kind(), PointVisibility::Invisible);
-
-            let last = new.len() - 1;
-            new[last] = CurvePoint::new(new[last].x(), new[last].y(), new[last].kind(), PointVisibility::Invisible);
-
-            result = new;
-
-            // TODO: mark section as removed
-            removed[section_idx] = true;
-            removed_count += 1;
-
-            if removed_count == sections.len() {
-                break
-            }
+            group_counter += 1;
 
         }
 
+        outer_idx += 1;
+
     }
 
-    result
+    // Step 5:
+    // Form one shape for each group, by connecting the filled parent to its holes.
+
+    let mut shapes: Vec<Vec<CurvePoint>> = Vec::new();
+
+    for outer in sections.iter() {
+
+        if outer.should_be_filled() {
+
+            let mut shape: Vec<CurvePoint> = Vec::new();
+            let mut spots: Vec<IndexedConnectionSpot> = Vec::new();
+
+            // Find the connection spots.
+
+            for (idx, inner) in sections.iter().enumerate() {
+
+                if inner.group == outer.group &&
+                   inner.level != outer.level {
+
+                    let spot = find_connection_spot_for_group(
+                        // We only try to find connections between the outer polygon and a hole polygon but
+                        // not between the hole polygons themselves. This is important for the algorithm later.
+                        &outer.points, &inner.points,
+                        // Check only sections of the current group.
+                        &sections, inner.group
+                    ).expect("no valid connection spot"); // TODO: for production, make all of this not panic on invalid input but soft-error
+
+                    spots.push(IndexedConnectionSpot {
+                        idx,
+                        inner: spot,
+                    });
+
+                }
+
+            }
+
+            // Sort the spots by the index at which they connect to the outer section.
+            spots.sort_unstable_by(|lhs, rhs|
+                lhs.inner.lhs.cmp(&rhs.inner.lhs)
+            );
+
+            // Create the shape with all points in the correct order, all in a single pass
+            let mut start = 0;
+            for spot in spots {
+
+                // push all points up to the index of the next connection
+                shape.extend_from_slice(&outer.points[start..=spot.inner.lhs]);
+
+                // push the points of the inner hole
+                let hole = &sections[spot.idx].points;
+                shape.extend_from_slice(&hole[spot.inner.rhs..]);
+                shape.extend_from_slice(&hole[..spot.inner.rhs]);
+
+                // push the first point of the hole again, to connect back outerwards later
+                shape.push(hole[spot.inner.rhs]);
+
+                // since we are not doing a `+1` here the point at `spot.inner.lhs` will be pushed
+                // again next iteration, which closes the loop
+                start = spot.inner.lhs;
+
+            }
+
+            // Push the points after the last spot onto the shape
+            shape.extend_from_slice(&outer.points[start..]);
+
+            shapes.push(shape);
+
+        }
+
+    }
+
+    shapes
+
+}
+
+// TODO: as part of the never ending rework for math functions taking points/curvepoints this should take an Into<Point> instead of curvepoint
+fn point_inside_polygon(point: CurvePoint, polygon: &[CurvePoint]) -> bool {
+
+    let len = polygon.len();
+
+    // the total winding number
+    let mut winding = 0.0;
+
+    for idx in 0..len {
+        let p1 = polygon[idx];
+        let p2 = polygon[(idx + 1) % len];
+        let angle1 = (p1.y() as f64 - point.y() as f64).atan2(p1.x() as f64 - point.x() as f64);
+        let angle2 = (p2.y() as f64 - point.y() as f64).atan2(p2.x() as f64 - point.x() as f64);
+        let mut diff = angle2 - angle1;
+        if      diff >  PI { diff -= 2.0 * PI; }
+        else if diff < -PI { diff += 2.0 * PI; }
+        winding += diff;
+    }
+
+    winding.abs() > 1e-5
 
 }
 
 /// Finds indices in `lhs` and `rhs` where a new edge could be created without intersecting any
-/// of the edges present in `sections`.
-fn find_connection_spot(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Section]) -> Option<ConnectionSpot> {
+/// of the edges present in `sections` (considering only sections in `group`).
+fn find_connection_spot_for_group(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Section], group: usize) -> Option<ConnectionSpot> {
 
     // Check every possible edge between the sections.
     'l: for (lhs_point_idx, lhs_point) in lhs.iter().enumerate() {
@@ -322,7 +403,7 @@ fn find_connection_spot(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Sect
             // We do not need to check for intersections with the infinitely-thin connection strips that
             // were already generated, since these intersections are actually allowed by the later triangulation stages.
 
-            for check_section in sections.iter() {
+            for check_section in sections.iter().filter(|it| it.group == group) {
                 for check_edge in pair_windows_wrapping(&check_section.points) {
                     if edges_intersect(connection_edge, check_edge.map(Point::from)) {
                         continue 'r;
@@ -386,6 +467,13 @@ impl<I: DoubleEndedIterator> Iterator for PossiblyReversed<I> {
 struct ConnectionSpot {
     pub lhs: usize,
     pub rhs: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndexedConnectionSpot {
+    /// The index of the section this belongs to.
+    pub idx: usize,
+    pub inner: ConnectionSpot,
 }
 
 /// This function operates in normal y-space and will return inverted results in inverted y-space.
@@ -453,7 +541,10 @@ fn test_path_to_shape() {
     const TEST: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
 
     let (_, points) = parser::path(TEST).expect("valid svg path");
-    let mut shape = path_to_shape(points);
+    let mut shapes = path_to_shape(points);
+
+    assert_eq!(shapes.len(), 1, "should be a single shape");
+    let mut shape = shapes.pop().unwrap();
 
     for point in shape.iter_mut() {
         *point = CurvePoint::new(point.x() / 10, point.y() / 10, PointKind::Base, PointVisibility::Visible);
