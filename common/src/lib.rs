@@ -70,6 +70,11 @@ impl Point {
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
+
+    pub fn xy(&self) -> [f32; 2] {
+        [self.x, self.y]
+    }
+
 }
 
 impl From<PhysicalPoint> for Point {
@@ -92,6 +97,13 @@ impl ops::Mul<f32> for Point {
     }
 }
 
+impl ops::Add<Point> for Point {
+    type Output = Point;
+    fn add(self, rhs: Point) -> Self::Output {
+        Self::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
 /// Area of a window that has to be redrawn.
 pub struct Damage<'s> {
     /// Empty means full damage.
@@ -108,25 +120,6 @@ impl<'s> Damage<'s> {
     /// to redraw more parts of the window.
     pub fn partial(rects: &'s [Rect]) -> Self {
         Self { rects }
-    }
-}
-
-/// Geometry that represents a whole scene.
-#[derive(Default)]
-pub struct CurveGeometry {
-    pub points: Vec<CurvePoint>,
-    pub shapes: Vec<Shape>,
-    pub instances: Vec<Instance>,
-}
-
-impl CurveGeometry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn clear(&mut self) {
-        self.points.clear();
-        self.shapes.clear();
-        self.instances.clear();
     }
 }
 
@@ -225,53 +218,22 @@ pub enum PointKind {
     Ctrl,
 }
 
-/// Description of what points and instances make up a shape.
+/// Description of what points or vertices make up a shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape {
-    pub polygon: Range<u16>,
-    /// Range of instances this shape has.
-    /// `shape.instance.len()` must be `1` for singular shapes
-    pub instances: Range<u16>,
+    pub target: Range<u16>,
 }
 
 impl Shape {
 
-    #[track_caller]
-    pub const fn singular(polygon: Range<u16>, instance: u16) -> Self {
-        Self {
-            polygon,
-            instances: instance..instance + 1,
-        }
+    pub const ZERO: Self = Self::new(0..0);
+
+    pub const fn new(target: Range<u16>) -> Self {
+        Self { target }
     }
 
-    /// Special values of `instances.len()`:
-    ///   - **0**: ZERO shape
-    ///   - **1**: singular shape
-    #[track_caller]
-    pub const fn instanced(polygon: Range<u16>, instances: Range<u16>) -> Self {
-        Self {
-            polygon,
-            instances,
-        }
-    }
-
-    pub fn polygon_range(&self) -> Range<u16> {
-        self.polygon.start
-        .. self.polygon.end
-    }
-
-    /// The range of instances of this shape.
-    /// Will include only one instance for singular shapes.
-    pub fn instances_range(&self) -> Range<u16> {
-        self.instances.start
-        .. self.instances.end
-    }
-
-    pub fn kind(&self) -> ShapeKind {
-        match self.instances.len() <= 1 {
-            true => ShapeKind::Singular,
-            false => ShapeKind::Instanced,
-        }
+    pub fn range(&self) -> Range<usize> {
+        self.target.start as usize .. self.target.end as usize
     }
 
 }
@@ -311,8 +273,10 @@ impl IntersectionRelation {
 /// shape many times in different positions and with a different texture.
 #[derive(Debug, Clone)]
 pub struct Instance {
-    /// offsetX, offsetY, z
-    pub pos: [f32; 3], //  TODO: make this be like CurvePoint, an offset in u16 pixels
+    /// Index into the \[[`VertexGeometry`]\] and then the inner \[[`Shape`]\].
+    pub target: [usize; 2],
+    /// offsetX, offsetY
+    pub pos: Point, //  TODO: make this be like CurvePoint, an offset in u16 pixels
     /// texture coordinates and layer
     pub texture: [f32; 3],
 }
@@ -336,6 +300,10 @@ impl GlPoint {
             x:       2.0 * (p.x as f32 / size.w  as f32) - 1.0,
             y: 1.0 - 2.0 * (p.y as f32 / size.h as f32)
         }
+    }
+
+    pub fn xy(&self) -> [f32; 2] {
+        [self.x, self.y]
     }
 
 }

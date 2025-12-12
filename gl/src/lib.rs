@@ -618,11 +618,11 @@ impl Buffer {
 /// This utility type acts as a buffer to store your vertex data. This should
 /// make appending vertex attributes with multiple different types easier.
 #[derive(Debug, Default)]
-pub struct AttribStorage {
+pub struct AttribVec {
     pub inner: Vec<u8>,
 }
 
-impl AttribStorage {
+impl AttribVec {
 
     pub fn new() -> Self {
         Self { inner: Vec::new() }
@@ -682,7 +682,8 @@ pub struct VertexAttribs {
 /// # Caveats
 /// - The attribute will be immediatly `enabled`.
 /// - Remember `stride` is in bytes!
-/// - There is no special variant for integer types.
+/// - There is no special variant for integer types, this
+///   is handeled internally for you!
 #[track_caller]
 pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<AttribLocation>, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
@@ -762,15 +763,13 @@ impl Drop for FrameBuffer {
     }
 }
 
-impl Default for FrameBuffer {
-    fn default() -> Self {
-        Self { id: 0 }
-    }
-}
-
 impl FrameBuffer {
     pub fn current() -> Self {
         Self { id: get_integer_v(Property::FrameBufferBinding).unwrap_or(0) as u32 }
+    }
+    /// Returns the default FrameBuffer, which is the bound surface in bost cases.
+    pub const fn default() -> Self {
+        Self { id: 0 }
     }
 }
 

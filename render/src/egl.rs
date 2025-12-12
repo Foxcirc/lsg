@@ -2,23 +2,57 @@
 use std::mem::size_of;
 
 use common::*;
-use crate::GeometryShaper;
+use crate::VertexGeometry;
 
 pub struct GlSurface {
     inner: egl::v2::Surface,
+    fbo: gl::FrameBuffer,
+    rbo: gl::RenderBuffer,
 }
 
 impl GlSurface {
 
     pub fn new<W: egl::IsSurface>(gl: &GlRenderer, window: &W, size: Size) -> Result<Self, RenderError> {
-        let surface = egl::v2::Surface::new(&gl.instance, &gl.config, window, size)?;
-        Ok(Self { inner: surface })
+
+        let surface = egl::v2::Surface::new(
+            &gl.instance, &gl.config, window, size
+        )?;
+
+        // Bind a context for initialization.
+        gl.ctx.bind(&gl.instance, &surface)?;
+
+        let fbo = gl::gen_frame_buffer();
+        let rbo = gl::gen_render_buffer();
+
+        Ok(Self {
+            inner: surface,
+            fbo,
+            rbo
+        })
+
     }
 
-    pub fn resize(&mut self, size: Size) {
-        self.inner.resize(size)
+    pub fn resize(&mut self, gl: &GlRenderer, size: Size) -> Result<(), RenderError> {
+
+        gl.ctx.bind(&gl.instance, &self.inner)?;
+
+        gl::render_buffer_storage(
+            &self.rbo, gl::PreciseColorFormat::Rgba8, size
+        );
+
+        self.inner.resize(size);
+
+        Ok(())
+
     }
 
+}
+
+/// Represents multiple instances of shapes together with their vertex information.
+#[derive(Debug)]
+pub struct DrawableGeometry<'a> {
+    pub source: &'a [&'a VertexGeometry],
+    pub instances: &'a [Instance],
 }
 
 pub struct GlRenderer {
@@ -39,7 +73,7 @@ impl GlRenderer {
         let config = egl::v2::Config::build()
             .api(egl::v2::Api::OpenGl)
             .version(4, 3)
-            .debug(cfg!(debug_assertions))
+            .debug(cfg!(test))
             .profile(egl::v2::Profile::Core)
             .finish(&instance)?;
 
@@ -64,7 +98,7 @@ impl GlRenderer {
 
     }
 
-    pub fn draw(&mut self, geometry: &CurveGeometry, surface: &GlSurface) -> Result<(), RenderError> {
+    pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, surface: &GlSurface) -> Result<(), RenderError> {
 
         self.ctx.bind(&self.instance, &surface.inner)?;
 
@@ -73,10 +107,12 @@ impl GlRenderer {
 
         // we need to update the size before rendering with the ShapeRenderer
         // so self.composite.fbo is initialized properly
+        self.shape.update(size);
         self.composite.update(size);
-        gl::clear(&self.composite.fbo, 0.0, 0.0, 0.0, 1.0);
 
-        self.shape.draw(size, geometry, &self.composite.fbo)?; // draw the new geometry ontop of the old one
+        gl::clear(&self.composite.fbo, 0.0, 0.0, 0.0, 1.0); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
+
+        self.shape.draw(geometry, &self.composite.fbo); // draw the new geometry ontop of the old one
         self.composite.draw(&gl::FrameBuffer::default()); // final full-screen composition pass
 
         self.ctx.swap(&surface.inner, Damage::all())?; // finally swap the buffers
@@ -90,12 +126,11 @@ impl GlRenderer {
 struct CompositeRenderer {
     current: Size,
     fbo: gl::FrameBuffer,
-    vao: gl::VertexArray,
-    #[allow(unused)] // to keep it alive
-    vbo: gl::Buffer,
+    _vao: gl::VertexArray,
+    _vbo: gl::Buffer,
     // texture: gl::Texture,
     rbo: gl::RenderBuffer,
-    program: gl::LinkedProgram,
+    _program: gl::LinkedProgram,
 }
 impl CompositeRenderer {
 
@@ -149,16 +184,18 @@ impl CompositeRenderer {
         Ok(Self {
             fbo,
             current: Size::new(0, 0),
-            vao,
-            vbo,
+            _vao: vao,
+            _vbo: vbo,
             // texture: gl::Texture::invalid(),
             rbo,
-            program,
+            _program: program,
         })
 
     }
 
     pub fn update(&mut self, size: Size) {
+
+        // TODO: move this into Surface because these buffers actually need to be stored per-surface (otherwise they will be recreated every draw)!
 
         // (re)create composition texture if necessary
         if size != self.current {
@@ -216,13 +253,14 @@ struct InstancedData {
 struct ShapeRenderer {
     singular: SingularData,
     instanced: InstancedData,
+    prepared: PreparedGeometry,
     program: gl::LinkedProgram,
-    shaper: GeometryShaper,
+    size: Size,
 }
 
 impl ShapeRenderer {
 
-    fn new() -> Result<Self, RenderError> {
+    pub fn new() -> Result<Self, RenderError> {
 
         const VERT: &str = include_str!("shader/curve.vert");
         const FRAG: &str = include_str!("shader/curve.frag");
@@ -235,17 +273,14 @@ impl ShapeRenderer {
         gl::attach_shader(&mut builder, frag);
         let program = gl::link_program(builder).unwrap(); // TODO: compile shaders to binary in a build.rs script
 
-        let transformer = GeometryShaper::new();
-
         let singular = {
             let vdata = gl::gen_buffer(gl::BufferType::Array);
             let vao = gl::gen_vertex_array();
             let f = size_of::<f32>();
-            gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::F32, false, 9*f, 0*f); // x, y, z
+            gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::F32, false, 9*f, 0*f); // x, y, z TODO: remove Z coordinate as transparency/layering is handeled purely by draw-order
             gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 9*f, 3*f); // curveX, curveY
             gl::vertex_attrib_pointer(&vao, &vdata, 2, 3, gl::DataType::F32, false, 9*f, 5*f); // textureX, textureY, textureLayer
-            gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 9*f, 8*f); // flags TODO: document
-            // gl::vertex_attrib_1u(&vao, 3, 1);
+            gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 9*f, 8*f); // flags TODO: document, make this loc 2 (swap with above)
             SingularData { vao, vdata }
         };
 
@@ -272,45 +307,91 @@ impl ShapeRenderer {
         };
 
         Ok(Self {
-            shaper: transformer,
             singular,
             instanced,
+            prepared: PreparedGeometry::default(),
+            size: Size::default(),
             program,
         })
 
     }
 
-    fn draw<'s>(&'s mut self, size: Size, geometry: &CurveGeometry, target: &gl::FrameBuffer) -> Result<Damage<'s>, RenderError> {
-        // TODO:              ^^^^^^^ make this also use an `update` func that updated the size, so its in line with the other renderer
+    /// Convert geometry into internal drawable representation.
+    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>) {
 
-        let result = self.shaper.process(geometry, size);
+        for instance in geometry.instances {
 
-        // assure that we've gotten valid geometry
-        result.check().map_err(|msg| RenderError::InvalidInput(msg.into()))?;
+            let inner = &geometry.source[instance.target[0]];
+            let shape = &inner.shapes[instance.target[1]];
+            let vertices = &inner.vertices[shape.range()];
+
+            for vertex in vertices {
+
+                let pos = GlPoint::convert(vertex.pos + instance.pos, self.size).xy();
+
+                self.prepared.singular.vertices.extend_f(pos); // XY
+                self.prepared.singular.vertices.extend_f([1.0]); // Z-coordinte
+                self.prepared.singular.vertices.extend_f(vertex.cxy.xy()); // Curve XY
+                self.prepared.singular.vertices.extend_f(instance.texture); // texture
+                self.prepared.singular.vertices.extend_u([vertex.flags]); // flags
+
+            }
+
+        }
+
+    }
+
+    pub fn update(&mut self, size: Size) {
+        self.size = size;
+    }
+
+    pub fn draw<'s, 'b>(&'s mut self, geometry: &DrawableGeometry<'b>, target: &gl::FrameBuffer) -> Damage<'s> {
+
+        self.prepare(geometry);
 
         gl::enable(gl::Capability::Blend);
         gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
 
         // render all non-instanced shapes
-        let r = &result.singular;
-        if result.singular.vertices.inner.len() > 0 {
+        let r = &self.prepared.singular;
+        let len = r.vertices.inner.len();
+        if len > 0 {
             gl::buffer_data(&self.singular.vdata, &r.vertices.inner, gl::DrawHint::Dynamic);
-            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, r.vertices.inner.len() / 9);
+            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 9);
         }
 
-        // render all instanced shapes
-        let r = &result.instanced;
-        if r.commands.len() > 0 {
-            gl::buffer_data(&self.instanced.vdata,    &r.vertices.inner,  gl::DrawHint::Dynamic);
-            gl::buffer_data(&self.instanced.idata,    &r.instances.inner, gl::DrawHint::Dynamic);
-            gl::buffer_data(&self.instanced.commands, &r.commands,  gl::DrawHint::Dynamic);
-            gl::draw_arrays_indirect(target, &self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
-        }
+        // // render all instanced shapes
+        // let r = &result.instanced;
+        // if r.commands.len() > 0 {
+        //     gl::buffer_data(&self.instanced.vdata,    &r.vertices.inner,  gl::DrawHint::Dynamic);
+        //     gl::buffer_data(&self.instanced.idata,    &r.instances.inner, gl::DrawHint::Dynamic);
+        //     gl::buffer_data(&self.instanced.commands, &r.commands,  gl::DrawHint::Dynamic);
+        //     gl::draw_arrays_indirect(target, &self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
+        // }
 
-        Ok(Damage::all())
+        Damage::all()
 
     }
 
+}
+
+/// Vertex data which is ready to be rendered.
+#[derive(Default)]
+pub struct PreparedGeometry {
+    pub singular: SingularPreparedGeometry,
+    pub instanced: InstancedPreparedGeometry,
+}
+
+#[derive(Default)]
+pub struct SingularPreparedGeometry {
+    pub vertices: gl::AttribVec,
+}
+
+#[derive(Default)]
+pub struct InstancedPreparedGeometry {
+    pub vertices:  gl::AttribVec,
+    pub instances: gl::AttribVec,
+    pub commands:  Vec<gl::DrawArraysIndirectCommand>,
 }
 
 /// An error that occured when rendering.

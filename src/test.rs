@@ -6,6 +6,7 @@ use tracing::debug;
 
 use desktop::*;
 use common::*;
+use render::{DrawableGeometry, shaper};
 
 #[test]
 fn interactive() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,7 +31,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
     let mut surface = render::GlSurface::new(&renderer, &*window, Size::new(500, 500)).unwrap();
 
-    let mut geometry = CurveGeometry::new();
+    let mut geometry = shaper::CurveGeometry::new();
+    let mut instances: Vec<Instance> = Vec::new();
+    let mut shaper = shaper::GeometryShaper::new();
 
     /* add basic triangle to extend by clicking
 
@@ -125,9 +128,15 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         for points in shapes {
 
             let len = geometry.points.len();
-            geometry.shapes.push(Shape::singular(len as u16..(len + points.len()) as u16, shape_idx));
-            geometry.instances.push(Instance { pos: [(item_idx as f32 + 1.0) / 8.0, 0.0, 1.0], texture: [0.7; 3] });
+            geometry.shapes.push(Shape::new(len as u16 .. (len + points.len()) as u16));
+            // geometry.instances.push(Instance { pos: [(item_idx as f32 + 1.0) / 8.0, 0.0, 1.0], texture: [0.7; 3] });
             geometry.points.extend(points);
+
+            instances.push(Instance {
+                pos: Point::new(item_idx as f32 * 30.0, 10.0),
+                texture: [0.7; 3],
+                target: [0, shape_idx],
+            });
 
             shape_idx += 1;
 
@@ -153,7 +162,6 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Window { event, .. } => match event {
 
                     WindowEvent::Redraw => {
-                        // TODO: it seems there is a wayland bug where Ctrl+C doesnt work sometimes if the window is minimized? is it blocking somewhere unexpected? (I think it was blocking in eglSwapBuffers but it should be fixed I think, still need to check tho)
                         window.pre_present_notify();
                         // geometry.shapes.last_mut().map(|it| {
                         //     it.polygon.end = 4 + shape_take_part;
@@ -163,19 +171,26 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         let mut cloned = geometry.points.clone();
                         widget::svg::scale_all_points(&mut cloned, shape_scale_factor);
                         std::mem::swap(&mut cloned, &mut geometry.points);
-                        let result = renderer.draw(&geometry, &surface);
+
+                        let vertices = shaper.process(&geometry);
+
+                        let drawable = DrawableGeometry {
+                            source: &[vertices],
+                            instances: &instances,
+                        };
+
+                        let result = renderer.draw(&drawable, &surface);
                         std::mem::swap(&mut cloned, &mut geometry.points);
                         if let Err(err) = result {
                             tracing::error!("draw failed: {err:?}");
                         }
                         // window.redraw_with_vsync(&mut evl);
                         // evl.push_redraw_test(&window);
+
                     },
 
                     WindowEvent::Resize { size, .. } => {
-                        surface.resize(size);
-                    //     window.pre_present_notify();
-                    //     renderer.draw(&perwindow).ok();
+                        surface.resize(&renderer, size).expect("resizing failed");
                     },
 
                     WindowEvent::KeyDown { key, .. } => {
@@ -219,7 +234,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
-                            shape.polygon.end += 1;
+                            shape.target.end += 1;
                         }
 
                         debug!("add point {:?}", geometry.points.last().unwrap());
@@ -236,7 +251,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
-                            shape.polygon.end += 1;
+                            shape.target.end += 1;
                         }
 
                         debug!("add control point {:?}", geometry.points.last().unwrap());
