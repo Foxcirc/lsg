@@ -1202,6 +1202,7 @@ pub enum Primitive {
     Triangles = gl::TRIANGLES,
     Lines = gl::LINES,
     LineStrip = gl::LINE_STRIP,
+    Points = gl::POINTS,
 }
 
 pub fn clear(fbo: &FrameBuffer, r: f32, g: f32, b: f32, alpha: f32) {

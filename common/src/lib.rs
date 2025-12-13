@@ -244,23 +244,23 @@ pub enum ShapeKind {
     Instanced,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IntersectionRelation {
     /// Non-Intesecting
     Outside,
     /// Intesecting
     Inside,
     /// Point lies on an edge
-    OnEdge([[CurvePoint; 2]; 1]),
+    OnEdge([[Point; 2]; 1]),
     /// Point lies on a corner.
-    OnCorner([[CurvePoint; 2]; 2]),
+    OnCorner([[Point; 2]; 2]),
 }
 
 impl IntersectionRelation {
     /// All edges this intersection touched.
     /// OnEdge => 1 edge
     /// OnCorner => 2 edges
-    pub fn edges(&self) -> &[[CurvePoint; 2]] {
+    pub fn edges(&self) -> &[[Point; 2]] {
         match self {
             Self::Outside | Self::Inside => &[],
             Self::OnEdge(edge) => edge,

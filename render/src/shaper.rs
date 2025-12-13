@@ -165,66 +165,24 @@ impl LoweringPass {
 
                 increment = 2;
 
-                // append the points of the curve, which can be considered
-                // a "curve triangle" in this case
-                self.output.points.extend_from_slice(&section[..3]);
+                let intersected = points.iter().any(|it|
+                    !section.contains(it) && TriangulationPass::triangle_intersects_point([a, b, c], Point::from(*it)) == IntersectionRelation::Inside
+                );
 
-                // if points are intersecting the curve triangle, we have
-                // to split up the triangle to avoid artifacts
+                if intersected {
 
-                // the triangle and then its sub-triangles are tested
-                // recursively if they are still intersecting.
-                // this is done in a somewhat cumbersome way to make it
-                // possible to preallocate output space on the gpu
+                    let [x, y] = TriangulationPass::split_quadratic([a, b, c], 0.5);
+                    let [p, q] = TriangulationPass::split_quadratic(x, 0.5);
+                    let [r, s] = TriangulationPass::split_quadratic(y, 0.5);
 
-                let mut max_depth = 1; // number of curve triangles that were generated
-                let mut was_split = true;
-                while was_split {
+                    self.output.points.extend_from_slice(&[CurvePoint::convert(p[0], PointKind::Base), CurvePoint::convert(p[1], PointKind::Ctrl)]);
+                    self.output.points.extend_from_slice(&[CurvePoint::convert(q[0], PointKind::Base), CurvePoint::convert(q[1], PointKind::Ctrl)]);
+                    self.output.points.extend_from_slice(&[CurvePoint::convert(r[0], PointKind::Base), CurvePoint::convert(r[1], PointKind::Ctrl)]);
+                    self.output.points.extend_from_slice(&[CurvePoint::convert(s[0], PointKind::Base), CurvePoint::convert(s[1], PointKind::Ctrl)]);
 
-                    was_split = false;
-                    let len = self.output.points.len();
-
-                    // iterate through the already generated triangles
-                    for current_depth in 0..max_depth {
-
-                        let [isa, isb, isc] = [
-                            len - max_depth * 3 + current_depth * 3,     // 1. point
-                            len - max_depth * 3 + current_depth * 3 + 1, // 2. point
-                            len - max_depth * 3 + current_depth * 3 + 2  // 3. point
-                        ];
-
-                        let [sa, sb, sc] = [self.output.points[isa], self.output.points[isb], self.output.points[isc]];
-
-                        // check for any intersections
-                        for point in points.iter() {
-                            if ![sa, sb, sc].contains(point) &&
-                            TriangulationPass::triangle_intersects_point([sa, sb, sc], *point) == IntersectionRelation::Inside {
-
-                                was_split = true;
-                                max_depth += 1;
-
-                                // split the curve triangle
-                                let split_at = TriangulationPass::closest_split_point([sa.into(), sb.into(), sc.into()], (*point).into());
-                                let [first, second] = TriangulationPass::split_quadratic([sa.into(), sb.into(), sc.into()], split_at); // TODO: we need to split "right before" test how small EPS can get, rn sadly not much smaller then 0.1 :/ which is unacceptable for font rendering
-
-                                // insert the first curve triangle by replacing the original sub triangle
-                                self.output.points[isa] = CurvePoint::new(first[0].x as u16, first[0].y as u16, PointKind::Base);
-                                self.output.points[isb] = CurvePoint::new(first[1].x as u16, first[1].y as u16, PointKind::Ctrl);
-                                self.output.points[isc] = CurvePoint::new(first[2].x as u16, first[2].y as u16, PointKind::Base);
-
-                                // insert the second curve triangle at the end
-                                self.output.points.push(CurvePoint::new(second[0].x as u16, second[0].y as u16, PointKind::Base));
-                                self.output.points.push(CurvePoint::new(second[1].x as u16, second[1].y as u16, PointKind::Ctrl));
-                                self.output.points.push(CurvePoint::new(second[2].x as u16, second[2].y as u16, PointKind::Base));
-
-                            }
-                        }
-
-                    }
-
+                } else {
+                    self.output.points.extend_from_slice(&section[..2]);
                 }
-
-                self.output.points.pop(); // pop the last point since it will be addad again next iteration
 
             // 2: cubic curve
             } else if section[0].kind() == PointKind::Base &&
@@ -237,29 +195,20 @@ impl LoweringPass {
 
                 increment = 3;
 
-                let critical_points = [0.25, 0.5, 0.75, 1.0];
-                // let critical_points: Vec<f64> = (0..6).into_iter().rev().map(|it| 1.0 / it as f64).collect();
-                let mut previous_t_value = 0.0;
-                let mut curve_to_split = [a.into(), b.into(), c.into(), d.into()];
+                let [x, y] = TriangulationPass::split_cubic([a, b, c, d], 0.5);
+                let [p, q] = TriangulationPass::split_cubic(x, 0.5);
+                let [r, s] = TriangulationPass::split_cubic(y, 0.5);
 
-                // each iteration, we "chop off" the segment up to t_value
-                for t_value in critical_points {
-
-                    // calculate where we have to split the already shrunken curve
-                    let normalized_t_value = (t_value - previous_t_value) / (1.0 - previous_t_value);
-
-                    let [curve1, curve2] = TriangulationPass::split_cubic(curve_to_split, normalized_t_value as f32);
+                for curve in [p, q, r, s] {
 
                     // degree reduce by averaging
-                    let new_ctrl_point_x = -0.25*curve1[0].x + 0.75*curve1[1].x + 0.75*curve1[2].x -0.25*curve1[3].x;
-                    let new_ctrl_point_y = -0.25*curve1[0].y + 0.75*curve1[1].y + 0.75*curve1[2].y -0.25*curve1[3].y;
+                    let new_ctrl_point_x = -0.25*curve[0].x + 0.75*curve[1].x + 0.75*curve[2].x -0.25*curve[3].x;
+                    let new_ctrl_point_y = -0.25*curve[0].y + 0.75*curve[1].y + 0.75*curve[2].y -0.25*curve[3].y;
 
-                    // push p1 and p2. the last point will be pushed on in the next iteration
-                    self.output.points.push(CurvePoint::new(curve1[0].x as u16, curve1[0].y as u16, PointKind::Base)); // TODO: this cast is soooooo dirty
-                    self.output.points.push(CurvePoint::new(new_ctrl_point_x as u16, new_ctrl_point_y as u16, PointKind::Ctrl));
-
-                    curve_to_split = curve2;
-                    previous_t_value = t_value;
+                    self.output.points.extend_from_slice(&[
+                        CurvePoint::convert(curve[0], PointKind::Base),
+                        CurvePoint::new(new_ctrl_point_x as u16, new_ctrl_point_y as u16, PointKind::Ctrl)
+                    ]);
 
                 }
 
@@ -408,7 +357,7 @@ impl TriangulationPass {
                 points[(idx + 2) % len],
             ];
 
-            let [a, b, c] = section.map(|it| Point::from(it));
+            let abc = section.map(|it| Point::from(it));
 
             let increment; // how many points to skip for the next iteration
 
@@ -420,20 +369,41 @@ impl TriangulationPass {
 
                 increment = 2;
 
-                // render a the curve triangle. the range of the "uvs" decides
-                // which side of the curve get's filled by the shader
-
-                let convex = Self::convex([a.into(), b.into(), c.into()]);
+                let convexity = Self::convexity(abc);
 
                 // mark all convex curved triangles as removed,
                 // so they are not triangulated later
-                state.removed.set((idx + 1) as u64, convex);
+                state.removed.set((idx + 1) as u64, convexity);
                 //                 ^^^^^^ idx of the ctrl point
 
-                Self::generate_triangle(
-                    [a.into(), b.into(), c.into()], [false; 3], Self::uvs_for_convexity(convex), // TODO: anti-aliasing for curve triangles (adjacency)
-                    &mut state.out,
+                Self::generate_triangle(abc, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
+
+                /*
+                // If this curve triangle is intersected by any point it must be split up to avoid artifacts.
+                // I apply what I call the rule of four here: Split it four times and if that didnt work it's not my problem,
+                // but rather the geometry was designed badly!
+
+                let intersected = points.iter().any(|it|
+                    !section.contains(it) && TriangulationPass::triangle_intersects_point(abc, Point::from(*it)) == IntersectionRelation::Inside
                 );
+
+                if intersected {
+
+                    // println!("intersecting...");
+
+                    // let [x, y] = TriangulationPass::split_quadratic(abc, 0.5);
+                    // let [p, q] = TriangulationPass::split_quadratic(x, 0.5);
+                    // let [r, s] = TriangulationPass::split_quadratic(y, 0.5);
+
+                    // Self::generate_triangle(p, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
+                    // Self::generate_triangle(q, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
+                    // Self::generate_triangle(r, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
+                    // Self::generate_triangle(s, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
+
+                } else {
+                    println!("not-intersecting...");
+                }
+                */
 
             // simple line, which can be skipped
             } else {
@@ -507,7 +477,7 @@ impl TriangulationPass {
                 };
 
                 // we do not generate verticies for zero-area triangles
-                if Self::triangle_area(points[ia], points[ib], points[ic]).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
+                if Self::triangle_area(points[ia].into(), points[ib].into(), points[ic].into()).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
 
                     // dbg!([ia, ib, ic]);
 
@@ -674,13 +644,13 @@ impl TriangulationPass {
         // we want to treat these as valid ears because this allows
         // rendering seemingly disconnected areas as one shape
         // by connecting them using an invisible zero area line.
-        let abc = Self::triangle_area(a, b, c);
+        let abc = Self::triangle_area(a.into(), b.into(), c.into());
         if abc < 1e-6 { // account for precision errors
             return true
         }
 
         // B. short curcuit if it is concave.
-        let convex = Self::convex([a.into(), b.into(), c.into()]);
+        let convex = Self::convexity([a.into(), b.into(), c.into()]);
         if !convex {
             return false
         }
@@ -689,7 +659,7 @@ impl TriangulationPass {
         for (pidx, point) in polygon.iter().enumerate() {
 
             if ![ia, ib, ic].contains(&pidx) && // dont include the points that make up the ear
-                Self::triangle_intersects_point([a, b, c], *point) == IntersectionRelation::Inside
+                Self::triangle_intersects_point([a.into(), b.into(), c.into()], Point::from(*point)) == IntersectionRelation::Inside
             {
                 return false
             }
@@ -759,7 +729,7 @@ impl TriangulationPass {
 
     /// Check if the three points are convex, assuming counter clockwise orientation.
     /// Y-flipped version.
-    fn convex(neighbours: [Point; 3]) -> bool { // TODO: make all function that don't care about off/on curve take Point
+    fn convexity(neighbours: [Point; 3]) -> bool { // TODO: make all function that don't care about off/on curve take Point
 
         let [a, b, c] = neighbours;
 
@@ -787,10 +757,10 @@ impl TriangulationPass {
 
     /// Area of the triangle ABC.
     /// Y-flipped version.
-    fn triangle_area(a: CurvePoint, b: CurvePoint, c: CurvePoint) -> f32 {
-        ((a.x() as f32 * (c.y() as f32 - b.y() as f32) +
-          b.x() as f32 * (a.y() as f32 - c.y() as f32) +
-          c.x() as f32 * (b.y() as f32 - a.y() as f32)) / 2.0).abs()
+    fn triangle_area(a: Point, b: Point, c: Point) -> f32 {
+        ((a.x as f32 * (c.y as f32 - b.y as f32) +
+          b.x as f32 * (a.y as f32 - c.y as f32) +
+          c.x as f32 * (b.y as f32 - a.y as f32)) / 2.0).abs()
     //                  ^^^ the subtracion is fipped to account for the y-flip
     }
 
@@ -801,7 +771,7 @@ impl TriangulationPass {
     // TODO: I am keeping this function around until further testing is done since special handling
     // for cases where the point lies on an EDGE/CORNER may be needed for rare edge cases,
     // but in general I wanna revert it back to returning a simple boolean
-    fn triangle_intersects_point([a, b, c]: [CurvePoint; 3], point: CurvePoint) -> IntersectionRelation { // TODO: use Point not CurvePoint
+    fn triangle_intersects_point([a, b, c]: [Point; 3], point: Point) -> IntersectionRelation {
 
         let abc = Self::triangle_area(a, b, c);
 
