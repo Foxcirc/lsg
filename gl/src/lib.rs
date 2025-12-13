@@ -791,6 +791,12 @@ pub fn bind_draw_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, fbo.id) };
 }
 
+// "36053" means OK
+pub fn check_frame_buffer_status(fbo: &FrameBuffer) -> u32 {
+    bind_frame_buffer(fbo);
+    unsafe { gl::CheckFramebufferStatus(gl::FRAMEBUFFER) }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum AttachmentPoint {

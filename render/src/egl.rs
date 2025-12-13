@@ -24,6 +24,10 @@ impl GlSurface {
         let fbo = gl::gen_frame_buffer();
         let rbo = gl::gen_render_buffer();
 
+        // IMPORTANT: call `render_buffer_storage` before `frame_buffer_render_buffer` (i hate opengl)
+        gl::render_buffer_storage(&rbo, gl::PreciseColorFormat::Rgba8, size);
+        gl::frame_buffer_render_buffer(&fbo, gl::AttachmentPoint::Color0, &rbo);
+
         Ok(Self {
             inner: surface,
             fbo,
@@ -36,9 +40,20 @@ impl GlSurface {
 
         gl.ctx.bind(&gl.instance, &self.inner)?;
 
-        gl::render_buffer_storage(
-            &self.rbo, gl::PreciseColorFormat::Rgba8, size
-        );
+        gl::render_buffer_storage(&self.rbo, gl::PreciseColorFormat::Rgba8, size);
+
+        /*
+
+        For a texture it would look like this:
+
+        let texture = gl::gen_texture(gl::TextureType::Basic2D);
+        gl::tex_image_2d(&texture, 0, gl::ColorFormat::Rgba8, size, gl::PixelFormat::Rgba, gl::DataType::UByte);
+        gl::tex_parameter_i(&texture, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
+        gl::tex_parameter_i(&texture, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
+
+        gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &texture, 0);
+
+        */
 
         self.inner.resize(size);
 
@@ -108,12 +123,11 @@ impl GlRenderer {
         // we need to update the size before rendering with the ShapeRenderer
         // so self.composite.fbo is initialized properly
         self.shape.update(size);
-        self.composite.update(size);
 
-        gl::clear(&self.composite.fbo, 0.0, 0.0, 0.0, 1.0); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
+        gl::clear(&surface.fbo, 0.0, 0.0, 0.0, 1.0); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
 
-        self.shape.draw(geometry, &self.composite.fbo); // draw the new geometry ontop of the old one
-        self.composite.draw(&gl::FrameBuffer::default()); // final full-screen composition pass
+        self.shape.draw(geometry, &surface.fbo); // draw the new geometry ontop of the old one
+        self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass
 
         self.ctx.swap(&surface.inner, Damage::all())?; // finally swap the buffers
 
@@ -124,114 +138,68 @@ impl GlRenderer {
 }
 
 struct CompositeRenderer {
-    current: Size,
-    fbo: gl::FrameBuffer,
-    _vao: gl::VertexArray,
-    _vbo: gl::Buffer,
-    // texture: gl::Texture,
-    rbo: gl::RenderBuffer,
-    _program: gl::LinkedProgram,
+    // _vao: gl::VertexArray,
+    // _vbo: gl::Buffer,
+    // _program: gl::LinkedProgram,
 }
 impl CompositeRenderer {
 
     pub fn new() -> Result<Self, RenderError> {
 
-        let program = {
+        // let program = {
 
-            const VERT: &str = include_str!("shader/composite.vert");
-            const FRAG: &str = include_str!("shader/composite.frag");
+        //     const VERT: &str = include_str!("shader/composite.vert");
+        //     const FRAG: &str = include_str!("shader/composite.frag");
 
-            // compile the shader program
+        //     // compile the shader program
 
-            let vert = gl::create_shader(gl::ShaderType::Vertex,   VERT)?;
-            let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG)?;
+        //     let vert = gl::create_shader(gl::ShaderType::Vertex,   VERT)?;
+        //     let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG)?;
 
-            let mut builder = gl::create_program();
-            gl::attach_shader(&mut builder, vert);
-            gl::attach_shader(&mut builder, frag);
-            let program = gl::link_program(builder)?;
+        //     let mut builder = gl::create_program();
+        //     gl::attach_shader(&mut builder, vert);
+        //     gl::attach_shader(&mut builder, frag);
+        //     let program = gl::link_program(builder)?;
 
-            let texture = gl::uniform_location(&program, "texture")?;
-            gl::uniform_1i(&program, texture, 0);
+        //     let texture = gl::uniform_location(&program, "texture")?;
+        //     gl::uniform_1i(&program, texture, 0);
 
-            program
+        //     program
 
-        };
+        // };
 
-        let (vao, vbo) = {
+        // let (vao, vbo) = {
 
-            let vao = gl::gen_vertex_array();
-            let vbo = gl::gen_buffer(gl::BufferType::Array);
+        //     let vao = gl::gen_vertex_array();
+        //     let vbo = gl::gen_buffer(gl::BufferType::Array);
 
-            let f = size_of::<f32>();
-            gl::vertex_attrib_pointer(&vao, &vbo, gl::AttribLocation::new(0), 2, gl::DataType::F32, false, 2*f, 0);
+        //     let f = size_of::<f32>();
+        //     gl::vertex_attrib_pointer(&vao, &vbo, gl::AttribLocation::new(0), 2, gl::DataType::F32, false, 2*f, 0);
 
-           // a single full screen rect
-            let vertices: [f32; 12] = [
-                -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, // upper left triangle
-                1.0, 1.0, 1.0, -1.0, -1.0, -1.0, // lower right triangle
-            ];
+        //    // a single full screen rect
+        //     let vertices: [f32; 12] = [
+        //         -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, // upper left triangle
+        //         1.0, 1.0, 1.0, -1.0, -1.0, -1.0, // lower right triangle
+        //     ];
 
-            gl::buffer_data(&vbo, &vertices, gl::DrawHint::Static);
+        //     gl::buffer_data(&vbo, &vertices, gl::DrawHint::Static);
 
-            (vao, vbo)
+        //     (vao, vbo)
 
-        };
-
-        let fbo = gl::gen_frame_buffer();
-        let rbo = gl::gen_render_buffer();
+        // };
 
         Ok(Self {
-            fbo,
-            current: Size::new(0, 0),
-            _vao: vao,
-            _vbo: vbo,
-            // texture: gl::Texture::invalid(),
-            rbo,
-            _program: program,
+            // _vao: vao,
+            // _vbo: vbo,
+            // _program: program,
         })
 
     }
 
-    pub fn update(&mut self, size: Size) {
+    pub fn draw(&mut self, source: &gl::FrameBuffer, target: &gl::FrameBuffer, size: Size) {
 
-        // TODO: move this into Surface because these buffers actually need to be stored per-surface (otherwise they will be recreated every draw)!
-
-        // (re)create composition texture if necessary
-        if size != self.current {
-
-            gl::render_buffer_storage(&self.rbo, gl::PreciseColorFormat::Rgba8, size);
-            gl::frame_buffer_render_buffer(&self.fbo, gl::AttachmentPoint::Color0, &self.rbo);
-
-            /*
-            let texture = gl::gen_texture(gl::TextureType::Basic2D);
-            gl::tex_image_2d(&texture, 0, gl::ColorFormat::Rgba8, size, gl::PixelFormat::Rgba, gl::DataType::UByte);
-            gl::tex_parameter_i(&texture, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
-            gl::tex_parameter_i(&texture, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
-
-            gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &texture, 0);
-            */
-
-            // drop the old one and keep the new one alive
-            // self.texture = texture;
-            self.current = size;
-
-        }
-
-    }
-
-    pub fn draw(&mut self, target: &gl::FrameBuffer) {
-
-        let rect = Rect::new(PhysicalPoint::ZERO, self.current);
-        gl::blit_frame_buffer((target, rect), (&self.fbo, rect), gl::FilterValue::Nearest);
-
-        /*
-        gl::disable(gl::Capability::Blend);
-        gl::active_texture(0, &self.texture);
-
-        gl::clear(target, 0.0, 0.0, 0.0, 1.0);
-        gl::draw_arrays(target, &self.program, &self.vao, gl::Primitive::Triangles, 0, 6);
-        */
+        let rect = Rect::new(PhysicalPoint::ZERO, size);
+        gl::blit_frame_buffer((target, rect), (source, rect), gl::FilterValue::Nearest);
 
     }
 
