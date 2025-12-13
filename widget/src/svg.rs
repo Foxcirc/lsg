@@ -149,7 +149,7 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<Vec<CurvePoint>> {
             },
             PathCommand::Cubic(c1, c2, p1) => {
                 current.push(CurvePoint::convert(c1 * 100.0, PointKind::Ctrl));
-                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Ctrl));
                 current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
                 cursor = p1;
             },

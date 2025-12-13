@@ -109,7 +109,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
         // "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z",
         // "M4 3C3.44772 3 3 3.44772 3 4V20C3 20.5523 3.44772 21 4 21H20C20.5523 21 21 20.5523 21 20V4C21 3.44772 20.5523 3 20 3H4ZM16.0001 8V16.4142L12.5001 12.9142L8.70718 16.7071L7.29297 15.2929L11.0859 11.5L7.58586 8H16.0001Z",
         // "M16.0503 12.0498L21 16.9996L16.0503 21.9493L14.636 20.5351L17.172 17.9988L4 17.9996V15.9996L17.172 15.9988L14.636 13.464L16.0503 12.0498ZM7.94975 2.0498L9.36396 3.46402L6.828 5.9988L20 5.99955V7.99955L6.828 7.9988L9.36396 10.5351L7.94975 11.9493L3 6.99955L7.94975 2.0498Z",
-        "M5.82843 6.99955L8.36396 9.53509L6.94975 10.9493L2 5.99955L6.94975 1.0498L8.36396 2.46402L5.82843 4.99955H13C17.4183 4.99955 21 8.58127 21 12.9996C21 17.4178 17.4183 20.9996 13 20.9996H4V18.9996H13C16.3137 18.9996 19 16.3133 19 12.9996C19 9.68584 16.3137 6.99955 13 6.99955H5.82843Z",
+        // "M5.82843 6.99955L8.36396 9.53509L6.94975 10.9493L2 5.99955L6.94975 1.0498L8.36396 2.46402L5.82843 4.99955H13C17.4183 4.99955 21 8.58127 21 12.9996C21 17.4178 17.4183 20.9996 13 20.9996H4V18.9996H13C16.3137 18.9996 19 16.3133 19 12.9996C19 9.68584 16.3137 6.99955 13 6.99955H5.82843Z",
         // "M21 13V20C21 20.5523 20.5523 21 20 21H4C3.44772 21 3 20.5523 3 20V13H2V11L3 6H21L22 11V13H21ZM5 13V19H19V13H5ZM4.03961 11H19.9604L19.3604 8H4.63961L4.03961 11ZM6 14H14V17H6V14ZM3 3H21V5H3V3Z",
         // "M21 3C21.5523 3 22 3.44772 22 4V20.0066C22 20.5552 21.5447 21 21.0082 21H2.9918C2.44405 21 2 20.5551 2 20.0066V19H20V7.3L12 14.5L2 5.5V4C2 3.44772 2.44772 3 3 3H21ZM8 15V17H0V15H8ZM5 10V12H0V10H5ZM19.5659 5H4.43414L12 11.8093L19.5659 5Z",
     ];
@@ -146,7 +146,21 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     }
 
-    unsafe { render::SHAPE_TAKE_PART = 1 };
+    geometry.points.push(CurvePoint::new(40, 400, PointKind::Base));
+    geometry.points.push(CurvePoint::new(240, 400, PointKind::Ctrl));
+    geometry.points.push(CurvePoint::new(240, 200, PointKind::Base));
+
+    geometry.shapes.push(Shape::new(0..3));
+
+    instances.push(Instance {
+        pos: Point::new(0.0, 0.0),
+        texture: [0.8, 0.1, 0.3],
+        target: [0, 0],
+    });
+
+    shape_scale_factor = 1.0;
+
+    unsafe { render::SHAPE_TAKE_PART = 100 };
 
     // run the event loop
     block_on(async {
@@ -168,9 +182,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         //     println!("points to render: {:?}", geometry.points.get(it.polygon.start as usize .. it.polygon.end as usize));
                         // });
                         // dbg!(&geometry.points);
-                        let mut cloned = geometry.points.clone();
-                        widget::svg::scale_all_points(&mut cloned, shape_scale_factor);
-                        std::mem::swap(&mut cloned, &mut geometry.points);
+                        // let mut cloned = geometry.points.clone();
+                        // widget::svg::scale_all_points(&mut cloned, shape_scale_factor);
+                        // std::mem::swap(&mut cloned, &mut geometry.points);
 
                         let vertices = shaper.process(&geometry);
 
@@ -180,7 +194,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let result = renderer.draw(&drawable, &surface);
-                        std::mem::swap(&mut cloned, &mut geometry.points);
+                        // std::mem::swap(&mut cloned, &mut geometry.points);
                         if let Err(err) = result {
                             tracing::error!("draw failed: {err:?}");
                         }
@@ -212,18 +226,11 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseMotion { x, y } => {
 
-                        /*
                         if let Some(point) = geometry.points.last_mut() {
-                            if point.is_base() {
-                                *point = CurvePoint::base(x as i16, y as i16);
-                            } else {
-                                *point = CurvePoint::ctrl(x as i16, y as i16);
-                            }
+                            *point = CurvePoint::new(x, y, point.kind())
                         }
 
                         window.redraw_with_vsync(&mut evl);
-
-                        */
 
                     },
 
@@ -238,6 +245,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         debug!("add point {:?}", geometry.points.last().unwrap());
+
+                        dbg!(&geometry.shapes, &geometry.points);
 
                         window.redraw_with_vsync(&mut evl);
 

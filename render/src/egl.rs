@@ -120,14 +120,11 @@ impl GlRenderer {
         let size = surface.inner.size();
         gl::resize_viewport(size);
 
-        // we need to update the size before rendering with the ShapeRenderer
-        // so self.composite.fbo is initialized properly
-        self.shape.update(size);
+        gl::clear(&gl::FrameBuffer::default(), 0.0, 0.0, 0.0, 1.0);
+        // gl::clear(&surface.fbo, 0.0, 0.0, 0.0, 0.8); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
 
-        gl::clear(&surface.fbo, 0.0, 0.0, 0.0, 1.0); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
-
-        self.shape.draw(geometry, &surface.fbo); // draw the new geometry ontop of the old one
-        self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass
+        self.shape.draw(geometry, &gl::FrameBuffer::default(), size); // draw the new geometry ontop of the old one
+        // self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass
 
         self.ctx.swap(&surface.inner, Damage::all())?; // finally swap the buffers
 
@@ -223,7 +220,6 @@ struct ShapeRenderer {
     instanced: InstancedData,
     prepared: PreparedGeometry,
     program: gl::LinkedProgram,
-    size: Size,
 }
 
 impl ShapeRenderer {
@@ -278,14 +274,15 @@ impl ShapeRenderer {
             singular,
             instanced,
             prepared: PreparedGeometry::default(),
-            size: Size::default(),
             program,
         })
 
     }
 
     /// Convert geometry into internal drawable representation.
-    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>) {
+    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: Size) {
+
+        self.prepared.clear();
 
         for instance in geometry.instances {
 
@@ -295,7 +292,10 @@ impl ShapeRenderer {
 
             for vertex in vertices {
 
-                let pos = GlPoint::convert(vertex.pos + instance.pos, self.size).xy();
+                let pos = GlPoint::convert(vertex.pos + instance.pos, size).xy();
+
+                // TODO: remake the vertex format so that we use only u16 numbers here (eg. for XY) and pack curve-xy into the flags,
+                // this data can then be interpreted and turned into floats by the vertex shader.
 
                 self.prepared.singular.vertices.extend_f(pos); // XY
                 self.prepared.singular.vertices.extend_f([1.0]); // Z-coordinte
@@ -309,13 +309,9 @@ impl ShapeRenderer {
 
     }
 
-    pub fn update(&mut self, size: Size) {
-        self.size = size;
-    }
+    pub fn draw<'s, 'b>(&'s mut self, geometry: &DrawableGeometry<'b>, target: &gl::FrameBuffer, size: Size) -> Damage<'s> {
 
-    pub fn draw<'s, 'b>(&'s mut self, geometry: &DrawableGeometry<'b>, target: &gl::FrameBuffer) -> Damage<'s> {
-
-        self.prepare(geometry);
+        self.prepare(geometry, size);
 
         gl::enable(gl::Capability::Blend);
         gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
@@ -325,7 +321,7 @@ impl ShapeRenderer {
         let len = r.vertices.inner.len();
         if len > 0 {
             gl::buffer_data(&self.singular.vdata, &r.vertices.inner, gl::DrawHint::Dynamic);
-            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 9);
+            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 4 / 9);
         }
 
         // // render all instanced shapes
@@ -348,6 +344,14 @@ impl ShapeRenderer {
 pub struct PreparedGeometry {
     pub singular: SingularPreparedGeometry,
     pub instanced: InstancedPreparedGeometry,
+}
+impl PreparedGeometry {
+    fn clear(&mut self) {
+        self.singular.vertices.inner.clear();
+        self.instanced.vertices.inner.clear();
+        self.instanced.instances.inner.clear();
+        self.instanced.commands.clear();
+    }
 }
 
 #[derive(Default)]
