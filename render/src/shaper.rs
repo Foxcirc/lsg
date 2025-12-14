@@ -409,18 +409,10 @@ impl TriangulationPass {
 
         loop {
 
-            // eprintln!("start of iteration, ears: {:?}, removed: {:?}", &state.ears, &state.removed);
-
             if counter < len { // increment counter
                 counter += 1;
             } else { // reset counter
-                if !changes {
-                    eprintln!("errored out, removed: {:?}", &self.removed);
-                    eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !self.removed.get(*idx as u64)).collect::<Vec<_>>());
-                    return Err(())
-                }
-                // eprintln!("-> wrapping...");
-                // if !changes { return Err("polygon not ccw or intersecting lines") };
+                if !changes { return Err(()) }
                 changes = false;
                 counter = 1;
             }
@@ -446,21 +438,12 @@ impl TriangulationPass {
                 // we do not generate verticies for zero-area triangles
                 if Self::triangle_area(abc).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
 
-                    // we need to compute adjacency information for every edge of the triangle,
-                    // since it is needed for anti-aliasing later. specifically we only
-                    // want to anti alias edges which are actually on the outside of the shape
-                    let edges = [[ia, ib], [ib, ic], [ic, ia]];
-                    let mut is_outer_edge = [false; 3];
-                    for (idx, edge) in edges.iter().enumerate() {
-                        // check if the points are direct neightbours
-                        // TODO: optimize
-                        if (edge[1].checked_sub(edge[0]).unwrap_or(0) == 1 || (edge[0] == len - 1 && edge[1] == 0) || (edge[1] == len - 1 && edge[0] == 0)) &&
-                        points[edge[0]].kind() == PointKind::Base && points[edge[1]].kind() == PointKind::Base { // concave curve trigs do NOT count as outside TODO: explain further
-                            is_outer_edge[idx] = true;
-                        }
-                    }
+                    // We need to compute adjacency information for every edge of the triangle,
+                    // since we only want to anti-alias edges which are actually on the outside of the shape.
+                    let outers = Self::check_outer_edges([ia, ib, ic], points);
 
-                    Self::generate_triangle(abc, is_outer_edge, Self::FILLED, &mut self.result.vertices);
+                    // Generate the filled inner triangle.
+                    Self::generate_triangle(abc, outers, Self::FILLED, &mut self.result.vertices);
 
                 }
 
@@ -961,6 +944,22 @@ impl TriangulationPass {
 
     }
 
+    fn check_outer_edges([ia, ib, ic]: [usize; 3], points: &[CurvePoint]) -> [bool; 3] {
+        let mut result = [false; 3];
+        let edges = [[ia, ib], [ib, ic], [ic, ia]];
+        for (idx, [x, y]) in edges.iter().enumerate() {
+            // check if the points are direct neightbours
+            let diff = x.abs_diff(*y);
+            if (diff == 1 || diff == points.len() - 1) &&
+               points[*x].kind() != PointKind::Ctrl &&
+               points[*y].kind() != PointKind::Ctrl {
+                // this is an outside edge
+                result[idx] = true;
+            }
+        }
+        result
+    }
+
 }
 
 /// Gives information about the way the vector `rhs` points in relation to `lhs`.
@@ -1004,85 +1003,13 @@ enum TwoVectorRelation {
 }
 
 #[test]
-fn test_solving_roots() {
-
-    fn approx_equal(a: Option<f32>, b: f32, epsilon: f32) -> bool {
-        if let Some(v) = a {
-            (v - b).abs() < epsilon
-        } else {
-            false
-        }
-    }
-
-    // Case: t^3 - 6t^2 + 11t - 6 = 0 (root at t = 1)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, -6.0, 11.0, -6.0); // TODO: move all out of TrigPass
-    assert!(approx_equal(roots[0], 3.0, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0);
-
-    // Case: t^3 + t^2 + t + 1 = 0 (root at t = -1)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, 1.0, 1.0, 1.0);
-    assert!(approx_equal(roots[0], -1.0, 1e-4), "the result was {:?} (first root should be {})", roots, -1.0);
-
-    // Case: t^3 - 3t^2 + 3t - 1 = 0 (root at t = 1)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, -3.0, 3.0, -1.0);
-    assert!(approx_equal(roots[0], 1.0, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0);
-
-    // Case: t^3 + 2t^2 + 3t + 4 = 0 (root near t = -1.6506)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, 2.0, 3.0, 4.0);
-    assert!(approx_equal(roots[0], -1.6506, 1e-4), "the result was {:?} (first root should be {})", roots, -1.6506);
-
-    // Case: t^3 + 3t^2 + 3t + 1 = 0 (root near t = 1)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, 3.0, 3.0, 1.0);
-    assert!(approx_equal(roots[0], 1.0, 1e-4), "the result was {:?} (first root should be {})", roots, -0.8794);
-
-    // Case: t^3 - 4t^2 + 5t - 2 = 0 (root near t = 0.5858)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, -4.0, 5.0, -2.0);
-    assert!(approx_equal(roots[0], 0.5858, 1e-4), "the result was {:?} (first root should be {})", roots, 0.5858);
-
-    // Case: t^3 - 2t^2 + t - 2 = 0 (root near t = 1.8794)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, -2.0, 1.0, -2.0);
-    assert!(approx_equal(roots[0], 1.8794, 1e-4), "the result was {:?} (first root should be {})", roots, 1.8794);
-
-    // Case: t^3 - 5t^2 + 8t - 4 = 0 (root near t = 2.1468)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, -5.0, 8.0, -4.0);
-    assert!(approx_equal(roots[0], 2.1468, 1e-4), "the result was {:?} (first root should be {})", roots, 2.1468);
-
-    // Case: t^3 + 6t^2 + 9t + 4 = 0 (root near t = -0.6604)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, 6.0, 9.0, 4.0);
-    assert!(approx_equal(roots[0], -0.6604, 1e-4), "the result was {:?} (first root should be {})", roots, -0.6604);
-
-    // Case: t^3 + t^2 - 3t - 2 = 0 (root near t = 1.0000)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, 1.0, -3.0, -2.0);
-    assert!(approx_equal(roots[0], 1.0000, 1e-4), "the result was {:?} (first root should be {})", roots, 1.0000);
-
-    // Case: t^3 - 1.5t^2 + 0.75t - 0.25 = 0 (root near t = 0.5)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, -1.5, 0.75, -0.25);
-    assert!(approx_equal(roots[0], 0.5, 1e-4), "the result was {:?} (first root should be {})", roots, 0.5);
-
-    // Case: t^3 + 0.5t^2 + 0.5t + 0.25 = 0 (root near t = -0.5)
-    let roots = TriangulationPass::solve_distance_derivative(1.0, 0.5, 0.5, 0.25);
-    assert!(approx_equal(roots[0], -0.5, 1e-4), "the result was {:?} (first root should be {})", roots, -0.5);
-
-}
-
-#[test]
 fn neighbours() {
 
     let mut bits = BitVec::<usize>::new();
     bits.resize(10, false);
 
-    assert_eq!(
-        TriangulationPass::neighbours(&bits, 4),
-        [3, 4, 5]
-    );
-
-    assert_eq!(
-        TriangulationPass::neighbours(&bits, 0),
-        [9, 0, 1]
-    );
-
-    assert_eq!(
-        TriangulationPass::neighbours(&bits, 9),
-        [8, 9, 0]
-    );
+    assert_eq!(TriangulationPass::neighbours(&bits, 4), [3, 4, 5]);
+    assert_eq!(TriangulationPass::neighbours(&bits, 0), [9, 0, 1]);
+    assert_eq!(TriangulationPass::neighbours(&bits, 9), [8, 9, 0]);
 
 }

@@ -38,25 +38,21 @@ void main() {
 
     // the barycentrics are used inside the fragment shader
     // to do antialiasing for filled triangles
-    // if (edgeKind != 0.0) { // edgeKind == 0.0 means it is an inside edge
-        if (curvePosIn.x == 2.0) { // first vertex of the triangle
-            barycentric.x = 1.0;
-            if (!edgeABisOuter) barycentric.z = 0.5;
-            if (!edgeACisOuter) barycentric.y = 0.5;
-            curvePos = vec2(2.0);
-        } else if (curvePosIn.x == 3.0) { // second vertex of the triangle
-            barycentric.y = 1.0;
-            if (!edgeABisOuter) barycentric.z = 0.5;
-            if (!edgeBCisOuter) barycentric.x = 0.5;
-            curvePos = vec2(2.0);
-        } else if (curvePosIn.x == 4.0) { // third vertex of the triangle
-            barycentric.z = 1.0;
-            if (!edgeBCisOuter) barycentric.x = 0.5;
-            if (!edgeACisOuter) barycentric.y = 0.5;
-            curvePos = vec2(2.0);
-        };
-    // } else {
-    //     barycentric == vec3(0.0);
-    // }
+    if (curvePosIn.x == 2.0) { // first vertex of the triangle
+        barycentric.x = 1.0;
+        if (!edgeABisOuter) barycentric.z = 0.5;
+        if (!edgeACisOuter) barycentric.y = 0.5;
+        curvePos = vec2(2.0);
+    } else if (curvePosIn.x == 3.0) { // second vertex of the triangle
+        barycentric.y = 1.0;
+        if (!edgeABisOuter) barycentric.z = 0.5;
+        if (!edgeBCisOuter) barycentric.x = 0.5;
+        curvePos = vec2(2.0);
+    } else if (curvePosIn.x == 4.0) { // third vertex of the triangle
+        barycentric.z = 1.0;
+        if (!edgeBCisOuter) barycentric.x = 0.5;
+        if (!edgeACisOuter) barycentric.y = 0.5;
+        curvePos = vec2(2.0);
+    };
 
 }

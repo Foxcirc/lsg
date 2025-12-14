@@ -46,14 +46,14 @@ void main() {
             float coverage = smoothstep(0.0, width, value);
 
             multiplier = coverage;
-            multiplier = 1.0;
 
         }
     } else {
-        float edgeDistance = min(min(barycentric.x, barycentric.y), barycentric.z);
-        float width = fwidth(edgeDistance);
-        multiplier = smoothstep(0.0, width, edgeDistance);
-        multiplier = 1.0;
+        vec3 d = fwidth(barycentric);
+        vec3 edgeDist = barycentric / d;
+        float dist = min(min(edgeDist.x, edgeDist.y), edgeDist.z);
+        // multiplier = smoothstep(0.0, width, edgeDistance);
+        multiplier = clamp(dist, 0.0, 1.0);
     }
 
     float alpha = 1.0; // TODO: add alpha channel to texture
