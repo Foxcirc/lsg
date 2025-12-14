@@ -246,12 +246,12 @@ impl LoweringPass {
 }
 
 struct TriangulationPass {
-    // state during triangulation
+    /// During ear-clipping, stores which vertices are valid ears.
     ears: BitVec<usize>,
+    /// During ear-clipping, stores which vertices have been removed already.
     removed: BitVec<usize>,
-
+    /// The output of the triangulation.
     result: VertexGeometry,
-    errors: usize,
 }
 
 impl TriangulationPass {
@@ -261,7 +261,6 @@ impl TriangulationPass {
             ears: BitVec::new(),
             removed: BitVec::new(),
             result: VertexGeometry::default(),
-            errors: 0,
         }
     }
 
@@ -270,7 +269,6 @@ impl TriangulationPass {
         // reset the state
         self.result.vertices.clear();
         self.result.shapes.clear();
-        self.errors = 0;
 
         // append the shape's triangles
         for shape in &geometry.shapes {
@@ -311,16 +309,8 @@ impl TriangulationPass {
         self.ears.resize(points.len() as u64, false);
         self.removed.resize(points.len() as u64, false);
 
-        Self::triangulate_curves(points, CurvesState {
-            removed: &mut self.removed,
-            out: &mut self.result.vertices,
-        });
-
-        Self::triangulate_body(points, TriangulationState {
-            removed: &mut self.removed,
-            ears: &mut self.ears,
-            out: &mut self.result.vertices,
-        })?;
+        self.triangulate_curves(points);
+        self.triangulate_body(points)?;
 
         // if shape.kind() == ShapeKind::Instanced {
         //     for it in instances {
@@ -341,7 +331,7 @@ impl TriangulationPass {
     }
 
     /// Calculate triangles that should be rendered as curves.
-    fn triangulate_curves(points: &[CurvePoint], mut state: CurvesState) {
+    fn triangulate_curves(&mut self, points: &[CurvePoint]) {
 
         let len = points.len();
         debug_assert!(len >= 3);
@@ -362,7 +352,6 @@ impl TriangulationPass {
             let increment; // how many points to skip for the next iteration
 
             // quadratic curve
-            // (cubic curve has been lowered away!)
             if section[0].kind() == PointKind::Base &&
                section[1].kind() == PointKind::Ctrl &&
                section[2].kind() == PointKind::Base {
@@ -373,37 +362,10 @@ impl TriangulationPass {
 
                 // mark all convex curved triangles as removed,
                 // so they are not triangulated later
-                state.removed.set((idx + 1) as u64, convexity);
+                self.removed.set((idx + 1) as u64, convexity);
                 //                 ^^^^^^ idx of the ctrl point
 
-                Self::generate_triangle(abc, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
-
-                /*
-                // If this curve triangle is intersected by any point it must be split up to avoid artifacts.
-                // I apply what I call the rule of four here: Split it four times and if that didnt work it's not my problem,
-                // but rather the geometry was designed badly!
-
-                let intersected = points.iter().any(|it|
-                    !section.contains(it) && TriangulationPass::triangle_intersects_point(abc, Point::from(*it)) == IntersectionRelation::Inside
-                );
-
-                if intersected {
-
-                    // println!("intersecting...");
-
-                    // let [x, y] = TriangulationPass::split_quadratic(abc, 0.5);
-                    // let [p, q] = TriangulationPass::split_quadratic(x, 0.5);
-                    // let [r, s] = TriangulationPass::split_quadratic(y, 0.5);
-
-                    // Self::generate_triangle(p, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
-                    // Self::generate_triangle(q, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
-                    // Self::generate_triangle(r, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
-                    // Self::generate_triangle(s, [false; 3], Self::uvs_for_convexity(convexity), &mut state.out);
-
-                } else {
-                    println!("not-intersecting...");
-                }
-                */
+                Self::generate_triangle(abc, [false; 3], Self::uvs_for_convexity(convexity), &mut self.result.vertices);
 
             // simple line, which can be skipped
             } else {
@@ -422,7 +384,7 @@ impl TriangulationPass {
     /// Ear-clipping triangulation for a single polygon.
     ///
     // TODO(DOC): link to docs on the triangulation compute shader on github
-    fn triangulate_body(points: &[CurvePoint], mut state: TriangulationState) -> Result<(), ()> {
+    fn triangulate_body(&mut self, points: &[CurvePoint]) -> Result<(), ()> {
 
         let len = points.len();
         debug_assert!(len >= 3);
@@ -430,8 +392,9 @@ impl TriangulationPass {
         // calculate initial ear state for every point
 
         for idx in 0..len {
-            let ear = Self::ear(points, &state.removed, idx);
-            state.ears.set(idx as u64, ear);
+            let inices = Self::neighbours(&self.removed, idx);
+            let ear = Self::ear(inices, points);
+            self.ears.set(idx as u64, ear);
         }
 
         // remove ears and recalculate neighbours
@@ -452,8 +415,8 @@ impl TriangulationPass {
                 counter += 1;
             } else { // reset counter
                 if !changes {
-                    eprintln!("errored out, removed: {:?}", &state.removed);
-                    eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !state.removed.get(*idx as u64)).collect::<Vec<_>>());
+                    eprintln!("errored out, removed: {:?}", &self.removed);
+                    eprintln!("points left: {:?}", points.iter().enumerate().filter(|(idx, _it)| !self.removed.get(*idx as u64)).collect::<Vec<_>>());
                     return Err(())
                 }
                 // eprintln!("-> wrapping...");
@@ -465,21 +428,23 @@ impl TriangulationPass {
             let idx = counter - 1;
 
             // skip all removed points
-            if state.removed[idx as u64] {
+            if self.removed[idx as u64] {
                 continue
             }
 
-            if state.ears[idx as u64] {
+            if self.ears[idx as u64] {
 
-                let [ia, ib, ic] = Self::neighbours(&state.removed, idx);
+                let [ia, ib, ic] = Self::neighbours(&self.removed, idx);
                 if ia == ic { // only two points were left
                     break
                 };
 
-                // we do not generate verticies for zero-area triangles
-                if Self::triangle_area(points[ia].into(), points[ib].into(), points[ic].into()).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
+                let abc = [ia, ib, ic]
+                    .map(|it| points[it])
+                    .map(|it| Point::from(it));
 
-                    // dbg!([ia, ib, ic]);
+                // we do not generate verticies for zero-area triangles
+                if Self::triangle_area(abc).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
 
                     // we need to compute adjacency information for every edge of the triangle,
                     // since it is needed for anti-aliasing later. specifically we only
@@ -495,23 +460,22 @@ impl TriangulationPass {
                         }
                     }
 
-                    Self::generate_triangle(
-                        [points[ia].into(), points[ib].into(), points[ic].into()],
-                        is_outer_edge, Self::FILLED, &mut state.out
-                    );
+                    Self::generate_triangle(abc, is_outer_edge, Self::FILLED, &mut self.result.vertices);
 
                 }
 
-                // println!("made an ear out of points: [{}, {}, {}], area: {}", ia, ib, ic, area);
+                // Mark the point as removed.
+                self.removed.set(ib as u64, true);
 
-                // mark the point as removed
-                state.removed.set(ib as u64, true);
+                // Recalculate left neightbour.
+                let indices = Self::neighbours(&self.removed, ia);
+                let ear = Self::ear(indices, points);
+                self.ears.set(ia as u64, ear);
 
-                // recalculate the neighbors
-                let ear = Self::ear(points, &state.removed, ia);
-                state.ears.set(ia as u64, ear);
-                let ear = Self::ear(points, &state.removed, ic);
-                state.ears.set(ic as u64, ear);
+                // Recalculate right neightbour.
+                let indices = Self::neighbours(&self.removed, ic);
+                let ear = Self::ear(indices, points);
+                self.ears.set(ic as u64, ear);
 
                 #[cfg(debug_assertions)] {
                     debug_ears_generated += 1;
@@ -592,6 +556,7 @@ impl TriangulationPass {
     /// # Caution
     /// Infinitely loops if all indices are marked as removed.
     pub(self) fn neighbours(removed: &BitVec, idx: usize) -> [usize; 3] {
+        // TODO: to optimize this: store a list of neightbours for every point (which is two u8 offsets, one for left on for the right neightbour) and update that list instead of "removing" points
 
         let len = removed.len(); // removed.len() == polygon.len()
 
@@ -632,25 +597,24 @@ impl TriangulationPass {
 
     }
 
-    /// Check if the point at `idx` is an ear, accounting for removed neighbours.
-    /// Y-flipped version.
-    fn ear(polygon: &[CurvePoint], removed: &BitVec, idx: usize) -> bool {
+    fn ear(indices: [usize; 3], polygon: &[CurvePoint]) -> bool {
 
-        let [ia, ib, ic] = Self::neighbours(removed, idx);
-        let [a, b, c] = [polygon[ia], polygon[ib], polygon[ic]];
+        let abc = indices
+            .map(|it| polygon[it])
+            .map(|it| Point::from(it));
 
         // A. short curcuit if the triangle has zero area.
         //
         // we want to treat these as valid ears because this allows
         // rendering seemingly disconnected areas as one shape
         // by connecting them using an invisible zero area line.
-        let abc = Self::triangle_area(a.into(), b.into(), c.into());
-        if abc < 1e-6 { // account for precision errors
+        let area = Self::triangle_area(abc);
+        if area < 1e-6 { // account for precision errors
             return true
         }
 
         // B. short curcuit if it is concave.
-        let convex = Self::convexity([a.into(), b.into(), c.into()]);
+        let convex = Self::convexity(abc);
         if !convex {
             return false
         }
@@ -658,8 +622,8 @@ impl TriangulationPass {
         // C. otherwise test for any intersections.
         for (pidx, point) in polygon.iter().enumerate() {
 
-            if ![ia, ib, ic].contains(&pidx) && // dont include the points that make up the ear
-                Self::triangle_intersects_point([a.into(), b.into(), c.into()], Point::from(*point)) == IntersectionRelation::Inside
+            if !indices.contains(&pidx) && // dont include the points that make up the ear
+                Self::triangle_intersects_point(abc, Point::from(*point)) == IntersectionRelation::Inside
             {
                 return false
             }
@@ -757,7 +721,7 @@ impl TriangulationPass {
 
     /// Area of the triangle ABC.
     /// Y-flipped version.
-    fn triangle_area(a: Point, b: Point, c: Point) -> f32 {
+    fn triangle_area([a, b, c]: [Point; 3]) -> f32 {
         ((a.x as f32 * (c.y as f32 - b.y as f32) +
           b.x as f32 * (a.y as f32 - c.y as f32) +
           c.x as f32 * (b.y as f32 - a.y as f32)) / 2.0).abs()
@@ -773,11 +737,11 @@ impl TriangulationPass {
     // but in general I wanna revert it back to returning a simple boolean
     fn triangle_intersects_point([a, b, c]: [Point; 3], point: Point) -> IntersectionRelation {
 
-        let abc = Self::triangle_area(a, b, c);
+        let abc = Self::triangle_area([a, b, c]);
 
-        let pab = Self::triangle_area(point, a, b);
-        let pbc = Self::triangle_area(point, b, c);
-        let pca = Self::triangle_area(point, c, a);
+        let pab = Self::triangle_area([point, a, b]);
+        let pbc = Self::triangle_area([point, b, c]);
+        let pca = Self::triangle_area([point, c, a]);
 
         let total = pab + pbc + pca;
 
