@@ -130,8 +130,8 @@ impl<'s> Damage<'s> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CurvePoint {
     /// # Layout
-    /// [kind, ---, x-pos, y-pos]
-    ///  1bit  1bit 15bit  15bit
+    /// [kind, disjoint, x-pos, y-pos]
+    ///  1bit  1bit      15bit  15bit
     inner: u32,
 }
 
@@ -149,7 +149,7 @@ impl CurvePoint {
 
     pub const ZERO: Self = Self::new(0, 0, PointKind::Base);
 
-    /// Creates a new point. The point will be `Visible` by default.
+    /// Creates a new point.
     /// # Panic (debug-assertions)
     /// X and Y must be smaller then u16::MAX / 2 since they
     /// are stored as 15-bit numbers internally.

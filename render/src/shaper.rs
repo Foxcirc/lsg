@@ -484,36 +484,15 @@ impl TriangulationPass {
 
     }
 
-    // TODO: should curve and non-curve triangles be rendered in two different passes, so we can save on the vertex size (omit the curve "uvs"). this should be done when good benchmarking is in place
-
-    // const CONVEX:  [Point; 3] = [Point::new(0.5, 0.5), Point::new(0.75, 0.5), Point::new(1.0, 1.0)]; // (0.5-1.0 indicates convex to the shader)
-    // const CONCAVE: [Point; 3] = [Point::new(0.0, 0.0), Point::new(0.25, 0.0), Point::new(0.5, 0.5)]; // (0.0-0.5 indicates concave to the shader)
-    // const FILLED:  [Point; 3] = [Point::new(2.0, 2.0), Point::new(3.0,  3.0), Point::new(4.0, 4.0)]; // (>2.0 indicates non-curve triangle and also stores the 'index % 3' of the vertex so the vertex shader can generate barycentric coordinates for anti-aliasing)
-
     fn generate_triangle(points: [Point; 3], outers: [bool; 3], fill: FillKind, out: &mut Vec<PartialVertex>) {
 
-        // let [ga, gb, gc] = [GlPoint::convert(a, meta.size), GlPoint::convert(b, meta.size), GlPoint::convert(c, meta.size)];
         let flags = ((outers[0] as u8) << 2) |
                     ((outers[1] as u8) << 1) |
                     ((outers[2] as u8) << 0);
-        // TODO: make flags not per-vertex but per-primitive (only once per 3 vertices)! which is gonna be such a fun opengl exercise HAHAHAHA YAYAA HAHAHA I LOVE OPENGL
 
         for point in points {
             out.push(PartialVertex::new([point.x as u16, point.y as u16], fill, flags));
         }
-
-        // match meta.kind {
-        //     ShapeKind::Singular => {
-        //         out.extend_f([ga.x + i.pos[0], ga.y + i.pos[1], i.pos[2], cxys[0], cxys[1], i.texture[0], i.texture[1], i.texture[2]]); out.extend_u([flags]);
-        //         out.extend_f([gb.x + i.pos[0], gb.y + i.pos[1], i.pos[2], cxys[2], cxys[3], i.texture[0], i.texture[1], i.texture[2]]); out.extend_u([flags]);
-        //         out.extend_f([gc.x + i.pos[0], gc.y + i.pos[1], i.pos[2], cxys[4], cxys[5], i.texture[0], i.texture[1], i.texture[2]]); out.extend_u([flags]);
-        //     }
-        //     ShapeKind::Instanced => {
-        //         out.extend_f([ga.x, ga.y, cxys[0], cxys[1]]); out.extend_u([flags]);
-        //         out.extend_f([gb.x, gb.y, cxys[2], cxys[3]]); out.extend_u([flags]);
-        //         out.extend_f([gc.x, gc.y, cxys[4], cxys[5]]); out.extend_u([flags]);
-        //     }
-        // }
 
     }
 
