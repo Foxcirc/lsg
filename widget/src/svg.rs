@@ -1,5 +1,5 @@
 
-use std::{f64::consts::PI, iter::{Rev, once}, mem, process::Output};
+use std::{f64::consts::PI, iter::once, mem};
 
 use common::*;
 
@@ -94,21 +94,14 @@ impl Section {
     }
 }
 
-pub fn scale_all_points(shape: &mut [CurvePoint], factor: f32) {
-    for point in shape.iter_mut() {
-        let new = Point::from(*point) * factor;
-        *point = CurvePoint::convert(new, point.kind());
-    }
-}
-
-pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<Vec<CurvePoint>> {
+pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Vec<Vec<CurvePoint>> {
 
     // Step 1:
     // Convert commands to list of points and split the path into sub-sections that need to be
     // connected by an invisible line. Holes or filled regions inside holes are considered sub-sections.
 
-    let mut sections: Vec<Section> = Vec::new();
-    let mut current: Vec<CurvePoint> = Vec::new();
+    let mut sections: Vec<Section> = Vec::with_capacity(4);
+    let mut current: Vec<CurvePoint> = Vec::with_capacity(24);
     let mut start = Point::default();
     let mut cursor = Point::default();
 
@@ -118,43 +111,41 @@ pub fn path_to_shape(path: Vec<PathCommand>) -> Vec<Vec<CurvePoint>> {
             PathCommand::Move(p1) => {
                 // create a new sub area, if we already collected some points
                 if current.len() > 0 {
-                    let mut points = mem::take(&mut current);
-                    points.dedup(); // TODO: avoid these dedups
                     sections.push(Section {
-                        points,
+                        points: mem::take(&mut current),
                         ..Default::default()
                     });
                 }
                 // add the point
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
                 start = p1;
                 cursor = p1;
             },
             PathCommand::Line(p1) => {
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Horizontal(pos) => {
-                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * scale, PointKind::Base));
                 cursor.x = pos;
             },
             PathCommand::Vertical(pos) => {
-                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * scale, PointKind::Base));
                 cursor.y = pos;
             },
             PathCommand::Quadratic(ct, p1) => {
-                current.push(CurvePoint::convert(ct * 100.0, PointKind::Ctrl));
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(ct * scale, PointKind::Ctrl));
+                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Cubic(c1, c2, p1) => {
-                current.push(CurvePoint::convert(c1 * 100.0, PointKind::Ctrl));
-                current.push(CurvePoint::convert(c2 * 100.0, PointKind::Ctrl));
-                current.push(CurvePoint::convert(p1 * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(c1 * scale, PointKind::Ctrl));
+                current.push(CurvePoint::convert(c2 * scale, PointKind::Ctrl));
+                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Return => {
-                current.push(CurvePoint::convert(start * 100.0, PointKind::Base));
+                current.push(CurvePoint::convert(start * scale, PointKind::Base));
                 cursor = start;
             },
         }
@@ -512,7 +503,7 @@ fn test_path_to_shape() {
     const TEST: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
 
     let (_, points) = parser::path(TEST).expect("valid svg path");
-    let mut shapes = path_to_shape(points);
+    let mut shapes = path_to_shape(points, 416.666);
 
     assert_eq!(shapes.len(), 1, "should be a single shape");
     let mut shape = shapes.pop().unwrap();

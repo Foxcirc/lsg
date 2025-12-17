@@ -277,6 +277,8 @@ pub struct Instance {
     pub target: [usize; 2],
     /// offsetX, offsetY
     pub pos: Point,
+    /// Scale which is applied to the targeted shape.
+    pub scale: usize,
     // /// texture coordinates and layer
     // pub texture: [f32; 3],
 }

@@ -308,11 +308,14 @@ impl ShapeRenderer {
 
             for (vertex, index) in zip(vertices, ivertices) {
 
-                let pos_x = vertex.pos[0] + instance.pos.x as u16;
-                let pos_y = vertex.pos[1] + instance.pos.y as u16;
+                let physical_x = vertex.pos[0] as usize * instance.scale / 10_000;
+                let physical_y = vertex.pos[1] as usize * instance.scale / 10_000;
 
-                let scaled_x = ((pos_x as usize * 4096) / size.w) as u32;
-                let scaled_y = ((pos_y as usize * 4096) / size.h) as u32;
+                let shifted_x = physical_x + instance.pos.x as usize;
+                let shifted_y = physical_y + instance.pos.y as usize;
+
+                let scaled_x = ((shifted_x * 4096) / size.w) as u32;
+                let scaled_y = ((shifted_y * 4096) / size.h) as u32;
 
                 let packed_pos = 0u32 |
                     ((0b0      & 255)  << 0) | // no Z for now

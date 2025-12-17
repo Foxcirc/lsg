@@ -123,7 +123,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     for svg in SVGS {
 
         let (_, parsed_path) = widget::svg::parser::path(svg).expect("valid svg path");
-        let shapes = widget::svg::path_to_shape(parsed_path);
+        let shapes = widget::svg::path_to_shape(parsed_path, 416.666);
 
         for points in shapes {
 
@@ -135,6 +135,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
             instances.push(Instance {
                 pos: Point::new(item_idx as f32 * 30.0, 10.0),
                 target: [0, shape_idx],
+                scale: 100,
             });
 
             shape_idx += 1;
@@ -153,6 +154,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     instances.push(Instance {
         pos: Point::new(0.0, 0.0),
+        scale: 10_000,
         target: [0, 0],
     });
 
