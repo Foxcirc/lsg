@@ -4,7 +4,7 @@
 //! The algorithms are purposely written in a way that is similar to the
 //! compute shader implementation.
 
-use std::{convert::identity, f32::consts::PI, iter::{once, zip}};
+use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
 use common::*;
 
@@ -25,23 +25,29 @@ impl CurveGeometry {
     }
 }
 
-/// A simple vertex making up a list of triangles in [`VertexGeometry`]. This vertex contains
-/// information only about the curves and triangle-positions of the shape.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum FillKind {
+    #[default]
+    Filled = 0,
+    Convex = 1,
+    Concave = 2
+}
+
+/// A simple vertex making up a list of triangles in [`VertexGeometry`].
+#[derive(Default, Clone, Copy, Debug)]
 pub struct PartialVertex {
-    /// X, Y
-    pub pos: Point,
-    /// CurveX, CurveY
-    pub cxy: Point,
-    /// Flags, used for anti-aliasing:
-    /// [1bit         1bit    1bit]
-    /// AB-is-outer   BC...   CA...
-    pub flags: u32, // TODO: use these flags to also store if this is instanced/not and if it is curve/normal
+    /// x, y
+    pub pos: [u16; 2],
+    /// fillKind
+    pub fill: FillKind,
+    /// bitflags, which edges are outer edges
+    pub edges: u8,
 }
 
 impl PartialVertex {
-    pub const fn new(pos: Point, cxy: Point, flags: u32) -> Self {
-        Self { pos, cxy, flags }
+    pub const fn new(pos: [u16; 2], fill: FillKind, edges: u8) -> Self {
+        Self { pos, fill, edges }
     }
 }
 
@@ -358,14 +364,18 @@ impl TriangulationPass {
 
                 increment = 2;
 
-                let convexity = Self::convexity(abc);
+                let convex = Self::convex(abc);
+                let fill = match convex {
+                    true => FillKind::Convex,
+                    false => FillKind::Concave,
+                };
 
                 // mark all convex curved triangles as removed,
                 // so they are not triangulated later
-                self.removed.set((idx + 1) as u64, convexity);
+                self.removed.set((idx + 1) as u64, convex);
                 //                 ^^^^^^ idx of the ctrl point
 
-                Self::generate_triangle(abc, [false; 3], Self::uvs_for_convexity(convexity), &mut self.result.vertices);
+                Self::generate_triangle(abc, [false; 3], fill, &mut self.result.vertices);
 
             // simple line, which can be skipped
             } else {
@@ -427,13 +437,10 @@ impl TriangulationPass {
             if self.ears[idx as u64] {
 
                 let [ia, ib, ic] = Self::neighbours(&self.removed, idx);
+                let abc = [ia, ib, ic].map(|it| Point::from(points[it]));
                 if ia == ic { // only two points were left
                     break
                 };
-
-                let abc = [ia, ib, ic]
-                    .map(|it| points[it])
-                    .map(|it| Point::from(it));
 
                 // we do not generate verticies for zero-area triangles
                 if Self::triangle_area(abc).abs() > 0.0 { // TODO: can we make this more efficient and calc the area only once??
@@ -443,7 +450,7 @@ impl TriangulationPass {
                     let outers = Self::check_outer_edges([ia, ib, ic], points);
 
                     // Generate the filled inner triangle.
-                    Self::generate_triangle(abc, outers, Self::FILLED, &mut self.result.vertices);
+                    Self::generate_triangle(abc, outers, FillKind::Filled, &mut self.result.vertices);
 
                 }
 
@@ -479,20 +486,20 @@ impl TriangulationPass {
 
     // TODO: should curve and non-curve triangles be rendered in two different passes, so we can save on the vertex size (omit the curve "uvs"). this should be done when good benchmarking is in place
 
-    const CONVEX:  [Point; 3] = [Point::new(0.5, 0.5), Point::new(0.75, 0.5), Point::new(1.0, 1.0)]; // (0.5-1.0 indicates convex to the shader)
-    const CONCAVE: [Point; 3] = [Point::new(0.0, 0.0), Point::new(0.25, 0.0), Point::new(0.5, 0.5)]; // (0.0-0.5 indicates concave to the shader)
-    const FILLED:  [Point; 3] = [Point::new(2.0, 2.0), Point::new(3.0,  3.0), Point::new(4.0, 4.0)]; // (>2.0 indicates non-curve triangle and also stores the 'index % 3' of the vertex so the vertex shader can generate barycentric coordinates for anti-aliasing)
+    // const CONVEX:  [Point; 3] = [Point::new(0.5, 0.5), Point::new(0.75, 0.5), Point::new(1.0, 1.0)]; // (0.5-1.0 indicates convex to the shader)
+    // const CONCAVE: [Point; 3] = [Point::new(0.0, 0.0), Point::new(0.25, 0.0), Point::new(0.5, 0.5)]; // (0.0-0.5 indicates concave to the shader)
+    // const FILLED:  [Point; 3] = [Point::new(2.0, 2.0), Point::new(3.0,  3.0), Point::new(4.0, 4.0)]; // (>2.0 indicates non-curve triangle and also stores the 'index % 3' of the vertex so the vertex shader can generate barycentric coordinates for anti-aliasing)
 
-    fn generate_triangle(points: [Point; 3], outers: [bool; 3], cxys: [Point; 3], out: &mut Vec<PartialVertex>) {
+    fn generate_triangle(points: [Point; 3], outers: [bool; 3], fill: FillKind, out: &mut Vec<PartialVertex>) {
 
         // let [ga, gb, gc] = [GlPoint::convert(a, meta.size), GlPoint::convert(b, meta.size), GlPoint::convert(c, meta.size)];
-        let flags = ((outers[0] as u32) << 0) |
-                    ((outers[1] as u32) << 1) |
-                    ((outers[2] as u32) << 2);
+        let flags = ((outers[0] as u8) << 2) |
+                    ((outers[1] as u8) << 1) |
+                    ((outers[2] as u8) << 0);
         // TODO: make flags not per-vertex but per-primitive (only once per 3 vertices)! which is gonna be such a fun opengl exercise HAHAHAHA YAYAA HAHAHA I LOVE OPENGL
 
-        for (point, cxy) in zip(points, cxys) {
-            out.push(PartialVertex::new(point, cxy, flags));
+        for point in points {
+            out.push(PartialVertex::new([point.x as u16, point.y as u16], fill, flags));
         }
 
         // match meta.kind {
@@ -582,9 +589,7 @@ impl TriangulationPass {
 
     fn ear(indices: [usize; 3], polygon: &[CurvePoint]) -> bool {
 
-        let abc = indices
-            .map(|it| polygon[it])
-            .map(|it| Point::from(it));
+        let abc = indices.map(|it| Point::from(polygon[it]));
 
         // A. short curcuit if the triangle has zero area.
         //
@@ -597,7 +602,7 @@ impl TriangulationPass {
         }
 
         // B. short curcuit if it is concave.
-        let convex = Self::convexity(abc);
+        let convex = Self::convex(abc);
         if !convex {
             return false
         }
@@ -676,7 +681,7 @@ impl TriangulationPass {
 
     /// Check if the three points are convex, assuming counter clockwise orientation.
     /// Y-flipped version.
-    fn convexity(neighbours: [Point; 3]) -> bool { // TODO: make all function that don't care about off/on curve take Point
+    fn convex(neighbours: [Point; 3]) -> bool {
 
         let [a, b, c] = neighbours;
 
@@ -780,13 +785,6 @@ impl TriangulationPass {
         let p   = Self::lerp(p12, p23, t);
         [[a, p1, p12, p], [p, p23, p3, d]]
         // -- curve1 --    -- curve2  --
-    }
-
-    fn uvs_for_convexity(convex: bool) -> [Point; 3] {
-        match convex {
-            true => Self::CONVEX,
-            false => Self::CONCAVE,
-        }
     }
 
     fn bezier_point([a, b, c]: [Point; 3], t: f32) -> Point {

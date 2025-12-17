@@ -1,5 +1,5 @@
 
-use std::mem::size_of;
+use std::{iter::{repeat, zip}};
 
 use common::*;
 use crate::VertexGeometry;
@@ -240,11 +240,13 @@ impl ShapeRenderer {
         let singular = {
             let vdata = gl::gen_buffer(gl::BufferType::Array);
             let vao = gl::gen_vertex_array();
-            let f = size_of::<f32>();
-            gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::F32, false, 9*f, 0*f); // x, y, z TODO: remove Z coordinate as transparency/layering is handeled purely by draw-order
-            gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 9*f, 3*f); // curveX, curveY
-            gl::vertex_attrib_pointer(&vao, &vdata, 2, 3, gl::DataType::F32, false, 9*f, 5*f); // textureX, textureY, textureLayer
-            gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 9*f, 8*f); // flags TODO: document, make this loc 2 (swap with above)
+            gl::vertex_attrib_pointer(&vao, &vdata, 0, 1, gl::DataType::U16, false, 10, 0); // FLAGS
+            gl::vertex_attrib_pointer(&vao, &vdata, 1, 1, gl::DataType::U32, false, 10, 2); // x, y, z
+            gl::vertex_attrib_pointer(&vao, &vdata, 2, 1, gl::DataType::U32, false, 10, 6); // u, v, l (texture coords)
+            // gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::F32, false, 9*f, 0*f); // x, y, z TODO: remove Z coordinate as transparency/layering is handeled purely by draw-order
+            // gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 9*f, 3*f); // curveX, curveY
+            // gl::vertex_attrib_pointer(&vao, &vdata, 2, 3, gl::DataType::F32, false, 9*f, 5*f); // textureX, textureY, textureLayer
+            // gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 9*f, 8*f); // flags TODO: document, make this loc 2 (swap with above)
             SingularData { vao, vdata }
         };
 
@@ -253,20 +255,20 @@ impl ShapeRenderer {
             let idata = gl::gen_buffer(gl::BufferType::Array);
             let commands = gl::gen_buffer(gl::BufferType::DrawIndirect);
             let vao = gl::gen_vertex_array();
-            let f = size_of::<f32>();
-            // vertex data
-            gl::vertex_attrib_pointer(&vao, &vdata, 0, 2, gl::DataType::F32, false, 5*f, 0*f); // x, y
-            gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 5*f, 2*f); // curveX, curveY
-            gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 5*f, 4*f); // flags TODO: document
-            // instance data
-            gl::vertex_attrib_pointer(&vao, &idata, 4, 3, gl::DataType::F32, false, 6*f, 0*f); // offsetX, offsetY, z
-            gl::vertex_attrib_pointer(&vao, &idata, 5, 3, gl::DataType::F32, false, 6*f, 3*f); // textureX, textureY, textureLayer
-            gl::vertex_attrib_divisor(&vao, 4, gl::Divisor::PerInstances(1));
-            gl::vertex_attrib_divisor(&vao, 5, gl::Divisor::PerInstances(1));
-            // default value for attrib that is not passed for instanced shapes
-            // this is used to distingluish between an instanced and non instanced call in the vertex shader
-            gl::vertex_attrib_3f(&vao, 4, -1.0, -1.0, -1.0);
-            gl::vertex_attrib_3f(&vao, 5, -1.0, -1.0, -1.0);
+            // let f = size_of::<f32>();
+            // // vertex data
+            // gl::vertex_attrib_pointer(&vao, &vdata, 0, 2, gl::DataType::F32, false, 5*f, 0*f); // x, y
+            // gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 5*f, 2*f); // curveX, curveY
+            // gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 5*f, 4*f); // flags TODO: document
+            // // instance data
+            // gl::vertex_attrib_pointer(&vao, &idata, 4, 3, gl::DataType::F32, false, 6*f, 0*f); // offsetX, offsetY, z
+            // gl::vertex_attrib_pointer(&vao, &idata, 5, 3, gl::DataType::F32, false, 6*f, 3*f); // textureX, textureY, textureLayer
+            // gl::vertex_attrib_divisor(&vao, 4, gl::Divisor::PerInstances(1));
+            // gl::vertex_attrib_divisor(&vao, 5, gl::Divisor::PerInstances(1));
+            // // default value for attrib that is not passed for instanced shapes
+            // // this is used to distingluish between an instanced and non instanced call in the vertex shader
+            // gl::vertex_attrib_3f(&vao, 4, -1.0, -1.0, -1.0);
+            // gl::vertex_attrib_3f(&vao, 5, -1.0, -1.0, -1.0);
             InstancedData { vao, vdata, idata, commands }
         };
 
@@ -279,8 +281,20 @@ impl ShapeRenderer {
 
     }
 
-    /// Convert geometry into internal drawable representation.
+    /// Convert geometry into internal representation.
     fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: Size) {
+
+        // The layout is packed heavily to minimize memory usage.
+        // A position of 10,000 is converted to NDC coordinates of 1.0
+        //
+        // Layout:
+        // FLAGS  | x, y, z | u, v, l
+        // 16 bit | 12 12 8 | 12 12 8
+        // u16      u32       u32     = a total of 10 bytes per vertex
+        //
+        // Flags Layout:
+        // FILLED/CONVEX/CONCAVE   INSTANCED/NORMAL   VERTEX INDEX   OUTER EDGES
+        // 2 bit                   1 bit              2 bit          3 bit
 
         self.prepared.clear();
 
@@ -290,18 +304,41 @@ impl ShapeRenderer {
             let shape = &inner.shapes[instance.target[1]];
             let vertices = &inner.vertices[shape.range()];
 
-            for vertex in vertices {
+            let ivertices = repeat([0, 1, 2] as [u16; 3]).flatten();
 
-                let pos = GlPoint::convert(vertex.pos + instance.pos, size).xy();
+            for (vertex, index) in zip(vertices, ivertices) {
 
-                // TODO: remake the vertex format so that we use only u16 numbers here (eg. for XY) and pack curve-xy into the flags,
-                // this data can then be interpreted and turned into floats by the vertex shader.
+                let pos_x = vertex.pos[0] + instance.pos.x as u16;
+                let pos_y = vertex.pos[1] + instance.pos.y as u16;
 
+                let scaled_x = ((pos_x as usize * 4096) / size.w) as u32;
+                let scaled_y = ((pos_y as usize * 4096) / size.h) as u32;
+
+                let packed_pos = 0u32 |
+                    ((0b0      & 255)  << 0) | // no Z for now
+                    ((scaled_y & 4095) << 8) |
+                    ((scaled_x & 4095) << 20);
+
+                let edges = vertex.edges as u16;
+                let fill = vertex.fill as u16;
+
+                let flags = 0u16 |
+                    ((edges & 0b111) << 0) |
+                    ((index & 0b011) << 3) |
+                    ((0b0   & 0b001) << 5) | // no instanced drawing for now
+                    ((fill  & 0b011) << 6);
+
+                self.prepared.singular.vertices.extend_u16([flags]);
+                self.prepared.singular.vertices.extend_u([packed_pos]);
+                self.prepared.singular.vertices.extend_u([0]); // no u, v, l for now
+
+                /*
                 self.prepared.singular.vertices.extend_f(pos); // XY
                 self.prepared.singular.vertices.extend_f([1.0]); // Z-coordinte
                 self.prepared.singular.vertices.extend_f(vertex.cxy.xy()); // Curve XY
-                self.prepared.singular.vertices.extend_f(instance.texture); // texture
+                // self.prepared.singular.vertices.extend_f(instance.texture); // texture
                 self.prepared.singular.vertices.extend_u([vertex.flags]); // flags
+                */
 
             }
 
@@ -321,7 +358,7 @@ impl ShapeRenderer {
         let len = r.vertices.inner.len();
         if len > 0 {
             gl::buffer_data(&self.singular.vdata, &r.vertices.inner, gl::DrawHint::Dynamic);
-            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 4 / 9);
+            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 10);
         }
 
         // // render all instanced shapes

@@ -276,9 +276,9 @@ pub struct Instance {
     /// Index into the \[[`VertexGeometry`]\] and then the inner \[[`Shape`]\].
     pub target: [usize; 2],
     /// offsetX, offsetY
-    pub pos: Point, //  TODO: make this be like CurvePoint, an offset in u16 pixels
-    /// texture coordinates and layer
-    pub texture: [f32; 3],
+    pub pos: Point,
+    // /// texture coordinates and layer
+    // pub texture: [f32; 3],
 }
 
 /// A point in normalized device coordinates.

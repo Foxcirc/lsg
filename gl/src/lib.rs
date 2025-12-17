@@ -640,6 +640,10 @@ impl AttribVec {
         self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
     }
 
+    pub fn extend_u16<const N: usize>(&mut self, vals: [u16; N]) {
+        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+    }
+
 }
 
 pub fn vertex_attrib_1f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32) {
@@ -694,7 +698,7 @@ pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<Att
 
     let index = loc.into().index;
 
-    if kind == DataType::F32 {
+    if kind == DataType::F32 { // sure hope this won't bite me in the foot later...
 
         unsafe { gl::VertexAttribPointer(
             index,
@@ -1027,10 +1031,12 @@ pub fn active_texture(location: usize, texture: &Texture) {
 pub enum DataType {
     #[default]
     F32 = gl::FLOAT,
-    I8 = gl::BYTE,
-    U8 = gl::UNSIGNED_BYTE,
-    I32 = gl::INT,
     U32 = gl::UNSIGNED_INT,
+    I32 = gl::INT,
+    U16 = gl::UNSIGNED_SHORT,
+    I16 = gl::SHORT,
+    U8 = gl::UNSIGNED_BYTE,
+    I8 = gl::BYTE,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1145,6 +1151,10 @@ pub fn depth_mask(enabled: bool) {
 
 pub fn resize_viewport(size: Size) {
     unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
+}
+
+pub fn point_size(diameter: f32) {
+    unsafe { gl::PointSize(diameter); }
 }
 
 /// `count` is the number of vertices (not primitives).

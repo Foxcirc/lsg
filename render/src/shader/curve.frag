@@ -1,40 +1,24 @@
-
 #version 320 es
 precision mediump float;
 
-in vec2 curvePos;
-in vec3 texture;
+in vec2 curvePosition;
+in vec3 textureCoords;
 in vec3 barycentric;
+in flat uint fillKind;
 
-out vec4 Color;
+out vec4 color;
 
 void main() {
 
-    float curveX = curvePos.x;
-    float curveY = curvePos.y;
+    float value = curvePosition.y - pow(curvePosition.x, 2.0) * sign(curvePosition.x);
 
-    // calculate if this shape is even a curve-triangle
-    bool isCurve = curveX != 2.0;
+    // switch (fillKind) {
+    //     case 0u: value = 1.0; break;
+    //     case 1u: value =   curvePosition.y - pow(curvePosition.x, 2.0);  break;
+    //     case 2u: value = -(curvePosition.y - pow(curvePosition.x, 2.0)); break;
+    // }
 
-    // extract convexity information out of the curvePos
-    // and convert curvePos into range 0..1
-
-    bool convex;
-    if (curveX > 0.5) {
-        curveX = (curveX - 0.5) * 2.0;
-        curveY = (curveY - 0.5) * 2.0;
-        convex = true;
-    } else {
-        curveX = curveX * 2.0;
-        curveY = curveY * 2.0;
-        convex = false;
-    }
-
-    // decide if we are inside the curve
-    float value = curveY - pow(curveX, 2.0);
-    if (!convex) { // invert what we are filling for concave curves
-        value = -value;
-    }
+    bool isCurve = fillKind != 0u;
 
     float multiplier;
     if (isCurve) {
@@ -56,7 +40,7 @@ void main() {
         multiplier = clamp(dist, 0.0, 1.0);
     }
 
-    float alpha = 1.0; // TODO: add alpha channel to texture
-    Color = vec4(texture.rgb, alpha * multiplier);
+    float alpha = 1.0;
+    color = vec4(textureCoords.rgb, alpha * multiplier);
 
 }

@@ -134,7 +134,6 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
             instances.push(Instance {
                 pos: Point::new(item_idx as f32 * 30.0, 10.0),
-                texture: [0.7; 3],
                 target: [0, shape_idx],
             });
 
@@ -154,7 +153,6 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     instances.push(Instance {
         pos: Point::new(0.0, 0.0),
-        texture: [0.8, 0.1, 0.3],
         target: [0, 0],
     });
 

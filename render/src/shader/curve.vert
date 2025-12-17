@@ -1,58 +1,69 @@
-
 #version 320 es
 precision mediump float;
 
-layout (location = 0) in vec3 posIn;
-layout (location = 1) in vec2 curvePosIn;
-layout (location = 2) in vec3 textureIn;
-layout (location = 3) in uint flagsIn; // TODO: document
+// For the description of the vertex layout see comments in the gl-renderer.
+layout (location = 0) in uint inFlags;
+layout (location = 1) in uint inXYZ;
+layout (location = 2) in uint inUVL;
 
-layout (location = 4) in vec3 iPosIn;
-layout (location = 5) in vec3 iTextureIn;
-
-out vec2 curvePos;
-out vec3 texture;
+out vec2 curvePosition;
+out vec3 textureCoords;
 out vec3 barycentric;
+out flat uint fillKind;
+
+const vec2 curvePositionTable[9] = vec2[](
+    vec2(1.0, 0.0), vec2(1.0, 0.0),  vec2(1.0, 0.0),  // FILLED
+    vec2(0.0, 0.0), vec2(0.5, 0.0), vec2(1.0, 1.0),   // CONVEX
+    vec2(0.0, 0.0), vec2(-0.5, 0.0), vec2(-1.0, -1.0) // CONCAVE
+);
+
+vec2 lookupCurvePosition(uint row, uint col) {
+    return curvePositionTable[row * 3u + col];
+}
 
 void main() {
 
-    if (iPosIn == vec3(-1.0) && iTextureIn == vec3(-1.0)) { // this is not instanced
+    // Unpack our inputs.
 
-        curvePos = curvePosIn; // we only need the interpolation
-        texture = textureIn; // TODO: select the layer here and pass it along as a 2d texture
-        gl_Position = vec4(posIn.x, posIn.y, posIn.z, 1.0); // positioning is already done
+    uint outerEdges  = (inFlags >> 0u) & 7u; // 3 bit
+    uint vertexIndex = (inFlags >> 3u) & 3u; // 2 bit
+    uint instanced   = (inFlags >> 5u) & 1u; // 1 bit
+    uint inFillKind  = (inFlags >> 6u) & 3u; // 2 bit
 
-    } else { // this is instanced
+    fillKind = inFillKind;
 
-        curvePos = curvePosIn; // this is always present
-        texture = iTextureIn; // TODO: we need to interpolate the texture along the polygon here for instanced shapes
-        gl_Position = vec4(posIn.x + iPosIn.x, posIn.y + iPosIn.y, iPosIn.z, 1.0); // add the relevant offset
+    uvec3 uintXYZ = uvec3(
+        (inXYZ >> 20u) & 4095u, // X, 12 bit
+        (inXYZ >> 8u)  & 4095u, // Y, 12 bit
+        (inXYZ >> 0u)  & 255u   // Z, 8  bit
+    );
 
-    }
+    // Convert coordinates to NDC form.
 
-    bool edgeABisOuter = ((flagsIn >> 0) & 1u) == 1u;
-    bool edgeBCisOuter = ((flagsIn >> 1) & 1u) == 1u;
-    bool edgeACisOuter = ((flagsIn >> 2) & 1u) == 1u;
+    vec3 xyz = vec3(
+        float(int(uintXYZ.x) - 2048) / 2048.0,
+        float(int(uintXYZ.y) - 2048) / -2048.0, // INVERTED!
+        float(uintXYZ.z) / 255.0
+    );
+
+    curvePosition = lookupCurvePosition(fillKind, vertexIndex);
+    textureCoords = vec3(1.0);
+    gl_Position = vec4(xyz.x, xyz.y, 0.0, 1.0);
+
+    bool edgeABisOuter = ((outerEdges >> 2) & 1u) == 1u;
+    bool edgeBCisOuter = ((outerEdges >> 1) & 1u) == 1u;
+    bool edgeCAisOuter = ((outerEdges >> 0) & 1u) == 1u;
 
     barycentric = vec3(0.0, 0.0, 0.0);
 
-    // the barycentrics are used inside the fragment shader
-    // to do antialiasing for filled triangles
-    if (curvePosIn.x == 2.0) { // first vertex of the triangle
-        barycentric.x = 1.0;
-        if (!edgeABisOuter) barycentric.z = 0.5;
-        if (!edgeACisOuter) barycentric.y = 0.5;
-        curvePos = vec2(2.0);
-    } else if (curvePosIn.x == 3.0) { // second vertex of the triangle
-        barycentric.y = 1.0;
-        if (!edgeABisOuter) barycentric.z = 0.5;
-        if (!edgeBCisOuter) barycentric.x = 0.5;
-        curvePos = vec2(2.0);
-    } else if (curvePosIn.x == 4.0) { // third vertex of the triangle
-        barycentric.z = 1.0;
-        if (!edgeBCisOuter) barycentric.x = 0.5;
-        if (!edgeACisOuter) barycentric.y = 0.5;
-        curvePos = vec2(2.0);
-    };
+    if (!edgeABisOuter) barycentric.z = 0.5;
+    if (!edgeBCisOuter) barycentric.x = 0.5;
+    if (!edgeCAisOuter) barycentric.y = 0.5;
+
+    switch (vertexIndex) {
+        case 0u: barycentric.x = 1.0; break;
+        case 1u: barycentric.y = 1.0; break;
+        case 2u: barycentric.z = 1.0; break;
+    }
 
 }
