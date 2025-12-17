@@ -6,7 +6,6 @@ authors.workspace = true
 
 [dependencies]
 common = { path = "../common" }
-tracing = "0.1.40"
 # egl libraries
 wayland-egl = "0.32.0" # TODO: make optional, only needed on linux (wayland)
 egl = { package = "khronos-egl", version = "6.0.0", features = ["dynamic"] } # TODO: static vs dynamic?

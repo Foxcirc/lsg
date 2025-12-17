@@ -229,8 +229,6 @@ impl<T: 'static + Send> Connection<T> {
             self.state.con.get_ref().flush()?;
 
             let guard = {
-                let _span = tracing::span!(tracing::Level::TRACE, "lsg::wayland").entered();
-
                 // process all events that we've stored
                 loop {
                     self.queue.dispatch_pending(&mut self.state)?;
@@ -348,22 +346,6 @@ impl WaylandGlobals {
         };
 
         // TODO: what happens if cursor shape feature is not present?
-
-        let _span = tracing::trace_span!("lsg::globals").entered();
-
-        tracing::trace!(
-            "wayland globals arquired, additional features:
-                - fractional scaling: {},
-                - server side decorations: {},
-                - layer shell: {},
-                - surface activations: {},
-                - predefined cursor shapes: {}",
-            this.frac_scale_mgrs.is_some(),
-            this.decoration_mgr.is_some(),
-            this.layer_shell_mgr.is_some(),
-            this.activation_mgr.is_some(),
-            this.cursor_shape_mgr.is_some()
-        );
 
         Ok(this)
 
@@ -2067,8 +2049,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                     xkb_state, compose_state, pressed_keys
                 });
 
-                tracing::trace!("keymap set, locale: {:?}", &locale);
-
             },
 
             WlKeyboardEvent::Enter { surface, keys, .. } => {
@@ -2139,8 +2119,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
             },
 
             WlKeyboardEvent::RepeatInfo { rate, delay } => {
-
-                tracing::trace!("key repeat info, rate: {}, delay: {}", rate, delay);
 
                 if rate > 0 {
                     evl.keyboard_data.repeat_rate = Duration::from_millis(1000 / rate as u64);

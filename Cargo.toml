@@ -25,5 +25,3 @@ widget  = { path = "widget"  }
 [dev-dependencies]
 async-executor = "1.8.0"
 futures-lite = "2.2.0"
-tracing = "0.1.41"
-tracing-subscriber = "0.3.19"

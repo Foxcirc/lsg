@@ -2,7 +2,6 @@
 //! Interactive test to try out features that are currently being worked on.
 
 use futures_lite::future::block_on;
-use tracing::debug;
 
 use desktop::*;
 use common::*;
@@ -14,14 +13,6 @@ fn interactive() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
-
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_ansi(true)
-        .with_max_level(tracing::Level::DEBUG)
-        .with_test_writer()
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber).unwrap();
 
     let mut window = Window::new(&mut evl, Size::new(500, 500));
 
@@ -170,7 +161,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
             match event {
 
                 Event::Resume => {
-                    debug!("resuming");
+                    println!("resuming");
                 },
 
                 Event::Window { event, .. } => match event {
@@ -196,7 +187,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                         let result = renderer.draw(&drawable, &surface);
                         // std::mem::swap(&mut cloned, &mut geometry.points);
                         if let Err(err) = result {
-                            tracing::error!("draw failed: {err:?}");
+                            println!("draw failed: {err:?}");
                         }
                         // window.redraw_with_vsync(&mut evl);
                         // evl.push_redraw_test(&window);
@@ -244,7 +235,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                             shape.target.end += 1;
                         }
 
-                        debug!("add point {:?}", geometry.points.last().unwrap());
+                        println!("add point {:?}", geometry.points.last().unwrap());
 
                         dbg!(&geometry.shapes, &geometry.points);
 
@@ -263,7 +254,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                             shape.target.end += 1;
                         }
 
-                        debug!("add control point {:?}", geometry.points.last().unwrap());
+                        println!("add control point {:?}", geometry.points.last().unwrap());
 
                         window.redraw_with_vsync(&mut evl);
 
@@ -303,20 +294,20 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                     // },
 
                     WindowEvent::Close => {
-                        debug!("quitting...");
+                        println!("quitting...");
                         evl.quit();
                     },
 
-                    other => tracing::trace!("unhandeled window event '{:?}'", other),
+                    other => println!("unhandeled window event '{:?}'", other),
 
                 },
 
                 Event::Quit { reason } => {
-                    debug!("quitting: {:?}", reason);
+                    println!("quitting: {:?}", reason);
                     break
                 },
 
-                other => debug!("unhandeled event '{:?}'", other),
+                other => println!("unhandeled event '{:?}'", other),
 
             }
 

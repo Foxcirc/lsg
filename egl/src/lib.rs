@@ -98,12 +98,6 @@ impl Instance {
         let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
             unsafe { mem::transmute(func) };
 
-        let _span = tracing::span!(tracing::Level::TRACE, "EglNewInstance").entered();
-        tracing::trace!(
-            "swap_buffers_with_damage extension present: {}",
-            swap_buffers_with_damage.is_some()
-        );
-
         Ok(Self {
             lib,
             swap_buffers_with_damage,

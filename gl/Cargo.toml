@@ -7,4 +7,3 @@ authors.workspace = true
 [dependencies]
 common = { path = "../common" }
 gl = "0.14.0"
-tracing = "0.1.40"

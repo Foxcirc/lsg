@@ -13,9 +13,6 @@ signals = ["async-signals"]
 common = { path = "../common" }
 egl = { path = "../egl" } # TODO: make an internal feature that enables this integration only for lsg, so this dependency isn't forced on users
 
-# tracing
-tracing = "0.1.40"
-
 # wayland deps
 wayland-client = "0.31.2"
 wayland-protocols = { version = "0.31.2", features = ["client", "staging", "unstable"] }
@@ -34,9 +31,5 @@ async-channel = "2.3.1"
 async-signals = { version = "0.4.0", optional = true }
 
 [dev-dependencies]
-
-# tracing
-tracing-subscriber = { version = "0.3.18", default-features = false, features = ["fmt", "ansi"] }
-
 gl = { path = "../gl" } # TODO: remove?
 render = { path = "../render" }

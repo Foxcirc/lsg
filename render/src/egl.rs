@@ -97,7 +97,7 @@ impl GlRenderer {
         // bind for initialization
         ctx.bind(&instance, None)?;
 
-        gl::debug_message_callback(gl::debug_message_tracing_handler);
+        gl::debug_message_callback(gl::debug_message_default_handler);
         gl::debug_message_control(Some(gl::DebugSeverity::Notification), None, None, true);
 
         let shape = ShapeRenderer::new()?;

@@ -9,6 +9,5 @@ authors.workspace = true
 common = { path = "../common" }
 egl = { path = "../egl" }
 gl = { path = "../gl" }
-tracing = "0.1.40" # TODO: use tracing.workspace = true
 # bitvecs
 bv = "0.11.1"

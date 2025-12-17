@@ -19,10 +19,8 @@
 /// 2. use [`load_with`] to load all functions that are present
 ///
 /// # Debug messages
-/// If you are using `tracing` the easiest way to receive debug messages is
-/// `gl::debug_message_callback(gl::debug_message_tracing_handler)` Otherwise,
-/// you can write your own handler. Note that debug messages are only supported
-/// in gl version 4.0 and onwards.
+/// The easiest way to receive debug messages is `gl::debug_message_callback(gl::debug_message_default_handler)`
+/// Note that debug messages are only supported in gl version 4.0 and onwards.
 ///
 /// # Sharing objects
 /// Most structs simply contain an `id: u32`. However because the resource is
@@ -133,20 +131,8 @@ pub fn debug_message_insert(severity: DebugSeverity, source: DebugSource, id: u3
 
 }
 
-pub fn debug_message_tracing_handler(source: DebugSource, _kind: DebugType, severity: DebugSeverity, _id: u32, msg: &str) {
-
-    use DebugSeverity::*;
-
-    let message = format!("from {:?}: {}", source, msg.trim_end_matches("\n"));
-
-    if severity == Notification || severity == Low {
-        tracing::debug!("{}", message);
-    } else if severity == Medium {
-        tracing::warn!("{}", message);
-    } else {
-        tracing::error!("{}", message);
-    }
-
+pub fn debug_message_default_handler(source: DebugSource, _kind: DebugType, severity: DebugSeverity, _id: u32, msg: &str) {
+    println!("OpenGL ({:?}, {:?}): {}", severity, source, msg.trim_end_matches("\n"));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
