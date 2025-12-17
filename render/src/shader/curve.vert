@@ -12,7 +12,7 @@ out vec3 barycentric;
 out flat uint fillKind;
 
 const vec2 curvePositionTable[9] = vec2[](
-    vec2(1.0, 0.0), vec2(1.0, 0.0),  vec2(1.0, 0.0),  // FILLED
+    vec2(0.0, 1.0), vec2(0.0, 1.0),  vec2(0.0, 1.0),  // FILLED
     vec2(0.0, 0.0), vec2(0.5, 0.0), vec2(1.0, 1.0),   // CONVEX
     vec2(0.0, 0.0), vec2(-0.5, 0.0), vec2(-1.0, -1.0) // CONCAVE
 );

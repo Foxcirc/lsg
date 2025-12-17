@@ -11,32 +11,19 @@ out vec4 color;
 void main() {
 
     float value = curvePosition.y - pow(curvePosition.x, 2.0) * sign(curvePosition.x);
-
-    // switch (fillKind) {
-    //     case 0u: value = 1.0; break;
-    //     case 1u: value =   curvePosition.y - pow(curvePosition.x, 2.0);  break;
-    //     case 2u: value = -(curvePosition.y - pow(curvePosition.x, 2.0)); break;
-    // }
-
-    bool isCurve = fillKind != 0u;
-
     float multiplier;
-    if (isCurve) {
-        if (value < 0.0) {
-            multiplier = 0.0;
-        } else {
 
-            float width = fwidth(value);
-            float coverage = smoothstep(0.0, width, value);
+    if (value < 0.0) {
 
-            multiplier = coverage;
+        // This is where the curve cutout happens.
+        multiplier = 0.0;
 
-        }
     } else {
+
+        //  Anti-Aliasing of normal triangles.
         vec3 d = fwidth(barycentric);
         vec3 edgeDist = barycentric / d;
         float dist = min(min(edgeDist.x, edgeDist.y), edgeDist.z);
-        // multiplier = smoothstep(0.0, width, edgeDistance);
         multiplier = clamp(dist, 0.0, 1.0);
     }
 
