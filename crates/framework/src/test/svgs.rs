@@ -33,7 +33,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut parsed_svgs: Vec<(String, Vec<Vec<CurvePoint>>)> = Vec::new();
 
-    let topdirs = fs::read_dir("resources/RemixIcons").unwrap();
+    let topdirs = fs::read_dir("assets/RemixIcons").unwrap();
     for topdir in topdirs {
         let topdir = topdir.unwrap(); // this is a category directory
         let subdir = fs::read_dir(topdir.path()).unwrap();
