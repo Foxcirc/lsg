@@ -121,7 +121,7 @@ impl GlRenderer {
         gl::resize_viewport(size);
 
         gl::clear(&gl::FrameBuffer::default(), 0.0, 0.0, 0.0, 1.0);
-        // gl::clear(&surface.fbo, 0.0, 0.0, 0.0, 0.8); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
+        gl::clear(&surface.fbo, 0.0, 0.0, 0.0, 0.8); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
 
         self.shape.draw(geometry, &gl::FrameBuffer::default(), size); // draw the new geometry ontop of the old one
         // self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass

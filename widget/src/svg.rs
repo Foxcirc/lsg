@@ -3,7 +3,7 @@ use std::{f64::consts::PI, iter::once, mem};
 
 use common::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum PathCommand {
     Move(Point),
     Line(Point),
@@ -14,39 +14,149 @@ pub enum PathCommand {
     Return,
 }
 
+pub struct Svg {
+    path: Vec<PathCommand>,
+}
+
 pub mod parser {
 
     use super::PathCommand;
 
     use common::*;
     use nom::{
-        IResult, Parser,
-        branch::alt,
-        bytes::complete::tag,
-        character::complete::{char, space0, digit1},
-        combinator::{map, map_res, opt, recognize, success},
-        multi::many0,
-        sequence::preceded,
+        IResult, Parser, branch::alt, bytes::complete::take_until, character::complete::{alpha1, alphanumeric0, alphanumeric1, char, digit1, multispace0, multispace1, space0, space1}, combinator::{all_consuming, map, map_res, opt, recognize, success}, multi::{fold_many0, fold_many1, many0, many1, separated_list0}, sequence::{delimited, pair, preceded, separated_pair, terminated}
     };
 
-    pub fn path(text: &str) -> IResult<&str, Vec<PathCommand>> {
-        many0(command).parse(text)
+    #[derive(Debug)]
+    pub struct Svg {
+        pub path: Vec<PathCommand>,
     }
 
-    fn command(text: &str) -> IResult<&str, PathCommand> {
+    #[derive(Debug, Default)]
+    pub(crate) struct XmlTag<'a> {
+        header: XmlHeader<'a>,
+        content: Vec<XmlTag<'a>>,
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct XmlAttribute<'a> {
+        name: &'a str,
+        value: &'a str
+    }
+
+    #[derive(Debug, Default)]
+    pub(crate) struct XmlHeader<'a> {
+        name: &'a str,
+        short: bool,
+        attributes: Vec<XmlAttribute<'a>>,
+    }
+
+    pub fn svg_file(text: &str) -> IResult<&str, Svg> {
+
+        // parse all the toplevel svg tags
+        let (text, tags) = delimited(multispace0, separated_list0(multispace0, xml_tag), multispace0).parse(text)?;
+
+        // extract the path (for now)
+        let raw_path = tags[0].content[0].header.attributes[0].value;
+        let (_, parsed_path) = svg_path(raw_path)?;
+
+        Ok((text, Svg {
+            path: parsed_path
+        }))
+
+    }
+
+    pub fn xml_tag(text: &str) -> IResult<&str, XmlTag> {
+
+        let (text, header) = xml_header(text)?;
+
+        if header.short {
+            // there is no content and footer
+           return Ok((text, XmlTag { header, ..Default::default() }))
+        } else {
+            // we expect content and a footer
+            let (text, content) = delimited(multispace0, separated_list0(multispace0, xml_tag), multispace0).parse(text)?;
+            let (text, _) = xml_footer(text)?;
+            return Ok((text, XmlTag { header, content }))
+        }
+
+    }
+
+    pub fn xml_header(text: &str) -> IResult<&str, XmlHeader> {
+        map((
+            char('<'),
+            pair(
+                alpha1,
+                delimited(multispace0, separated_list0(multispace0, xml_attribute), multispace0)
+            ),
+            pair(
+                map(opt(char('/')), |it| it.is_some()),
+                char('>')
+            )
+        ),
+            |(_, (name, attributes), (closed, _))| {
+                XmlHeader { name, attributes, short: closed }
+            }
+        ).parse(text)
+    }
+
+    fn xml_footer(text: &str) -> IResult<&str, ()> {
+        delimited(
+            char('<'),
+            preceded(char('/'), map(alpha1, |_| ())),
+            char('>')
+        ).parse(text)
+    }
+
+    fn xml_attribute(text: &str) -> IResult<&str, XmlAttribute> {
+        map(
+            separated_pair(alpha1, char('='), simple_string),
+            |(name, value)| XmlAttribute { name, value }
+        ).parse(text)
+    }
+
+    fn simple_string(text: &str) -> IResult<&str, &str> {
+        delimited(char('"'), take_until("\""), char('"')).parse(text)
+    }
+
+    pub fn svg_path(text: &str) -> IResult<&str, Vec<PathCommand>> {
+        fold_many0(commands, Vec::new, |mut acc, it| {
+            acc.extend(it);
+            acc
+        }).parse(text)
+    }
+
+    /// This is a command + possible continuations.
+    fn commands(text: &str) -> IResult<&str, Vec<PathCommand>> {
         preceded(
             space0,
             alt((
-                preceded(tag("M"), map(point, |p1| PathCommand::Move(p1))),
-                preceded(tag("H"), map(coord, |v1| PathCommand::Horizontal(v1))),
-                preceded(tag("V"), map(coord, |v1| PathCommand::Vertical(v1))),
-                preceded(tag("L"), map(point, |p1| PathCommand::Line(p1))),
-                preceded(tag("Q"), map((point, point), |(p1, p2)| PathCommand::Quadratic(p1, p2))),
-                preceded(tag("C"), map((point, point, point), |(p1, p2, p3)| PathCommand::Cubic(p1, p2, p3))),
-                preceded(tag("Z"), map(success(()), |()| PathCommand::Return)),
+
+                preceded(char('M'), fold_many1(point, Vec::new, |mut acc, it| {
+                    match acc.len() == 0 {
+                        true  => acc.push(PathCommand::Move(it)),
+                        false => acc.push(PathCommand::Line(it))
+                    }
+                    acc
+                })),
+
+                preceded(char('H'), many1(map( coord,                |v1|           PathCommand::Horizontal(v1)))),
+                preceded(char('V'), many1(map( coord,                |v1|           PathCommand::Vertical(v1)))),
+                preceded(char('L'), many1(map( point,                |p1|           PathCommand::Line(p1)))),
+                preceded(char('Q'), many1(map((point, point),        |(p1, p2)|     PathCommand::Quadratic(p1, p2)))),
+                preceded(char('C'), many1(map((point, point, point), |(p1, p2, p3)| PathCommand::Cubic(p1, p2, p3)))),
+                //                  ^^^^ after a letter, we can have many repeating points (continuations)
+                //                       svg calls this shit a feature...
+
+                preceded(char('Z'), map(success(()), |()| vec![PathCommand::Return])),
+
             ))
         ).parse(text)
     }
+
+    // fn continuation(text: &str) -> IResult<&str, &str> {
+    //     recognize(many0(map(coord, |_| ()))).parse(text)
+    // }
 
     fn point(text: &str) -> IResult<&str, Point> {
         map((
@@ -94,7 +204,7 @@ impl Section {
     }
 }
 
-pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Vec<Vec<CurvePoint>> {
+pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Result<Vec<Vec<CurvePoint>>, ()> {
 
     // Step 1:
     // Convert commands to list of points and split the path into sub-sections that need to be
@@ -297,7 +407,7 @@ pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Vec<Vec<CurvePoint>>
                         &outer.points, &inner.points,
                         // Check only sections of the current group.
                         &sections, inner.group
-                    ).expect("no valid connection spot"); // TODO: for production, make all of this not panic on invalid input but soft-error
+                    ).ok_or(())?;
 
                     spots.push(IndexedConnectionSpot {
                         idx,
@@ -343,7 +453,7 @@ pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Vec<Vec<CurvePoint>>
 
     }
 
-    shapes
+    Ok(shapes)
 
 }
 
@@ -502,8 +612,8 @@ fn test_path_to_shape() {
     // remix icons: arrow up
     const TEST: &str = "M12 2C17.52 2 22 6.48 22 12C22 17.52 17.52 22 12 22C6.48 22 2 17.52 2 12C2 6.48 6.48 2 12 2ZM13 12H16L12 8L8 12H11V16H13V12Z";
 
-    let (_, points) = parser::path(TEST).expect("valid svg path");
-    let mut shapes = path_to_shape(points, 416.666);
+    let (_, points) = parser::svg_path(TEST).expect("valid svg path");
+    let mut shapes = path_to_shape(points, 416.666).unwrap();
 
     assert_eq!(shapes.len(), 1, "should be a single shape");
     let mut shape = shapes.pop().unwrap();
@@ -515,5 +625,20 @@ fn test_path_to_shape() {
     assert_eq!(&shape,
         &[CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(64, 20, PointKind::Base), CurvePoint::new(20, 64, PointKind::Base), CurvePoint::new(20, 120, PointKind::Base), CurvePoint::new(20, 175, PointKind::Base), CurvePoint::new(64, 220, PointKind::Base), CurvePoint::new(120, 220, PointKind::Base), CurvePoint::new(175, 220, PointKind::Base), CurvePoint::new(220, 175, PointKind::Base), CurvePoint::new(220, 120, PointKind::Base), CurvePoint::new(220, 64, PointKind::Base), CurvePoint::new(175, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(120, 20, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 120, PointKind::Base), CurvePoint::new(130, 160, PointKind::Base), CurvePoint::new(110, 160, PointKind::Base), CurvePoint::new(110, 120, PointKind::Base), CurvePoint::new(80, 120, PointKind::Base), CurvePoint::new(120, 80, PointKind::Base), CurvePoint::new(160, 120, PointKind::Base)]
     );
+
+}
+
+#[test]
+fn svg_xml_parsing() {
+
+    use nom::Finish;
+
+    const TEST: &str = r#"<svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M4 3C3.44772 3 3 3.44772 3 4V20C3 20.5523 3.44772 21 4 21H20C20.5523 21 21 20.5523 21 20V4C21 3.44772 20.5523 3 20 3H4ZM11.9996 17.656L6.0498 11.7062H10.9996V6.34229H12.9996V11.7062H17.9493L11.9996 17.656Z"/></svg>"#;
+
+    let (_, svg) = parser::svg_file(TEST).finish().unwrap();
+
+    let result2 = path_to_shape(svg.path, 416.66);
+
+    println!("{:?}", result2);
 
 }

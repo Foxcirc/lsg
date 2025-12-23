@@ -24,7 +24,8 @@ void main() {
         vec3 d = fwidth(barycentric);
         vec3 edgeDist = barycentric / d;
         float dist = min(min(edgeDist.x, edgeDist.y), edgeDist.z);
-        multiplier = clamp(dist, 0.0, 1.0);
+        // multiplier = clamp(dist, 0.0, 1.0);
+        multiplier = 1.0;
     }
 
     float alpha = 1.0;

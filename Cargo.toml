@@ -10,12 +10,6 @@ package.version = "0.1.0"
 package.edition = "2024"
 package.authors = ["foxcirc"]
 
-# [[test]]
-# name = "app"
-# path = "src/test/app.rs"
-# harness = false
-# edition = "2021" # the default seems to be 2015
-
 [dependencies]
 common  = { path = "common"  }
 desktop = { path = "desktop" }

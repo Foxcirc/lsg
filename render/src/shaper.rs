@@ -223,7 +223,8 @@ impl LoweringPass {
                       section[1].kind() == PointKind::Ctrl &&
                       section[2].kind() == PointKind::Ctrl {
 
-                todo!("error: three contol points in a row");
+                // todo!("error: three contol points in a row");
+                return Err(())
 
 
             // 4: "normal line" case
