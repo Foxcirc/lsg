@@ -1,0 +1,37 @@
+[package]
+name = "desktop"
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+
+[features]
+default = ["signals"]
+signals = ["async-signals"]
+
+[dependencies]
+
+common = { path = "../common" }
+egl = { path = "../egl" } # TODO: make an internal feature that enables this integration only for lsg, so this dependency isn't forced on users
+
+# wayland deps
+wayland-client = "0.31.2"
+wayland-protocols = { version = "0.31.2", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.2.0", features = ["client", "wayland-client"] }
+xkbcommon = { version = "0.7.0", features = ["wayland"]}
+
+# other
+nix = { version = "0.28.0", features = ["signal", "fs", "user"] }
+bitflags = { version = "2.5.0", features = ["std"] }
+bv = "0.11.1" # bitvecs
+
+# async/futures deps
+futures-lite = "2.3.0"
+async-io = "2.3.2"
+async-channel = "2.3.1"
+async-signals = { version = "0.4.0", optional = true }
+
+[dev-dependencies]
+gl = { path = "../gl" } # TODO: remove?
+render = { path = "../render" }

@@ -1,0 +1,10 @@
+[package]
+name = "widget"
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+nom = "8.0.0"
