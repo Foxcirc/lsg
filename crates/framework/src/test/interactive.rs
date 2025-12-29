@@ -9,14 +9,14 @@ use render::{DrawableGeometry, shaper};
 
 #[test]
 fn interactive() -> Result<(), Box<dyn std::error::Error>> {
-    EventLoop::run(app, "interactive test")?
+    EventLoop::run(app, EventLoopConfig { appid: file!().into() })?
 }
 
 fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut window = Window::new(&mut evl, Size::new(500, 500));
 
-    window.set_title(evl.app_name());
+    window.set_title(&evl.config().appid);
     window.set_transparency(true);
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();

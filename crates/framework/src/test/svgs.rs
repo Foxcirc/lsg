@@ -9,14 +9,14 @@ use render::{DrawableGeometry, shaper};
 
 #[test]
 fn svgs() -> Result<(), Box<dyn std::error::Error>> {
-    EventLoop::run(app, "svg test")?
+    EventLoop::run(app, EventLoopConfig { appid: file!().into() })?
 }
 
 fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut window = Window::new(&mut evl, Size::new(1000, 1000));
 
-    window.set_title(evl.app_name());
+    window.set_title(&evl.config().appid);
     window.set_transparency(true);
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();

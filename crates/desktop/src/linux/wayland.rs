@@ -48,13 +48,26 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 use xkbcommon::xkb;
 
 use nix::{
-    fcntl::{self, OFlag}, unistd::pipe2
+    fcntl::{self, OFlag},
+    unistd::pipe2
 };
 
 use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
-use std::{collections::{HashMap, HashSet}, env, error::Error as StdError, ffi::c_void as void, fmt, fs, io::{self, Write}, ops, os::fd::{AsFd, AsRawFd, FromRawFd}, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    error::Error as TError,
+    ffi::c_void as void,
+    fmt,
+    fs,
+    io::{self, Write},
+    ops,
+    os::fd::{AsFd, AsRawFd, FromRawFd},
+    sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant}
+};
 
 use common::*;
 use crate::*;
@@ -72,8 +85,8 @@ pub(crate) struct WaylandState<T: 'static + Send = ()> {
     keyboard_data: KeyboardData,
     offer_data: OfferData, // drag-and-drop / selection data
     cursor_data: CursorData,
-    monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs, vec is efficient here
-    last_serial: u32,
+    monitor_list: HashSet<MonitorId>, // used to see which interface names belong to wl_outputs
+    last_serial: u32, // used to sign some events
 }
 
 #[derive(Default)]
@@ -89,7 +102,14 @@ struct OfferData {
     current_offer: Option<WlDataOffer>,
     x: f64, y: f64,
     dnd_active: bool,
-    dnd_icon: Option<CustomIcon>, // set when Window::start_drag_and_drop is called
+    dnd_icon: Option<CustomIcon>, // set when a drag-and-drop is started
+}
+
+#[derive(Default)]
+struct MouseData {
+    has_focus: Option<WlSurface>,
+    x: u16,
+    y: u16
 }
 
 struct KeyboardData {
@@ -124,18 +144,12 @@ struct KeymapSpecificData {
     pressed_keys: PressedKeys,
 }
 
-#[derive(Default)]
-struct MouseData {
-    has_focus: Option<WlSurface>,
-    x: u16,
-    y: u16
-}
-
 // ### pressed keys ###
 
 struct PressedKeys {
     min: u32,
     keys: bv::BitVec,
+    pressed: Vec<xkb::Keycode>, // auxillary buffer
 }
 
 impl PressedKeys {
@@ -149,6 +163,7 @@ impl PressedKeys {
         Self {
             min: min.raw(),
             keys,
+            pressed: Vec::with_capacity(4),
         }
     }
 
@@ -158,18 +173,19 @@ impl PressedKeys {
         self.keys.set(idx as u64, pressed);
     }
 
-    pub fn currently_pressed(&self) -> Vec<xkb::Keycode> {
+    pub fn currently_pressed(&self, out: &mut [xkb::Keycode]) -> usize {
 
-        let mut down = Vec::new(); // we can't return anything that borrows self right now, TODO: still somehow update this, maybe use a generator
+        let mut written = 0;
 
         for idx in 0..self.keys.len() {
             if self.keys.get(idx) == true {
                 let keycode = xkb::Keycode::from(self.min + idx as u32);
-                down.push(keycode)
+                out[written] = keycode;
+                written += 1;
             }
         }
 
-        down
+        written
 
     }
 
@@ -493,7 +509,9 @@ impl<T: 'static + Send> BaseWindow<T> {
         } else if !guard.already_got_redraw_event {
             // force-redraw, since we are apperently drawing slower then the monitor refresh rate
             guard.already_got_redraw_event = true; // will be reset next frame by `pre_present_notify`.
-            evl.events.push(Event::Window { id: self.id, event: WindowEvent::Redraw });
+            evl.proxy.sender
+                .try_send(Event::Window { id: self.id, event: WindowEvent::Redraw })
+                .unwrap();
         }
     }
 
@@ -2057,9 +2075,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
 
                 evl.keyboard_data.has_focus = Some(surface);
 
-                // emit the enter event
-                evl.events.push(Event::Window { id, event: WindowEvent::Enter });
-
                 let iter = keys.chunks_exact(4)
                     .flat_map(|chunk| chunk.try_into())
                     .map(|bytes| u32::from_ne_bytes(bytes));
@@ -2069,19 +2084,29 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                     process_key_event(evl, raw_key, Direction::Down, Source::Event);
                 }
 
+                // emit the enter event (so it is received BEFORE the key events)
+                evl.events.push(Event::Window { id, event: WindowEvent::Enter });
+
             },
 
             WlKeyboardEvent::Leave { .. } => {
 
-                if let Some(ref keymap_specific) = evl.keyboard_data.keymap_specific {
+                if let Some(ref mut keymap_specific) = evl.keyboard_data.keymap_specific {
 
                     let surface = evl.keyboard_data.has_focus.as_ref().unwrap();
                     let id = get_window_id(&surface);
 
+                    // emit the leave event (so it is received AFTER the key events)
                     evl.events.push(Event::Window { id, event: WindowEvent::Leave });
 
+                    // We get these keys in a kind of weird way to avoid memory
+                    // allocationn and ownership problems.
+                    let mut buf = [xkb::Keycode::default(); 10];
+                    let count = keymap_specific.pressed_keys.currently_pressed(&mut buf);
+                    let pressed = &buf[..count];
+
                     // emit a synthetic key-up event for all keys that are still pressed
-                    for key in keymap_specific.pressed_keys.currently_pressed() {
+                    for key in pressed {
                         process_key_event(evl, key.raw(), Direction::Up, Source::Event);
                     }
 
@@ -2149,7 +2174,6 @@ enum Source {
     KeyRepeat,
 }
 
-// TODO: make this function not take a &mut WaylandState, but more like &mut KeyState
 fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32, dir: Direction, source: Source) {
 
     // NOTE: uses evl.keyboard_data and evl.events
@@ -2201,7 +2225,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32,
                 }
                 evl.events.push(Event::Window { id, event: WindowEvent::TextComposeCancel });
             },
-            }
+        }
 
         // implement key repeat
         // only re-arm if this was NOT called from a repeated key event
@@ -2400,7 +2424,7 @@ fn process_new_cursor_style<T: 'static + Send>(evl: &mut WaylandState<T>, id: Wi
                 }
             }
         }
-        // mat
+
     }
 
 }
@@ -2427,7 +2451,7 @@ impl fmt::Display for EvlError {
     }
 }
 
-impl StdError for EvlError {}
+impl TError for EvlError {}
 
 impl<'a> From<&'a str> for EvlError {
     fn from(value: &'a str) -> Self {
