@@ -91,7 +91,6 @@ pub(crate) struct WaylandState<T: 'static + Send = ()> {
 
 #[derive(Default)]
 struct CursorData {
-    styles: HashMap<WindowId, CursorStyle>, // per-window cursor style
     last_enter_serial: u32, // last mouse enter serial
 }
 
@@ -694,23 +693,43 @@ impl<T: 'static + Send> Window<T> {
 
     // TODO: in theory all window funcs only need &self not &mut self, decide on this and make the API homogenous
 
-    pub fn set_cursor(&mut self, evl: &mut EventLoop<T>, style: CursorStyle) {
-
-        let evb = &mut evl.wayland.state;
-
-        // note: the CustomIcon will also be kept alive by the styles as long as needed
-        evb.cursor_data.styles.insert(self.base.id, style);
-
-        // immediatly apply the style
-        process_new_cursor_style(evb, self.base.id);
-
-    }
-
     pub fn surface(&self) -> *mut std::ffi::c_void {
         use wayland_client::Proxy;
         self.wl_surface.id().as_ptr().cast()
     }
 
+}
+
+impl CursorStyle {
+    pub fn apply<T: Send>(&self, evl: &mut EventLoop<T>) {
+
+        let evb = &mut evl.wayland.state;
+
+        let serial = evb.cursor_data.last_enter_serial;
+
+        match self {
+            CursorStyle::Hidden => {
+                if let Some(ref wl_pointer) = evb.globals.pointer {
+                    wl_pointer.set_cursor(serial, None, 0, 0);
+                }
+            },
+            CursorStyle::Custom { icon, hotspot } => {
+                if let Some(ref wl_pointer) = evb.globals.pointer {
+                    wl_pointer.set_cursor(
+                        serial, Some(&icon.wl_surface),
+                        hotspot.x as i32, hotspot.y as i32
+                    )
+                }
+            },
+            CursorStyle::Predefined { shape } => {
+                if let Some(ref wp_shape_device) = evb.globals.shape_device {
+                    let wl_shape = shape.to_wl();
+                    wp_shape_device.set_shape(serial, wl_shape);
+                }
+            }
+        }
+
+    }
 }
 
 impl CursorShape {
@@ -2287,12 +2306,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
                     WindowEvent::MouseMotion { x, y }
                 });
 
-                // set the apropriate per-window pointer style
-                // wayland by default only supports client-wide pointer styling
-
                 evl.cursor_data.last_enter_serial = serial;
-
-                process_new_cursor_style(evl, id);
 
              },
 
@@ -2394,39 +2408,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
         }
 
     }
-}
-
-/// there are different wayland protocols used to set different kinds of
-/// cursor styles
-fn process_new_cursor_style<T: 'static + Send>(evl: &mut WaylandState<T>, id: WindowId) {
-
-    let style = evl.cursor_data.styles.get(&id)
-        .unwrap_or(&CursorStyle::Predefined { shape: CursorShape::Default });
-
-    if let Some(ref wl_pointer) = evl.globals.pointer {
-
-        let serial = evl.cursor_data.last_enter_serial;
-
-        match style {
-            CursorStyle::Hidden => {
-                wl_pointer.set_cursor(serial, None, 0, 0);
-            },
-            CursorStyle::Custom { icon, hotspot } => {
-                wl_pointer.set_cursor(
-                    serial, Some(&icon.wl_surface),
-                    hotspot.x as i32, hotspot.y as i32
-                )
-            },
-            CursorStyle::Predefined { shape } => {
-                let wl_shape = shape.to_wl();
-                if let Some(ref wp_shape_device) = evl.globals.shape_device {
-                    wp_shape_device.set_shape(serial, wl_shape);
-                }
-            }
-        }
-
-    }
-
 }
 
 // ### error handling ###

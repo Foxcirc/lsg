@@ -145,6 +145,10 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     }
 
+                    WindowEvent::MouseEnter => {
+                        CursorStyle::Predefined { shape: CursorShape::Crosshair }.apply(&mut evl);
+                    }
+
                     WindowEvent::MouseMotion { .. } => (),
                     WindowEvent::Resize { size, .. } => surface.resize(&renderer, size).unwrap(),
                     WindowEvent::Close => evl.quit(),
