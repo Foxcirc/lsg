@@ -9,7 +9,7 @@ use render::{DrawableGeometry, shaper};
 
 #[test]
 fn interactive() -> Result<(), Box<dyn std::error::Error>> {
-    EventLoop::run(app, EventLoopConfig { appid: file!().into() })?
+    EventLoop::run(EventLoopConfig { appid: file!().into() }, app)?
 }
 
 fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {

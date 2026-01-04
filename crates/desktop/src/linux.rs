@@ -37,7 +37,7 @@ impl<T: 'static + Send> EventLoop<T> {
         })
     }
 
-    pub fn run<R, H>(handler: H, config: EventLoopConfig) -> Result<R, EvlError>
+    pub fn run<R, H>(config: EventLoopConfig, handler: H) -> Result<R, EvlError>
         where T: 'static + Send,
               H: FnOnce(Self) -> R {
 
