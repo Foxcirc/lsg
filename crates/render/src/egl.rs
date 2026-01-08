@@ -5,7 +5,7 @@ use common::*;
 use crate::VertexGeometry;
 
 pub struct GlSurface {
-    inner: egl::v2::Surface,
+    inner: egl::Surface,
     fbo: gl::FrameBuffer,
     rbo: gl::RenderBuffer,
 }
@@ -16,12 +16,12 @@ impl GlSurface {
 
         const MINSIZE: Size = Size::new(1, 1);
 
-        let surface = egl::v2::Surface::new(
+        let surface = egl::Surface::new(
             &gl.instance, &gl.config, window, MINSIZE,
         )?;
 
         // Bind a context for initialization.
-        gl.ctx.bind(&gl.instance, &surface)?;
+        gl.ctx.bind(&gl.instance, Some(&surface))?;
 
         let fbo = gl::gen_frame_buffer();
         let rbo = gl::gen_render_buffer();
@@ -40,7 +40,7 @@ impl GlSurface {
 
     pub fn resize(&mut self, gl: &GlRenderer, size: Size) -> Result<(), RenderError> {
 
-        gl.ctx.bind(&gl.instance, &self.inner)?;
+        gl.ctx.bind(&gl.instance, Some(&self.inner))?;
 
         gl::render_buffer_storage(&self.rbo, gl::PreciseColorFormat::Rgba8, size);
 
@@ -74,8 +74,8 @@ pub struct DrawableGeometry<'a> {
 
 pub struct GlRenderer {
     instance: egl::Instance,
-    ctx: egl::v2::Context,
-    config: egl::v2::Config,
+    ctx: egl::Context,
+    config: egl::Config,
     shape: ShapeRenderer,
     composite: CompositeRenderer,
 }
@@ -87,14 +87,14 @@ impl GlRenderer {
         let instance = egl::Instance::new(display)?;
         gl::load_with(|name| instance.get_proc_address(name))?;
 
-        let config = egl::v2::Config::build()
-            .api(egl::v2::Api::OpenGl)
+        let config = egl::Config::build()
+            .api(egl::Api::OpenGl)
             .version(4, 3)
             .debug(cfg!(test))
-            .profile(egl::v2::Profile::Core)
+            .profile(egl::Profile::Core)
             .finish(&instance)?;
 
-        let ctx = egl::v2::Context::new(&instance, &config)?;
+        let ctx = egl::Context::new(&instance, &config)?;
 
         // bind for initialization
         ctx.bind(&instance, None)?;
@@ -117,7 +117,7 @@ impl GlRenderer {
 
     pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, surface: &GlSurface) -> Result<(), RenderError> {
 
-        self.ctx.bind(&self.instance, &surface.inner)?;
+        self.ctx.bind(&self.instance, Some(&surface.inner))?;
 
         let size = surface.inner.size();
         gl::resize_viewport(size);
