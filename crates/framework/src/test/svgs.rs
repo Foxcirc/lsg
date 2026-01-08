@@ -14,13 +14,14 @@ fn svgs() -> Result<(), Box<dyn std::error::Error>> {
 
 fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
-    let mut window = Window::new(&mut evl, Size::new(1000, 1000));
+    let mut window = Window::new(&mut evl);
 
     window.set_title(&evl.config().appid);
     window.set_transparency(true);
+    window.set_size(Size::new(1000, 1000));
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
-    let mut surface = render::GlSurface::new(&renderer, &*window, Size::new(1000, 1000)).unwrap();
+    let mut surface = render::GlSurface::new(&renderer, &*window).unwrap();
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut instances: Vec<Instance> = Vec::new();
