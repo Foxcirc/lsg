@@ -79,7 +79,9 @@ pub(crate) struct WaylandState<T: 'static + Send = ()> {
     pub(crate) con: Async<wayland_client::Connection>,
     qh: QueueHandle<Self>,
     globals: WaylandGlobals,
+    // -- outputs --
     events: Vec<Event<T>>, // used to push events from inside the dispatch impl
+    errors: Vec<EvlError>, // used to push errors from sindei the dispatch impl
     // -- windowing state --
     mouse_data: MouseData,
     keyboard_data: KeyboardData,
@@ -94,12 +96,13 @@ struct CursorData {
     last_enter_serial: u32, // last mouse enter serial
 }
 
-#[derive(Default)]
 /// Used for handling drag-and-drop.
+#[derive(Default)]
 struct OfferData {
     has_offer: Option<WlSurface>,
     current_offer: Option<WlDataOffer>,
-    x: f64, y: f64,
+    x: f64,
+    y: f64,
     dnd_active: bool,
     dnd_icon: Option<CustomIcon>, // set when a drag-and-drop is started
 }
@@ -115,7 +118,6 @@ struct KeyboardData {
     has_focus: Option<WlSurface>,
     xkb_context: xkb::Context,
     keymap_specific: Option<KeymapSpecificData>, // (re)initialized when a keymap is loaded
-    keymap_error: Option<EvlError>, // stored and handeled later
     repeat_timer: Timer,
     repeat_key: u32, // raw key
     repeat_rate: Duration,
@@ -128,7 +130,6 @@ impl KeyboardData {
             has_focus: None,
             xkb_context: xkb::Context::new(xkb::CONTEXT_NO_FLAGS),
             keymap_specific: None,
-            keymap_error: None,
             repeat_timer: Timer::never(),
             repeat_key: 0,
             repeat_rate: Duration::from_millis(60),
@@ -220,6 +221,7 @@ impl<T: 'static + Send> Connection<T> {
             app_name: application.to_string(),
             con, qh, globals,
             events,
+            errors: Vec::with_capacity(4),
             mouse_data: MouseData::default(),
             keyboard_data: KeyboardData::new()?,
             offer_data: OfferData::default(),
@@ -254,13 +256,13 @@ impl<T: 'static + Send> Connection<T> {
                 }
             };
 
-            if let Some(error) = self.state.keyboard_data.keymap_error.take() {
-                return Err(error)
-            };
-
             if let Some(event) = self.state.events.pop() {
                 return Ok(event)
             }
+
+            if let Some(error) = self.state.errors.pop() {
+                return Err(error)
+            };
 
             // wait for new events
             enum Either {
@@ -1174,7 +1176,7 @@ impl<T: 'static + Send> LayerWindow<T> {
 
         // creating this kind of window requires some wayland extensions
         let layer_shell_mgr = evb.globals.layer_shell_mgr.as_ref().ok_or(
-            EvlError::Unsupported { name: ZwlrLayerShellV1::interface().name }
+            EvlError::unsupported(ZwlrLayerShellV1::interface().name.into())
         )?;
 
         // layer-shell role
@@ -2055,8 +2057,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                         xkb::KEYMAP_COMPILE_NO_FLAGS
                     ) } {
                         Ok(Some(val)) => val,
-                        Ok(None) => { evl.keyboard_data.keymap_error = Some("corrupt xkb keymap received".into()); return },
-                        Err(err) => { evl.keyboard_data.keymap_error = Some(err.into()); return }
+                        Ok(None) => { evl.errors.push(EvlError::fatal(format!("cannot load keymap")));          return },
+                        Err(err) => { evl.errors.push(EvlError::fatal(format!("cannot load keymap, {}", err))); return }
                     }
                 };
 
@@ -2074,8 +2076,12 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                     xkb::COMPILE_NO_FLAGS
                 ) {
                     Ok(val) => val,
-                    Err(..) => {
-                        evl.keyboard_data.keymap_error = Some(EvlError::InvalidLocale { value: locale.to_string_lossy().into() });
+                    Err(()) => {
+                        // TODO: currently this line is never reachable. if the locale is invalid libxkbcommon actually
+                        //       exits immediatly with an errors message (wonderful library design there...).
+                        //       It seems that Qt Apps like KWrite will actually not crash on an invalid locale, even though
+                        //       I think they use libxkbcommon aswell. This requires further investigation.
+                        evl.errors.push(EvlError::fatal(format!("invalid keymap locale, {:?}", locale)));
                         return
                     }
                 };
@@ -2119,7 +2125,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandStat
                     evl.events.push(Event::Window { id, event: WindowEvent::Leave });
 
                     // We get these keys in a kind of weird way to avoid memory
-                    // allocationn and ownership problems.
+                    // allocation and ownership problems.
                     let mut buf = [xkb::Keycode::default(); 10];
                     let count = keymap_specific.pressed_keys.currently_pressed(&mut buf);
                     let pressed = &buf[..count];
@@ -2413,22 +2419,39 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState
 // ### error handling ###
 
 #[derive(Debug)]
-pub enum EvlError {
-    // TODO: rework the error system
-    Unsupported { name: &'static str, },
-    InvalidLocale { value: String },
-    Dbus { msg: String }, // TODO: remove this, as this is an implementation specific detail
-    Fatal { msg: String },
+pub struct EvlError {
+    severity: EvlErrorSeverity,
+    message: String,
+}
+
+impl EvlError {
+    pub fn new(severity: EvlErrorSeverity, message: String) -> Self {
+        Self { severity, message }
+    }
+    pub fn fatal(message: String) -> Self {
+        Self::new(EvlErrorSeverity::Fatal, message)
+    }
+    pub fn warning(message: String) -> Self {
+        Self::new(EvlErrorSeverity::Warning, message)
+    }
+    pub fn unsupported(message: String) -> Self {
+        Self::new(EvlErrorSeverity::Unsupported, message)
+    }
+}
+
+#[derive(Debug)]
+pub enum EvlErrorSeverity {
+    /// Can likely not be recovered from.
+    Fatal,
+    /// Something has gone wrong but the application may continue to run.
+    Warning,
+    /// Some platforms or environments don't support all special/niche features.
+    Unsupported,
 }
 
 impl fmt::Display for EvlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unsupported   { name }  => write!(f, "[missing feature] '{}'", name),
-            Self::InvalidLocale { value } => write!(f, "[invalid locale] '{}'", value),
-            Self::Dbus          { msg }   => write!(f, "[dbus call failed] '{}'", msg),
-            Self::Fatal         { msg }   => write!(f, "[fatal] '{}'", msg)
-        }
+        write!(f, "{:?}: {}", self.severity, self.message)
     }
 }
 
@@ -2436,68 +2459,66 @@ impl TError for EvlError {}
 
 impl<'a> From<&'a str> for EvlError {
     fn from(value: &'a str) -> Self {
-        Self::Fatal { msg: value.into() }
+        Self::fatal(value.into())
     }
 }
 
 impl From<wayland_client::ConnectError> for EvlError {
     fn from(value: wayland_client::ConnectError) -> Self {
-        Self::Fatal { msg: format!("cannot connect to wayland, {}", value) }
+        Self::fatal(format!("cannot connect to wayland, {}", value))
     }
 }
 
 impl From<wayland_client::globals::GlobalError> for EvlError {
     fn from(value: wayland_client::globals::GlobalError) -> Self {
-        Self::Fatal { msg: format!("failed to get wayland globals, {}", value) }
+        Self::fatal(format!("failed to get wayland globals, {}", value))
     }
 }
 
 impl From<BindError> for EvlError {
     fn from(value: BindError) -> Self {
-        Self::Fatal { msg: format!("failed to get wayland global, {}", value) }
+        Self::fatal(format!("failed to get wayland global, {}", value))
     }
 }
 
 impl From<wayland_client::backend::WaylandError> for EvlError {
     fn from(value: wayland_client::backend::WaylandError) -> Self {
-        Self::Fatal { msg: format!("failed wayland call, {}", value) }
+        Self::fatal(format!("failed wayland call, {}", value))
     }
 }
 
 impl From<wayland_client::DispatchError> for EvlError {
     fn from(value: wayland_client::DispatchError) -> Self {
-        Self::Fatal { msg: format!("failed wayland dispatch, {}", value) }
+        Self::fatal(format!("failed wayland dispatch, {}", value))
     }
 }
 
 impl From<egl::EglError> for EvlError {
     fn from(value: egl::EglError) -> Self {
-        Self::Fatal { msg: format!("failed egl call, {:?}", value) }
+        Self::fatal(format!("failed egl call, {:?}", value))
     }
 }
 
 impl From<nix::errno::Errno> for EvlError {
     fn from(value: nix::errno::Errno) -> Self {
-        Self::Fatal { msg: format!("failed I/O, {}", value) }
+        Self::fatal(format!("failed I/O, {}", value))
     }
 }
 
 impl From<io::Error> for EvlError {
     fn from(value: io::Error) -> Self {
-        Self::Fatal { msg: format!("failed I/O, {}", value) }
+        Self::fatal(format!("failed I/O, {}", value))
     }
 }
 
 impl From<dbus::MethodError> for EvlError {
     fn from(value: dbus::MethodError) -> Self {
-        // description handeled inside EvlError::Display::fmt
-        Self::Dbus { msg: format!("{:?}", value) }
+        Self::fatal(format!("dbus method call failed, {:?}", value))
     }
 }
 
 impl From<dbus::ArgError> for EvlError {
     fn from(value: dbus::ArgError) -> Self {
-        // description handeled inside EvlError::Display::fmt
-        Self::Dbus { msg: format!("{:?}", value) }
+        Self::fatal(format!("dbus method unexpected reply, {:?}", value))
     }
 }
