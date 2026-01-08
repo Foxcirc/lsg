@@ -38,8 +38,7 @@ impl<T: 'static + Send> EventLoop<T> {
     }
 
     pub fn run<R, H>(config: EventLoopConfig, handler: H) -> Result<R, EvlError>
-        where T: 'static + Send,
-              H: FnOnce(Self) -> R {
+        where H: FnOnce(Self) -> R {
 
         let target = Self::new(config)?;
         Ok(handler(target))

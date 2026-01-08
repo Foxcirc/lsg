@@ -1,31 +1,59 @@
 
 #![doc(html_logo_url = "https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/icon.png")]
 
+use std::{rc::Rc, sync::Arc};
+
+use futures_lite::future::block_on;
+
 #[cfg(test)]
 mod test;
 
-pub struct EventLoop {
-    inner: desktop::EventLoop<()>,
+pub struct App {
+    executor: Rc<async_executor::LocalExecutor<'static>>,
 }
 
-impl EventLoop {
+impl App {
 
     pub fn run<R, H>(handler: H) -> R
-        where H: FnOnce(Self) -> R {
+        where H: AsyncFnOnce(Self) -> R {
 
             let config = desktop::EventLoopConfig {
                 appid: "unknown".into() // TODO
             };
 
-            desktop::EventLoop::run(config, |ev| {
+            desktop::EventLoop::<()>::run(config, |el| {
 
                 let this = Self {
-                    inner: ev,
+                    executor: Rc::new(async_executor::LocalExecutor::new()),
                 };
 
-                handler(this)
+                let executor2 = Rc::clone(&this.executor);
+
+                // This task pumps events and calls the event handlers.
+                executor2.spawn(async move {
+
+                }).detach();
+
+                // This task is the user-side which can wait for events.
+                block_on(executor2.run(async move {
+                    handler(this).await
+                }))
 
             }).unwrap()
+
+
+    }
+
+}
+
+pub struct Window {
+}
+
+impl Window {
+
+    pub fn new(app: &App) -> Self {
+
+        Self {}
 
     }
 
@@ -54,19 +82,22 @@ impl EventLoop {
         });
     }
 
-    async fn app(ev: EventLoop) {
+    async fn app(app: lsg::App) {
 
         let window = lsg::Window::new(&ev);
         window.id("window-zero");
 
         window.content.set(Widget);
 
-        ev.spawn(async {
+        app.connect(&button, Button::leftclicked, async || {
+            counter.update(|it| *it += 1);
+            text.inner.set(format!("{counter}"));
+            app.redraw(&text);
+        });
+
+        app.spawn(async {
             loop {
                 button.leftclicked().await;
-                counter.update(|it| *it += 1);
-                text.inner.set(format!("{counter}"));
-                ev.redraw(&text);
             }
         });
 
@@ -76,7 +107,7 @@ impl EventLoop {
             ev.redraw(&text);
         });
 
-        window.closed(&ev, ()).await;
+        window.closed().await;
 
     }));
 

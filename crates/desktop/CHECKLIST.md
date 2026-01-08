@@ -26,6 +26,7 @@ TODO: what happens if i try to run wayland app without having a compositor launc
 [x] Continous redraw + Vsync
 [x] Handling quit-signals (eg. SIGTERM on linux)
 [x] Request user attention
+[ ] Window Icons
 [x] Changing/Hiding the cursor + custom cursors
 [x] Fully async + Correct threading
 [x] OpenGL context creation

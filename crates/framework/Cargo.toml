@@ -8,11 +8,14 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
+
 common = { path = "../common" }
 desktop = { path = "../desktop" }
 egl = { path = "../egl" }
-futures-lite = "2.6.1"
 gl = { path = "../gl" }
 render = { path = "../render" }
 text = { path = "../text" }
 widget = { path = "../widget" }
+
+futures-lite = "2.6.1"
+async-executor = "1.13.3"
