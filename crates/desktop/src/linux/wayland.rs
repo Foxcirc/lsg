@@ -56,7 +56,7 @@ use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     env,
     error::Error as TError,
     ffi::c_void as void,
@@ -149,7 +149,6 @@ struct KeymapSpecificData {
 struct PressedKeys {
     min: u32,
     keys: bv::BitVec,
-    pressed: Vec<xkb::Keycode>, // auxillary buffer
 }
 
 impl PressedKeys {
@@ -163,7 +162,6 @@ impl PressedKeys {
         Self {
             min: min.raw(),
             keys,
-            pressed: Vec::with_capacity(4),
         }
     }
 
