@@ -19,3 +19,5 @@ widget = { path = "../widget" }
 
 futures-lite = "2.6.1"
 async-executor = "1.13.3"
+flume = { version = "0.12.0", default-features = false, features = ["async"] }
+slab = "0.4.11"
