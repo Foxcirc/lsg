@@ -1453,7 +1453,6 @@ macro_rules! ignore {
             _: &$usr,
             _: &wayland_client::Connection,
             _: &wayland_client::QueueHandle<Self>
-        // ) { println!("{}: {_event:?}", $prxy::interface().name); }
         ) {}
     };
 }
@@ -1880,8 +1879,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowSha
             let width  = guard.width;
             let height = guard.height;
 
-            println!("surface-configure, stored w, h: {width}, {height}");
-
             // This should not be able to happen
             assert_ne!(width, 0);
             assert_ne!(height, 0);
@@ -1905,8 +1902,6 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowSh
         let mut guard = shared.lock().unwrap();
 
         if let XdgToplevelEvent::Configure { width, height, states } = event {
-
-            println!("toplevel-configure, got new w, h: {width}, {height}");
 
             if width > 0 && height > 0 {
                 // overwrite the values, since the compositor has given us a size hint

@@ -47,9 +47,9 @@ pub enum WindowEvent {
     MouseScroll { axis: ScrollAxis, value: i16 },
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
+    TextInput { chr: char },
     TextCompose { chr: char },
     TextComposeCancel,
-    TextInput { chr: char },
     /// A Drag-and-drop event.
     Dnd { event: DndEvent, sameapp: bool },
 }
