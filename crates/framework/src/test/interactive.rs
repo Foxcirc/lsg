@@ -1,6 +1,8 @@
 
 //! Interactive test to try out features that are currently being worked on.
 
+use std::time::Instant;
+
 use futures_lite::future::block_on;
 
 use desktop::*;
@@ -41,6 +43,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };
 
+    let mut lt = Instant::now();
+
     // run the event loop
     block_on(async {
 
@@ -61,6 +65,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                         window.pre_present_notify();
                         renderer.draw(&drawable, &surface).unwrap();
+
+                        println!("dt: {:?}", Instant::now() - lt);
+                        lt = Instant::now();
 
                     },
 

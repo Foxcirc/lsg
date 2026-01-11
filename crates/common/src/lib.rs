@@ -1,5 +1,5 @@
 
-use std::{fmt, ops::{self, Range}};
+use std::{fmt, ops::{self, Range}, sync::{Mutex, MutexGuard}};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -284,28 +284,51 @@ pub struct Instance {
 }
 
 /// A point in normalized device coordinates.
-#[derive(Debug, Clone, Copy)]
-pub struct GlPoint {
-    pub x: f32,
-    pub y: f32,
+// #[derive(Debug, Clone, Copy)]
+// pub struct GlPoint {
+//     pub x: f32,
+//     pub y: f32,
+// }
+//
+// impl GlPoint {
+//
+//     pub fn new(x: f32, y: f32) -> Self {
+//         Self { x, y }
+//     }
+//
+//     /// Convert to normalized device coordinates using the given window size.
+//     pub fn convert(p: Point, size: Size) -> Self {
+//         Self {
+//             x:       2.0 * (p.x as f32 / size.w  as f32) - 1.0,
+//             y: 1.0 - 2.0 * (p.y as f32 / size.h as f32)
+//         }
+//     }
+//
+//     pub fn xy(&self) -> [f32; 2] {
+//         [self.x, self.y]
+//     }
+//
+// }
+
+pub struct SmartMutex<T> {
+    inner: Mutex<T>,
 }
 
-impl GlPoint {
+impl<T> SmartMutex<T> {
 
-    pub fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
+    pub fn new(inner: T) -> Self {
+        Self { inner: Mutex::new(inner) }
     }
 
-    /// Convert to normalized device coordinates using the given window size.
-    pub fn convert(p: Point, size: Size) -> Self {
-        Self {
-            x:       2.0 * (p.x as f32 / size.w  as f32) - 1.0,
-            y: 1.0 - 2.0 * (p.y as f32 / size.h as f32)
-        }
+    pub fn with<F, R>(&self, f: F) -> R
+        where F: FnOnce(&mut T) -> R {
+
+        f(&mut *self.lock())
+
     }
 
-    pub fn xy(&self) -> [f32; 2] {
-        [self.x, self.y]
+    pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
+        self.inner.lock().expect("mutex was poisoned")
     }
 
 }

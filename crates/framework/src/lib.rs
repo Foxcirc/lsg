@@ -1,8 +1,9 @@
 
 #![doc(html_logo_url = "https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/icon.png")]
 
-use std::{future, mem, sync::{Arc, Mutex, MutexGuard}, task};
+use common::SmartMutex;
 
+use std::{future, sync::Arc, task};
 use futures_lite::future::block_on;
 
 #[cfg(test)]
@@ -155,29 +156,6 @@ impl<T> EventChannel<T> {
 
         }).await
 
-    }
-
-}
-
-pub struct SmartMutex<T> {
-    inner: Mutex<T>,
-}
-
-impl<T> SmartMutex<T> {
-
-    pub fn new(inner: T) -> Self {
-        Self { inner: Mutex::new(inner) }
-    }
-
-    pub fn with<F, R>(&self, f: F) -> R
-        where F: FnOnce(&mut T) -> R {
-
-        f(&mut *self.lock())
-
-    }
-
-    pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
-        self.inner.lock().expect("mutex was poisoned")
     }
 
 }

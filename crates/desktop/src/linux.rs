@@ -92,8 +92,7 @@ impl EventLoop {
 
 unsafe impl egl::IsDisplay for EventLoop {
     fn ptr(&self) -> *mut void {
-        self.wayland.state.con.get_ref()
-            .display().id().as_ptr().cast()
+        self.wayland.display()
     }
 }
 
