@@ -286,7 +286,7 @@ impl Connection {
                     ignore_wouldblock(guard.read())?
                 },
                 Ok(Either::Timer)    => {
-                    // emit the sysnthetic key-repeat event
+                    // emit the synthetic key-repeat event
                     let key = self.state.keyboard_data.repeat_key;
                     process_key_event(&mut self.state, key, Direction::Down, Source::KeyRepeat); // TODO: make it not take &mut self.state but only part of it and then remove the Either enum and process these directly in the `async` block
                     // TODO ^^^^ make this like self.state.keyboard_data.process_key_event(...)
@@ -430,9 +430,9 @@ impl Drop for BaseWindow {
 
 impl BaseWindow {
 
-    pub(crate) fn new(evl: &mut EventLoop) -> Self {
+    pub(crate) fn new(evl: &EventLoop) -> Self {
 
-        let evb = &mut evl.wayland.state;
+        let evb = &evl.wayland.state;
 
         let surface = evb.globals.compositor.create_surface(&evb.qh, ());
         let id = get_window_id(&surface);
@@ -595,11 +595,11 @@ impl Drop for Window {
 
 impl Window {
 
-    pub fn new(evl: &mut EventLoop) -> Self {
+    pub fn new(evl: &EventLoop) -> Self {
 
         let base = BaseWindow::new(evl);
 
-        let evb = &mut evl.wayland.state;
+        let evb = &evl.wayland.state;
 
         // xdg-top-level role (+ init decoration manager)
         let xdg_surface = evb.globals.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
@@ -612,6 +612,8 @@ impl Window {
         xdg_toplevel.set_app_id(evb.app_name.clone());
 
         base.wl_surface.commit();
+
+        // evb.qh.
 
         Self {
             base,
