@@ -1,7 +1,7 @@
 
 #![doc(html_logo_url = "https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/icon.png")]
 
-use std::{future, mem, sync::{Arc, Mutex}, task};
+use std::{future, mem, sync::{Arc, Mutex, MutexGuard}, task};
 
 use futures_lite::future::block_on;
 
@@ -10,6 +10,8 @@ mod test;
 
 pub struct App {
     executor: Arc<async_executor::LocalExecutor<'static>>,
+    evl: SmartMutex<desktop::EventLoop>,
+    // windows:
 }
 
 impl App {
@@ -21,10 +23,11 @@ impl App {
                 appid: "unknown".into() // TODO
             };
 
-            desktop::EventLoop::<()>::run(config, |el| {
+            desktop::EventLoop::run(config, |evl| {
 
                 let this = Self {
                     executor: Arc::new(async_executor::LocalExecutor::new()),
+                    evl: SmartMutex::new(evl),
                 };
 
                 let executor2 = Arc::clone(&this.executor);
@@ -46,131 +49,138 @@ impl App {
 
 }
 
+#[derive(Default)]
+struct WindowEventHandlers {
+    closed: EventChannel<()>,
+}
+
 pub struct Window {
-    dispatcher: EventDispatcher<WindowEventHandler>,
+    handlers: Arc<WindowEventHandlers>,
+    inner: desktop::Window
 }
 
 impl Window {
 
     pub fn new(app: &App) -> Self {
 
+        let mut evl = app.evl.lock();
+
+        let window = desktop::Window::new(&mut evl);
+
+        let handlers = Arc::new(Default::default());
+
         Self {
-            dispatcher: EventDispatcher::new(),
+            handlers,
+            inner: window,
         }
 
     }
 
     pub async fn closed(&self) {
-
-        let key = self.dispatcher.register(WindowEventHandler::Closed(None));
-
-        self.dispatcher.listen(
-            key, |h| if let WindowEventHandler::Closed(it) = h { it.take() } else { unreachable!() }
-        ).await
-
+        self.handlers.closed.listen().await
     }
 
     fn handle(&self, event: desktop::WindowEvent) {
 
-        self.dispatcher.notify(|handler| match (handler, &event) {
-            (WindowEventHandler::Closed(it), desktop::WindowEvent::Close) => { *it = Some(()); true }
-            (..) => false
-        });
+        match event {
+
+            desktop::WindowEvent::Close => self.handlers.closed.broadcast(()),
+
+            _ => (),
+
+        }
 
     }
 
 }
 
-enum WindowEventHandler {
-    Closed(Option<()>),
+struct EventChannel<T> {
+    inner: SmartMutex<EventBroadcasterInner<T>>,
 }
 
-struct EventDispatcher<H> {
-    handlers: Mutex<slab::Slab<EventHandler<H>>>,
+struct EventBroadcasterInner<T> {
+    waker: Option<task::Waker>,
+    event: Option<T>,
 }
 
-impl<H> EventDispatcher<H> {
+impl<T> Default for EventChannel<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> EventChannel<T> {
 
     pub fn new() -> Self {
         Self {
-            handlers: Mutex::new(slab::Slab::new())
+            inner: SmartMutex::new(EventBroadcasterInner {
+                waker: None,
+                event: None
+            })
         }
     }
 
-    /// Register a new event handler.
-    pub fn register(&self, inner: H) -> usize {
-        let mut guard = self.handlers.lock().unwrap();
-        guard.insert(EventHandler { waker: None, inner })
+    pub fn broadcast(&self, event: T) {
+
+        let mut inner = self.inner.lock();
+
+        inner.event = Some(event);
+
+        if let Some(waker) = &inner.waker {
+            waker.wake_by_ref();
+        }
+
     }
 
-    pub async fn listen<F, T>(&self, key: usize, mut access: F) -> T
-        where F: FnMut(&mut H) -> Option<T> {
+    pub async fn listen(&self) -> T {
 
-            future::poll_fn(move |cx| {
+        future::poll_fn(|cx| {
 
-                let mut guard = self.handlers.lock().unwrap();
-                let handler = &mut guard[key];
+            let mut inner = self.inner.lock();
 
-                let event = access(&mut handler.inner);
+            if let Some(it) = inner.event.take() {
 
-                if let Some(it) = event {
+                task::Poll::Ready(it)
 
-                    task::Poll::Ready(it)
+            } else {
 
-                } else {
-
-                    match &mut handler.waker {
-                        Some(it) => it.clone_from(cx.waker()),
-                        None => handler.waker = Some(cx.waker().clone())
-                    }
-
-                    task::Poll::Pending
-
+                match &mut inner.waker {
+                    Some(it) => it.clone_from(cx.waker()),
+                    None => inner.waker = Some(cx.waker().clone())
                 }
 
-            }).await
+                task::Poll::Pending
 
-    }
-
-    pub fn notify<F>(&self, mut assess: F)
-        where F: FnMut(&mut H) -> bool {
-
-        let mut guard = self.handlers.lock().unwrap();
-
-        for (.., handler) in &mut *guard {
-
-            let modified = assess(&mut handler.inner);
-
-            if let Some(it) = &handler.waker && modified {
-                it.wake_by_ref();
             }
 
-        }
+        }).await
 
     }
 
 }
 
-struct EventHandler<H> {
-    waker: Option<task::Waker>,
-    inner: H,
+pub struct SmartMutex<T> {
+    inner: Mutex<T>,
 }
 
-// enum EventFilter<T> {
-//     Any,
-//     One(mem::Discriminant<T>),
-//     Multiple(Vec<mem::Discriminant<T>>),
-// }
+impl<T> SmartMutex<T> {
 
-// impl<T> EventFilter<T> {
-//     pub fn matches(&self, value: &T) -> bool {
-//         let discr = mem::discriminant(value);
-//         match self {
-//             Self::Any => true,
-//             Self::One(it) => v
-//         }
-//     }
-// }
+    pub fn new(inner: T) -> Self {
+        Self { inner: Mutex::new(inner) }
+    }
+
+    pub fn with<F, R>(&self, f: F) -> R
+        where F: FnOnce(&mut T) -> R {
+
+        f(&mut *self.lock())
+
+    }
+
+    pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
+        self.inner.lock().expect("mutex was poisoned")
+    }
+
+}
 
 /*
 
