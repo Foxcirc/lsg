@@ -21,7 +21,7 @@ fn parsing() {
 
         con.method_call(call);
 
-        let _resp: Event<()> = con.next().await.unwrap(); // TODO: this could not work, because the next incoming thing may not be the reply but the nameArquired signal
+        let _resp: Event = con.next().await.unwrap(); // TODO: this could not work, because the next incoming thing may not be the reply but the nameArquired signal
           // ^^^^ parsing this is enough (maps, variants, etc. covered)
 
     })
@@ -39,13 +39,13 @@ fn notifs() {
         let notif = con.send_notification(&builder);
 
         loop {
-            let ev: Event<()> = con.next().await.unwrap();
+            let ev: Event = con.next().await.unwrap();
             if matches!(ev, Event::Notif { event: NotifEvent::ActionInvoked { .. }, .. }) {
                 notif.close();
                 break;
             }
         }
-        
+
     })
 
 }
@@ -150,7 +150,7 @@ fn process_incoming(con: &mut Connection) -> Result<Incoming, ParseError> {
             Ok(incoming)
 
         },
-        
+
         Err(ParseError::Partial) => Err(ParseError::Partial), // do nothing and wait for more data
         Err(other) => Err(other),
 
@@ -278,12 +278,12 @@ impl Connection {
         );
 
         this.add_match(rule);
-    
+
         Ok(this)
-    
+
     }
 
-    pub async fn next<T>(&mut self) -> Result<Event<T>, EvlError> {
+    pub async fn next(&mut self) -> Result<Event, EvlError> {
 
         loop {
 
@@ -296,14 +296,14 @@ impl Connection {
                     let id: u32 = reply.get(0)?;
                     *it = id;
                 }
-                
+
             } else if let Incoming::Signal(mut signal) = incoming {
 
                 if signal.iface == "org.freedesktop.Notifications" {
 
                     let id: u32;
                     let event;
-                    
+
                     if signal.member == "ActionInvoked" {
 
                         id = signal.get(0)?;
@@ -324,11 +324,11 @@ impl Connection {
                     }
 
                     return Ok(Event::Notif { id, event });
-                   
+
                }
-                
+
             }
-            
+
         }
 
     }
@@ -347,7 +347,7 @@ impl Connection {
         }
 
         Ok(())
-        
+
     }
 
     pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
@@ -387,7 +387,7 @@ impl Connection {
             if dur == Duration::MAX { 0 }
             else { i32::try_from(dur.as_millis()).unwrap_or(i32::MAX) }
         ).unwrap_or(-1)); // expiration timeout
-    
+
         let serial = self.method_call(call);
         self.notifs.insert(serial, 0);
 
@@ -395,7 +395,7 @@ impl Connection {
             id: serial,
             outgoing: self.sender.clone(),
         }
-    
+
     }
 
     fn close_notif(&mut self, serial: NotifId) {
@@ -412,7 +412,7 @@ impl Connection {
 
         call.arg(*id);
         self.method_call(call);
-    
+
     }
 
     fn method_call(&mut self, payload: MethodCall) -> OutgoingId {
@@ -592,7 +592,7 @@ impl MethodCall {
         msg.fields.push(header_field(FieldCode::ObjPath, SimpleArg::ObjPath(self.path)));
         msg.fields.push(header_field(FieldCode::Iface,   SimpleArg::String(self.iface)));
         msg.fields.push(header_field(FieldCode::Member,  SimpleArg::String(self.member)));
-    
+
         msg
 
     }
@@ -612,7 +612,7 @@ impl MethodCall {
             allow_interactive_auth: msg.allow_interactive_auth,
             args: msg.args
         })
-    
+
     }
 
     pub fn hello() -> Self {
@@ -764,7 +764,7 @@ impl MethodReply {
         // add reply information
 
         if let MethodCaller::Peer { name, serial } = self.caller {
-        
+
             msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)));
             msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(name)));
 
@@ -780,7 +780,7 @@ impl MethodReply {
             caller: MethodCaller::Ourselves,
             args: msg.args.into_iter().map(Some).collect()
         }
-    
+
     }
 
 }
@@ -838,7 +838,7 @@ impl SignalTrigger {
             member: msg.take_field(FieldCode::Member).ok_or(ParseError::Invalid)?,
             args: msg.args.into_iter().map(Some).collect()
         })
-    
+
     }
 
 }
@@ -932,7 +932,7 @@ impl GenericMessage {
         };
 
         // ### header ###
-    
+
         // endianess
         let endianess = if cfg!(target_endian = "big") { 'B' } else { 'l' };
         Arg::serialize((endianess as u8).pack(), &mut buf);
@@ -1012,12 +1012,12 @@ impl GenericMessage {
             // no need to do more parsing, we haven't got enough data anyways
             return Err(ParseError::Partial);
         }
-    
+
         let mut header_fields: Vec<(u8, Variant)> = unpack(&mut buf)?;
 
         let Signature(signature) = take_field(&mut header_fields, FieldCode::Signature)
             .unwrap_or_default();
-    
+
         buf.consume_pad(8);
 
         let before_body = buf.offset;
@@ -1220,9 +1220,9 @@ pub enum ArgKind {
     Array       = 'a' as i8, // int (len), ... (items)
     Variant     = 'v' as i8, // const char* (signature), any
     StructBegin = '(' as i8, // ... (items)
-    StructEnd   = ')' as i8, // 
+    StructEnd   = ')' as i8, //
     PairBegin   = '{' as i8, // any, any (a pair)
-    PairEnd     = '}' as i8, // 
+    PairEnd     = '}' as i8, //
     Pair        = 'e' as i8, // dict entry phantom type
     Struct      = 'r' as i8, // struct phantom type
 }
@@ -1250,7 +1250,7 @@ impl ArgKind {
             ArgKind::PairBegin   => 8,
             ArgKind::PairEnd     => 8,
             ArgKind::Pair        => 8,
-            ArgKind::Struct      => 8,           
+            ArgKind::Struct      => 8,
         }
     }
 }
@@ -1409,7 +1409,7 @@ impl Arg {
                         Arg::serialize(Arg::Simple(key), buf);
                         Arg::serialize(val, buf);
                     }
-            
+
                     let size = buf.data.len() - orig;
                     assert!(size < 2^26);
                     buf.data.splice(idx..idx + 4, (size as u32).to_ne_bytes());
@@ -1428,7 +1428,7 @@ impl Arg {
                 }
 
                 CompoundArg::EmptyVariant => panic!("EmptyVariant cannot be sent"),
-        
+
                 CompoundArg::Struct(fields) => {
 
                     buf.insert_pad(8);
@@ -1437,7 +1437,7 @@ impl Arg {
                     }
 
                 }
-        
+
             }
         }
 
@@ -1470,43 +1470,43 @@ impl Arg {
                 let val = parse!(buf, u8);
                 Ok(Arg::Simple(SimpleArg::Byte(val)))
             },
-    
+
             [ArgKind::Bool] => {
                 buf.consume_pad(4);
                 let val = parse!(buf, u32);
                 Ok(Arg::Simple(SimpleArg::Bool(val == 1)))
             },
-    
+
             [ArgKind::I16] => {
                 buf.consume_pad(2);
                 let val = parse!(buf, i16);
                 Ok(Arg::Simple(SimpleArg::I16(val)))
             },
-    
+
             [ArgKind::U16] => {
                 buf.consume_pad(2);
                 let val = parse!(buf, u16);
                 Ok(Arg::Simple(SimpleArg::U16(val)))
             },
-    
+
             [ArgKind::I32] => {
                 buf.consume_pad(4);
                 let val = parse!(buf, i32);
                 Ok(Arg::Simple(SimpleArg::I32(val)))
             },
-    
+
             [ArgKind::U32] => {
                 buf.consume_pad(4);
                 let val = parse!(buf, u32);
                 Ok(Arg::Simple(SimpleArg::U32(val)))
             },
-    
+
             [ArgKind::I64] => {
                 buf.consume_pad(8);
                 let val = parse!(buf, i64);
                 Ok(Arg::Simple(SimpleArg::I64(val)))
             },
-    
+
             [ArgKind::U64] => {
                 buf.consume_pad(8);
                 let val = parse!(buf, u64);
@@ -1557,7 +1557,7 @@ impl Arg {
                 }
 
                 Ok(Arg::Compound(CompoundArg::Map(key_kinds[0], val_kinds, map)))
-        
+
             },
 
             [ArgKind::Array, contents @ ..] => {
@@ -1572,7 +1572,7 @@ impl Arg {
                 }
 
                 Ok(Arg::Compound(CompoundArg::Array(contents.to_vec(), args)))
-        
+
             },
 
             [ArgKind::StructBegin,
@@ -1588,7 +1588,7 @@ impl Arg {
                 }
 
                 Ok(Arg::Compound(CompoundArg::Struct(args)))
-        
+
             },
 
             [ArgKind::Variant] => {
@@ -1604,12 +1604,12 @@ impl Arg {
                     // a default value here
                     Ok(Arg::Compound(CompoundArg::EmptyVariant))
                 }
-       
-        
+
+
             },
-    
+
             other => panic!("cannot deserialize signature {:?}", other),
-    
+
         }
 
     }
@@ -2052,14 +2052,14 @@ impl MethodError {
         // add reply information
 
         if let MethodCaller::Peer { name, serial } = self.caller {
-        
+
             msg.fields.push(header_field(FieldCode::ReplySerial, SimpleArg::U32(serial)));
             msg.fields.push(header_field(FieldCode::Dest, SimpleArg::String(name)));
 
         }
 
         msg
-    
+
     }
 
     pub fn deserialize(mut msg: GenericMessage) -> Result<Self, ParseError> {
@@ -2086,7 +2086,7 @@ enum MethodCaller {
 pub type NotifId = u32;
 
 pub struct NotifBuilder<'a> {
-    /// see `Notif` 
+    /// see `Notif`
     outgoing: Option<async_channel::Sender<Outgoing>>,
     // required, `app` is filled in later
     summary: &'a str,
@@ -2161,7 +2161,7 @@ impl Notif {
 
     /// See `drop`.
     pub fn close(self) {}
-    
+
 }
 
 impl Drop for Notif {
@@ -2169,7 +2169,7 @@ impl Drop for Notif {
     /// A `Notif` should be dropped in all cases, eg. also when the user selected an action,
     /// since not all notification daemons dismiss a notif in that case.
     fn drop(&mut self) {
-        
+
         // let mut call = MethodCall::new(
         //     "org.freedesktop.Notifications",
         //     "/org/freedesktop/Notifications",
@@ -2316,9 +2316,7 @@ impl NotifUrgency {
 //             id,
 //             InvokedNotifAction { name: key }
 //         )
-    
+
 //     }
 
 // }
-
-

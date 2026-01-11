@@ -17,15 +17,15 @@ use futures_lite::FutureExt;
 // TODO: add better and more unit-tests
 
 // TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
-pub struct EventLoop<T: 'static + Send = ()> {
-    proxy: proxy::EventProxyData<T>,
-    wayland: wayland::Connection<T>,
+pub struct EventLoop {
+    proxy: proxy::EventProxyData,
+    wayland: wayland::Connection,
     signals: signals::SignalListener,
     config: EventLoopConfig,
     // dbus: dbus::Connection,
 }
 
-impl<T: 'static + Send> EventLoop<T> {
+impl EventLoop {
 
     fn new(config: EventLoopConfig) -> Result<Self, EvlError> {
         Ok(Self {
@@ -45,7 +45,7 @@ impl<T: 'static + Send> EventLoop<T> {
 
     }
 
-    pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
+    pub async fn next(&mut self) -> Result<Event, EvlError> {
         self.signals.next() // signals are the most important
             .or(self.wayland.next())
             .or(self.proxy.recv())
@@ -90,7 +90,7 @@ impl<T: 'static + Send> EventLoop<T> {
 
 }
 
-unsafe impl<T: Send + 'static> egl::IsDisplay for EventLoop<T> {
+unsafe impl egl::IsDisplay for EventLoop {
     fn ptr(&self) -> *mut void {
         self.wayland.state.con.get_ref()
             .display().id().as_ptr().cast()
@@ -109,27 +109,27 @@ pub mod proxy {
 
     use crate::*;
 
-    pub(crate) struct EventProxyData<T> {
-        pub(crate) sender: AsyncSender<Event<T>>,
-        pub(crate) receiver: AsyncReceiver<Event<T>>,
+    pub(crate) struct EventProxyData {
+        pub(crate) sender: AsyncSender<Event>,
+        pub(crate) receiver: AsyncReceiver<Event>,
     }
 
-    impl<T> EventProxyData<T> {
+    impl EventProxyData {
 
         pub fn new() -> Self {
             let (sender, receiver) = async_channel::unbounded();
             Self { sender, receiver }
         }
 
-        pub async fn recv(&mut self) -> Result<Event<T>, EvlError> {
+        pub async fn recv(&mut self) -> Result<Event, EvlError> {
             Ok(self.receiver.recv().await.unwrap())
         }
 
     }
 
     #[derive(Clone)]
-    pub struct EventProxy<T: Send> {
-        sender: AsyncSender<Event<T>>,
+    pub struct EventProxy {
+        sender: AsyncSender<Event>,
     }
 
     // impl<T: Send> Clone for EventProxy<T> {
@@ -138,14 +138,14 @@ pub mod proxy {
     //     }
     // }
 
-    impl<T: Send> EventProxy<T> {
+    impl EventProxy {
 
-        pub fn new(evl: &EventLoop<T>) -> Self {
+        pub fn new(evl: &EventLoop) -> Self {
             Self { sender: evl.proxy.sender.clone() }
         }
 
         #[track_caller]
-        pub fn send(&self, event: Event<T>) {
+        pub fn send(&self, event: Event) {
             // the event loop exiting should be the last thing to happen, so this
             // isn't meant to fail
             self.sender.try_send(event)
@@ -185,7 +185,7 @@ mod signals {
 
         }
 
-        pub async fn next<T>(&mut self) -> Result<Event<T>, EvlError> {
+        pub async fn next(&mut self) -> Result<Event, EvlError> {
 
             loop {
 

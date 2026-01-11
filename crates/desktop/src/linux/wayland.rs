@@ -74,13 +74,13 @@ use crate::*;
 
 // ### base event loop ###
 
-pub(crate) struct WaylandState<T: 'static + Send = ()> {
+pub(crate) struct WaylandState {
     app_name: String,
     pub(crate) con: Async<wayland_client::Connection>,
     qh: QueueHandle<Self>,
     globals: WaylandGlobals,
     // -- outputs --
-    events: Vec<Event<T>>, // used to push events from inside the dispatch impl
+    events: Vec<Event>, // used to push events from inside the dispatch impl
     errors: Vec<EvlError>, // used to push errors from sindei the dispatch impl
     // -- windowing state --
     mouse_data: MouseData,
@@ -191,14 +191,14 @@ impl PressedKeys {
 
 // ### public async event loop ### TODO: rework these comments
 
-pub(crate) struct Connection<T: 'static + Send> {
-    pub(crate) state: WaylandState<T>,
-    queue: EventQueue<WaylandState<T>>,
+pub(crate) struct Connection {
+    pub(crate) state: WaylandState,
+    queue: EventQueue<WaylandState>,
 }
 
 // TODO: don't use Deref<BaseWindow> for Window, since Deref can be confusing
 
-impl<T: 'static + Send> Connection<T> {
+impl Connection {
 
     pub fn new(application: &str) -> Result<Self, EvlError> {
 
@@ -206,7 +206,7 @@ impl<T: 'static + Send> Connection<T> {
             wayland_client::Connection::connect_to_env()?
         )?;
 
-        let (globals, queue) = registry_queue_init::<WaylandState<T>>(con.get_ref())?;
+        let (globals, queue) = registry_queue_init::<WaylandState>(con.get_ref())?;
         let qh = queue.handle();
 
         let mut monitor_list = HashSet::with_capacity(1);
@@ -235,7 +235,7 @@ impl<T: 'static + Send> Connection<T> {
 
     }
 
-    pub async fn next(&mut self) -> Result<Event<T>, EvlError> {
+    pub async fn next(&mut self) -> Result<Event, EvlError> {
 
         loop {
 
@@ -326,7 +326,7 @@ struct WaylandGlobals {
 
 impl WaylandGlobals {
 
-    pub fn from_globals<T: 'static + Send>(monitor_data: &mut HashSet<MonitorId>, globals: GlobalList, qh: &QueueHandle<WaylandState<T>>) -> Result<Self, BindError> {
+    pub fn from_globals(monitor_data: &mut HashSet<MonitorId>, globals: GlobalList, qh: &QueueHandle<WaylandState>) -> Result<Self, BindError> {
 
         // bind the primary monitor we already retreived
         globals.contents().with_list(|list| for val in list {
@@ -411,26 +411,26 @@ fn get_window_id(surface: &WlSurface) -> WindowId {
     surface.id().protocol_id()
 }
 
-pub struct BaseWindow<T: 'static + Send> {
+pub struct BaseWindow {
     // our data
     pub(crate) id: WindowId, // also found in `shared`
     shared: Arc<Mutex<WindowShared>>, // needs to be accessed by some callbacks
     // wayland state
-    qh: QueueHandle<WaylandState<T>>,
-    // proxy: EventProxy<T>,
+    qh: QueueHandle<WaylandState>,
+    // proxy: EventProxy
     compositor: WlCompositor, // used to create opaque regions
     pub(crate) wl_surface: WlSurface,
 }
 
-impl<T: 'static + Send> Drop for BaseWindow<T> {
+impl Drop for BaseWindow {
     fn drop(&mut self) {
         self.wl_surface.destroy();
     }
 }
 
-impl<T: 'static + Send> BaseWindow<T> {
+impl BaseWindow {
 
-    pub(crate) fn new(evl: &mut EventLoop<T>) -> Self {
+    pub(crate) fn new(evl: &mut EventLoop) -> Self {
 
         let evb = &mut evl.wayland.state;
 
@@ -505,7 +505,7 @@ impl<T: 'static + Send> BaseWindow<T> {
     ///
     /// In practice this means you can call this function as often or as rarely as you want and
     /// it will always generate at most one redraw event for every monitor frame.
-    pub fn redraw_with_vsync(&self, evl: &mut EventLoop<T>) {
+    pub fn redraw_with_vsync(&self, evl: &mut EventLoop) {
         let mut guard = self.shared.lock().unwrap();
         if guard.frame_callback_registered {
             // since a frame callback is currently in-flight which means we are wanting to redraw faster
@@ -537,7 +537,7 @@ impl<T: 'static + Send> BaseWindow<T> {
 
 }
 
-unsafe impl<T: Send + 'static> egl::IsSurface for BaseWindow<T> {
+unsafe impl egl::IsSurface for BaseWindow {
     fn ptr(&self) -> *mut void {
         self.wl_surface.id().as_ptr().cast()
     }
@@ -570,22 +570,22 @@ impl Drop for WindowShared {
 
 // ### window ###
 
-pub struct Window<T: 'static + Send> {
-    base: BaseWindow<T>,
+pub struct Window {
+    base: BaseWindow,
     xdg_surface: XdgSurface,
     xdg_toplevel: XdgToplevel,
     xdg_decoration: Option<ZxdgToplevelDecorationV1>,
 }
 
-impl<T: 'static + Send> ops::Deref for Window<T> {
-    type Target = BaseWindow<T>;
+impl ops::Deref for Window {
+    type Target = BaseWindow;
     fn deref(&self) -> &Self::Target {
         &self.base
     }
 }
 
 /// The window is closed on drop.
-impl<T: 'static + Send> Drop for Window<T> {
+impl Drop for Window {
     fn drop(&mut self) {
         self.xdg_decoration.as_ref().map(|val| val.destroy());
         self.xdg_toplevel.destroy();
@@ -593,9 +593,9 @@ impl<T: 'static + Send> Drop for Window<T> {
     }
 }
 
-impl<T: 'static + Send> Window<T> {
+impl Window {
 
-    pub fn new(evl: &mut EventLoop<T>) -> Self {
+    pub fn new(evl: &mut EventLoop) -> Self {
 
         let base = BaseWindow::new(evl);
 
@@ -683,7 +683,7 @@ impl<T: 'static + Send> Window<T> {
         self.base.wl_surface.commit();
     }
 
-    pub fn request_user_attention(&mut self, evl: &mut EventLoop<T>, urgency: Urgency) {
+    pub fn request_user_attention(&mut self, evl: &mut EventLoop, urgency: Urgency) {
 
         let evb = &mut evl.wayland.state;
 
@@ -720,7 +720,7 @@ impl<T: 'static + Send> Window<T> {
 }
 
 impl CursorStyle {
-    pub fn apply<T: Send>(&self, evl: &mut EventLoop<T>) {
+    pub fn apply(&self, evl: &mut EventLoop) {
 
         let evb = &mut evl.wayland.state;
 
@@ -930,7 +930,7 @@ impl Drop for DataSource {
 
 impl DataSource {
 
-    fn new<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
+    fn new(evl: &mut EventLoop, offers: DataKinds, mode: IoMode) -> Self {
 
         let evb = &mut evl.wayland.state;
 
@@ -958,7 +958,7 @@ impl DataSource {
     /// In other words this "sets the selection (clipboard)". You will receive events for this DataSource when another client
     /// wants to read from the selection.
     // TODO + DOCS: docs-rs alias to "clipboard" or smth
-    pub fn create_selection<T: 'static + Send>(evl: &mut EventLoop<T>, offers: DataKinds, mode: IoMode) -> Self {
+    pub fn create_selection(evl: &mut EventLoop, offers: DataKinds, mode: IoMode) -> Self {
 
         let this = Self::new(evl, offers, mode);
 
@@ -975,7 +975,7 @@ impl DataSource {
     /// *and* the user then moves the mouse.
     /// Otherwise the request may be denied or visually broken.
     #[track_caller]
-    pub fn create_drag_and_drop<T: 'static + Send>(evl: &mut EventLoop<T>, window: &mut Window<T>, offers: DataKinds, mode: IoMode, icon: CustomIcon) -> Self {
+    pub fn create_drag_and_drop(evl: &mut EventLoop, window: &mut Window, offers: DataKinds, mode: IoMode, icon: CustomIcon) -> Self {
 
         let this = Self::new(evl, offers, mode);
 
@@ -1033,7 +1033,7 @@ impl CustomIcon {
 
     /// Currently uses env::temp_dir() so the image content of your icon could be leaked to other users.
     #[track_caller]
-    pub fn new<T: 'static + Send>(evl: &mut EventLoop<T>, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
+    pub fn new(evl: &mut EventLoop, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
 
         let evb = &mut evl.wayland.state;
 
@@ -1093,30 +1093,30 @@ impl CustomIcon {
 
 // ### (wayland) popup and layer window ###
 
-pub struct PopupWindow<T: 'static + Send> {
-    base: BaseWindow<T>,
+pub struct PopupWindow {
+    base: BaseWindow,
     xdg_surface: XdgSurface,
     xdg_popup: XdgPopup,
 }
 
-impl<T: 'static + Send> ops::Deref for PopupWindow<T> {
-    type Target = BaseWindow<T>;
+impl ops::Deref for PopupWindow {
+    type Target = BaseWindow;
     fn deref(&self) -> &Self::Target {
         &self.base
     }
 }
 
 /// The window is closed on drop.
-impl<T: 'static + Send> Drop for PopupWindow<T> {
+impl Drop for PopupWindow {
     fn drop(&mut self) {
         self.xdg_popup.destroy();
         self.xdg_surface.destroy();
     }
 }
 
-impl<T: 'static + Send> PopupWindow<T> {
+impl PopupWindow {
 
-    pub fn new(evl: &mut EventLoop<T>, size: Size, parent: &Window<T>) -> Self {
+    pub fn new(evl: &mut EventLoop, size: Size, parent: &Window) -> Self {
 
         // TODO: this doesn't implement positioning of the popup window (where on the parent should it be)
         //       this is implemented using xdg_positioner.set_anchor or smth
@@ -1150,33 +1150,33 @@ impl<T: 'static + Send> PopupWindow<T> {
 
 }
 
-pub struct LayerWindow<T: 'static + Send> {
-    base: BaseWindow<T>,
+pub struct LayerWindow {
+    base: BaseWindow,
     zwlr_surface: ZwlrLayerSurfaceV1,
 }
 
-impl<T: 'static + Send> ops::Deref for LayerWindow<T> {
-    type Target = BaseWindow<T>;
+impl ops::Deref for LayerWindow {
+    type Target = BaseWindow;
     fn deref(&self) -> &Self::Target {
         &self.base
     }
 }
 
 /// The window is closed on drop.
-impl<T: 'static + Send> Drop for LayerWindow<T> {
+impl Drop for LayerWindow {
     fn drop(&mut self) {
         self.zwlr_surface.destroy();
         self.base.wl_surface.destroy();
     }
 }
 
-impl<T: 'static + Send> LayerWindow<T> {
+impl LayerWindow {
 
     /// # Errors
     /// Will return `Unsupported` if the neceserry extension (ZwlrLayerShellV1) is not present.
     /// # Panics
     /// `size` must be < u32::MAX
-    pub fn new(evl: &mut EventLoop<T>, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, EvlError> {
+    pub fn new(evl: &mut EventLoop, layer: WindowLayer, monitor: Option<&Monitor>) -> Result<Self, EvlError> {
 
         let base = BaseWindow::new(evl);
 
@@ -1457,7 +1457,7 @@ macro_rules! ignore {
     };
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents> for WaylandState<T> {
+impl wayland_client::Dispatch<WlRegistry, GlobalListContents> for WaylandState {
     fn event(
         evl: &mut Self,
         registry: &WlRegistry,
@@ -1486,14 +1486,14 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlRegistry, GlobalListContents>
     }
 }
 
-fn process_new_output<T: 'static + Send>(monitor_list: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<WaylandState<T>>) {
+fn process_new_output(monitor_list: &mut HashSet<MonitorId>, registry: &WlRegistry, name: u32, qh: &QueueHandle<WaylandState>) {
     let info = MonitorInfo::default();
     let output = registry.bind(name, 2, qh, Mutex::new(info)); // first time in my life using Mutex without an Arc
     let id = get_monitor_id(&output);
     monitor_list.insert(id);
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for WaylandState<T> {
+impl wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for WaylandState {
     fn event(
         evl: &mut Self,
         wl_output: &WlOutput,
@@ -1537,20 +1537,20 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> f
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlShm, ()> for WaylandState<T> { ignore!(WlShm, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlShmPool, ()> for WaylandState<T> { ignore!(WlShmPool, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlBuffer, ()> for WaylandState<T> { ignore!(WlBuffer, ()); }
+impl wayland_client::Dispatch<WlShm, ()> for WaylandState { ignore!(WlShm, ()); }
+impl wayland_client::Dispatch<WlShmPool, ()> for WaylandState { ignore!(WlShmPool, ()); }
+impl wayland_client::Dispatch<WlBuffer, ()> for WaylandState { ignore!(WlBuffer, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgPositioner, ()> for WaylandState<T> { ignore!(XdgPositioner, ()); }
+impl wayland_client::Dispatch<XdgPositioner, ()> for WaylandState { ignore!(XdgPositioner, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpViewporter, ()> for WaylandState<T> { ignore!(WpViewporter, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WpViewport, ()> for WaylandState<T> { ignore!(WpViewport, ()); }
+impl wayland_client::Dispatch<WpViewporter, ()> for WaylandState { ignore!(WpViewporter, ()); }
+impl wayland_client::Dispatch<WpViewport, ()> for WaylandState { ignore!(WpViewport, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeManagerV1, ()> for WaylandState<T> { ignore!(WpCursorShapeManagerV1, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WpCursorShapeDeviceV1, ()> for WaylandState<T> { ignore!(WpCursorShapeDeviceV1, ()); }
+impl wayland_client::Dispatch<WpCursorShapeManagerV1, ()> for WaylandState { ignore!(WpCursorShapeManagerV1, ()); }
+impl wayland_client::Dispatch<WpCursorShapeDeviceV1, ()> for WaylandState { ignore!(WpCursorShapeDeviceV1, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataDeviceManager, ()> for WaylandState<T> { ignore!(WlDataDeviceManager, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandState<T> {
+impl wayland_client::Dispatch<WlDataDeviceManager, ()> for WaylandState { ignore!(WlDataDeviceManager, ()); }
+impl wayland_client::Dispatch<WlDataDevice, ()> for WaylandState {
     fn event(
         evl: &mut Self,
         _data_device: &WlDataDevice,
@@ -1700,7 +1700,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataDevice, ()> for WaylandSt
 
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataOffer, Mutex<DataKinds>> for WaylandState<T> {
+impl wayland_client::Dispatch<WlDataOffer, Mutex<DataKinds>> for WaylandState {
     fn event(
         _evl: &mut Self,
         _data_offer: &WlDataOffer,
@@ -1720,7 +1720,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataOffer, Mutex<DataKinds>> 
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for WaylandState<T> {
+impl wayland_client::Dispatch<WlDataSource, IoMode> for WaylandState {
     fn event(
         evl: &mut Self,
         data_source: &WlDataSource,
@@ -1772,8 +1772,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlDataSource, IoMode> for Wayla
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationV1, ()> for WaylandState<T> { ignore!(XdgActivationV1, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationTokenV1, WlSurface> for WaylandState<T> {
+impl wayland_client::Dispatch<XdgActivationV1, ()> for WaylandState { ignore!(XdgActivationV1, ()); }
+impl wayland_client::Dispatch<XdgActivationTokenV1, WlSurface> for WaylandState {
     fn event(
         evl: &mut Self,
         _token: &XdgActivationTokenV1,
@@ -1792,8 +1792,8 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgActivationTokenV1, WlSurface
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<ZxdgDecorationManagerV1, ()> for WaylandState<T> { ignore!(ZxdgDecorationManagerV1, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, WindowId> for WaylandState<T> {
+impl wayland_client::Dispatch<ZxdgDecorationManagerV1, ()> for WaylandState { ignore!(ZxdgDecorationManagerV1, ()); }
+impl wayland_client::Dispatch<ZxdgToplevelDecorationV1, WindowId> for WaylandState {
     fn event(
         evl: &mut Self,
         _deco: &ZxdgToplevelDecorationV1,
@@ -1815,9 +1815,9 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZxdgToplevelDecorationV1, Windo
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleManagerV1, ()> for WaylandState<T> { ignore!(WpFractionalScaleManagerV1, ()); }
+impl wayland_client::Dispatch<WpFractionalScaleManagerV1, ()> for WaylandState { ignore!(WpFractionalScaleManagerV1, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for WaylandState<T> {
+impl wayland_client::Dispatch<WlSeat, ()> for WaylandState {
     fn event(
         evl: &mut Self,
         seat: &WlSeat,
@@ -1842,7 +1842,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlSeat, ()> for WaylandState<T>
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgWmBase, ()> for WaylandState<T> {
+impl wayland_client::Dispatch<XdgWmBase, ()> for WaylandState {
     fn event(
         _: &mut Self,
         wm: &XdgWmBase,
@@ -1857,7 +1857,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgWmBase, ()> for WaylandState
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for WaylandState<T> {
+impl wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowShared>>> for WaylandState {
     fn event(
         evl: &mut Self,
         xdg_surface: &XdgSurface,
@@ -1889,7 +1889,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgSurface, Arc<Mutex<WindowSha
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for WaylandState<T> {
+impl wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for WaylandState {
     fn event(
         evl: &mut Self,
         _surface: &XdgToplevel,
@@ -1919,7 +1919,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowSh
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShared>>> for WaylandState<T> {
+impl wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShared>>> for WaylandState {
     fn event(
         evl: &mut Self,
         _surface: &XdgPopup,
@@ -1945,11 +1945,11 @@ impl<T: 'static + Send> wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShare
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerShellV1, ()> for WaylandState<T> {
+impl wayland_client::Dispatch<ZwlrLayerShellV1, ()> for WaylandState {
     ignore!(ZwlrLayerShellV1, ());
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<WindowShared>>> for WaylandState<T> {
+impl wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<WindowShared>>> for WaylandState {
     fn event(
         evl: &mut Self,
         zwlr_surface: &ZwlrLayerSurfaceV1,
@@ -1982,7 +1982,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<W
     }
 }
 
-fn process_configure<T: 'static + Send>(evl: &mut WaylandState<T>, mut guard: MutexGuard<WindowShared>, width: u32, height: u32) {
+fn process_configure(evl: &mut WaylandState, mut guard: MutexGuard<WindowShared>, width: u32, height: u32) {
 
     // update the window's viewport destination
     if let Some(ref frac_scale_data) = guard.frac_scale_data {
@@ -2015,7 +2015,7 @@ fn read_configure_flags(states: Vec<u8>) -> ConfigureFlags {
         })
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for WaylandState<T> {
+impl wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowShared>>> for WaylandState {
     fn event(
         evl: &mut Self,
         _cb: &WlCallback,
@@ -2034,11 +2034,11 @@ impl<T: 'static + Send> wayland_client::Dispatch<WlCallback, Arc<Mutex<WindowSha
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlCompositor, ()> for WaylandState<T> { ignore!(WlCompositor, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlSurface, ()> for WaylandState<T> { ignore!(WlSurface, ()); }
-impl<T: 'static + Send> wayland_client::Dispatch<WlRegion, ()> for WaylandState<T> { ignore!(WlRegion, ()); }
+impl wayland_client::Dispatch<WlCompositor, ()> for WaylandState { ignore!(WlCompositor, ()); }
+impl wayland_client::Dispatch<WlSurface, ()> for WaylandState { ignore!(WlSurface, ()); }
+impl wayland_client::Dispatch<WlRegion, ()> for WaylandState { ignore!(WlRegion, ()); }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> for WaylandState<T> {
+impl wayland_client::Dispatch<WpFractionalScaleV1, WindowId> for WaylandState {
     fn event(
             evl: &mut Self,
             _proxy: &WpFractionalScaleV1,
@@ -2060,7 +2060,7 @@ impl<T: 'static + Send> wayland_client::Dispatch<WpFractionalScaleV1, WindowId> 
     }
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlKeyboard, ()> for WaylandState<T> {
+impl wayland_client::Dispatch<WlKeyboard, ()> for WaylandState {
     fn event(
             evl: &mut Self,
             _proxy: &WlKeyboard,
@@ -2226,7 +2226,7 @@ enum Source {
     KeyRepeat,
 }
 
-fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32, dir: Direction, source: Source) {
+fn process_key_event(evl: &mut WaylandState, raw_key: u32, dir: Direction, source: Source) {
 
     // NOTE: uses evl.keyboard_data and evl.events
 
@@ -2312,7 +2312,7 @@ fn process_key_event<T: 'static + Send>(evl: &mut WaylandState<T>, raw_key: u32,
 
 }
 
-impl<T: 'static + Send> wayland_client::Dispatch<WlPointer, ()> for WaylandState<T> {
+impl wayland_client::Dispatch<WlPointer, ()> for WaylandState {
     fn event(
             evl: &mut Self,
             _proxy: &WlPointer,

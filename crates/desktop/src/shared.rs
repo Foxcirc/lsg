@@ -5,9 +5,7 @@ use crate::*;
 use bitflags::bitflags;
 
 #[derive(Debug)]
-pub enum Event<T> {
-    /// Your own events. See [`EvlProxy`].
-    User(T),
+pub enum Event {
     /// Your app was resumed from the background or started and should show it's view.
     Resume,
     /// Your app's view should be destroyed but it can keep running in the background.
