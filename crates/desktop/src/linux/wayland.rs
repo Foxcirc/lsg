@@ -38,9 +38,9 @@ use nix::{
 };
 
 use async_io::{Async, Timer};
-use futures_lite::{FutureExt, ready};
+use futures_lite::FutureExt;
 
-use std::{env, fmt, fs, future, ops, task::Poll};
+use std::{env, fmt, fs, ops, task};
 
 use std::{
     os::fd::{AsFd, AsRawFd, FromRawFd},
@@ -175,8 +175,8 @@ impl PressedKeys {
 // ### async event loop ### TODO: rework these comments
 
 pub(crate) struct Connection {
-    state: SmartMutex<ConnectionState>,
-    queue: SmartMutex<EventQueue<ConnectionState>>,
+    state: ConnectionState,
+    queue: EventQueue<ConnectionState>,
 }
 
 // TODO: don't use Deref<BaseWindow> for Window, since Deref can be confusing
@@ -212,72 +212,70 @@ impl Connection {
         };
 
         Ok(Self {
-            state: SmartMutex::new(state),
-            queue: SmartMutex::new(queue),
+            state,
+            queue,
         })
 
     }
 
-    pub async fn next(&self) -> Result<Event, EvlError> {
+    pub fn poll(&mut self, cx: &mut task::Context<'_>) -> task::Poll<Result<Event, EvlError>> {
 
         loop {
 
-            let mut queue = self.queue.lock();
-            let mut state = self.state.lock();
+            // 1.
+            // flush all outgoing requests and process all events that we've stored
 
-            state.con.get_ref().flush()?; // flush all outgoing requests
-            queue.dispatch_pending(&mut *state)?; // process all events that we've stored
+            self.state.con.get_ref().flush()?;
+            self.queue.dispatch_pending(&mut self.state)?;
 
-            if let Some(event) = state.events.pop() {
-                return Ok(event)
+            if let Some(event) = self.state.events.pop() {
+                return task::Poll::Ready(Ok(event))
             }
 
-            if let Some(error) = state.errors.pop() {
-                return Err(error)
+            if let Some(error) = self.state.errors.pop() {
+                return task::Poll::Ready(Err(error))
             };
 
-            drop(queue);
-            drop(state);
+            // 2.
+            // try to read new data from the connection
 
-            let readable = future::poll_fn(move |cx| -> Poll<Result<(), EvlError>> {
+            if let Some(guard) = self.queue.prepare_read() {
 
-                let queue = self.queue.lock();
-                let state = self.state.lock();
+                ignore_wouldblock(guard.read_without_dispatch())?;
 
-                let Some(guard) = queue.prepare_read() else {
-                    return Poll::Ready(Ok(())) // we don't need to read anything yet
-                };
+                if let task::Poll::Ready(..) = self.state.con.poll_readable(cx)? {
+                    continue // we need to read more data
+                } else {
+                    // fallthrough
+                }
 
-                ignore_wouldblock(guard.read_without_dispatch())?; // we dispatch later
-                ready!(state.con.poll_readable(cx))?; // pending if the socket is not readable
+            } else {
+                continue // we need to dispatch more events
+            };
 
-                Poll::Ready(Ok(()))
+            // 3.
+            // check if the key-repeat timer is ready
 
-            });
+            if let task::Poll::Ready(..) = self.state.keyboard_data.repeat_timer.poll(cx) {
 
-            let timer = future::poll_fn(move |cx| -> Poll<Result<(), EvlError>> {
+                // insert the synthetic key-repeat event
+                let key = self.state.keyboard_data.repeat_key;
+                process_key_event(&mut self.state, key, Direction::Down, Source::KeyRepeat);
 
-                let mut state = self.state.lock();
+                continue
 
-                ready!(state.keyboard_data.repeat_timer.poll(cx));
+            } else {
+                // fallthrough
+            }
 
-                // emit the synthetic key-repeat event
-                let key = state.keyboard_data.repeat_key;
-                process_key_event(&mut *state, key, Direction::Down, Source::KeyRepeat);
-
-                Poll::Ready(Ok(()))
-
-            });
-
-            readable.or(timer).await?;
-
+            return task::Poll::Pending
 
         }
 
     }
 
-    pub(crate) fn display(&self) -> *mut void {
-        self.state.lock().con.get_ref()
+    pub fn display(&self) -> *mut void {
+        self.state.con.get_ref()
             .display().id().as_ptr().cast()
     }
 
@@ -415,7 +413,7 @@ impl BaseWindow {
 
     pub(crate) fn new(evl: &EventLoop) -> Self {
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         let surface = evb.globals.compositor.create_surface(&evb.qh, ());
         let id = get_window_id(&surface);
@@ -497,9 +495,8 @@ impl BaseWindow {
         } else if !guard.already_got_redraw_event {
             // force-redraw, since we are apperently drawing slower then the monitor refresh rate
             guard.already_got_redraw_event = true; // will be reset next frame by `pre_present_notify`.
-            evl.proxy.sender
-                .try_send(Event::Window { id: self.id, event: WindowEvent::Redraw })
-                .unwrap();
+            evl.state.lock().proxy
+                .send(Event::Window { id: self.id, event: WindowEvent::Redraw });
         }
     }
 
@@ -582,7 +579,7 @@ impl Window {
 
         let base = BaseWindow::new(evl);
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         // xdg-top-level role (+ init decoration manager)
         let xdg_surface = evb.globals.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
@@ -670,7 +667,7 @@ impl Window {
 
     pub fn request_user_attention(&mut self, evl: &EventLoop, urgency: Urgency) {
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         if let Urgency::Info = urgency {
             // we don't wanna switch focus, but on wayland just showing a
@@ -707,7 +704,7 @@ impl Window {
 impl CursorStyle {
     pub fn apply(&self, evl: &EventLoop) {
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         let serial = evb.cursor_data.last_enter_serial;
 
@@ -917,7 +914,7 @@ impl DataSource {
 
     fn new(evl: &EventLoop, offers: DataKinds, mode: IoMode) -> Self {
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         debug_assert!(!offers.is_empty(), "must offer at least one DataKind");
 
@@ -947,7 +944,7 @@ impl DataSource {
 
         let this = Self::new(evl, offers, mode);
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         evb.globals.data_device.set_selection(
             Some(&this.wl_data_source),
@@ -966,7 +963,7 @@ impl DataSource {
 
         let this = Self::new(evl, offers, mode);
 
-        let mut evb = evl.wayland.state.lock();
+        let evb = &mut evl.state.lock().wayland.state;
 
         // actually start the drag and drop
         evb.globals.data_device.start_drag(
@@ -1022,7 +1019,7 @@ impl CustomIcon {
     #[track_caller]
     pub fn new(evl: &EventLoop, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         let len = data.len();
 
@@ -1110,7 +1107,7 @@ impl PopupWindow {
 
         let base = BaseWindow::new(evl);
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         // xdg-popup role
         let xdg_surface = evb.globals.wm.get_xdg_surface(&base.wl_surface, &evb.qh, Arc::clone(&base.shared));
@@ -1167,7 +1164,7 @@ impl LayerWindow {
 
         let base = BaseWindow::new(evl);
 
-        let evb = evl.wayland.state.lock();
+        let evb = &evl.state.lock().wayland.state;
 
         let wl_layer = match layer {
             WindowLayer::Background => Layer::Background,
@@ -2525,14 +2522,14 @@ impl From<io::Error> for EvlError {
     }
 }
 
-impl From<dbus::MethodError> for EvlError {
-    fn from(value: dbus::MethodError) -> Self {
-        Self::fatal(format!("dbus method call failed, {:?}", value))
-    }
-}
+// impl From<dbus::MethodError> for EvlError {
+//     fn from(value: dbus::MethodError) -> Self {
+//         Self::fatal(format!("dbus method call failed, {:?}", value))
+//     }
+// }
 
-impl From<dbus::ArgError> for EvlError {
-    fn from(value: dbus::ArgError) -> Self {
-        Self::fatal(format!("dbus method unexpected reply, {:?}", value))
-    }
-}
+// impl From<dbus::ArgError> for EvlError {
+//     fn from(value: dbus::ArgError) -> Self {
+//         Self::fatal(format!("dbus method unexpected reply, {:?}", value))
+//     }
+// }

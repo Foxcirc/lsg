@@ -23,8 +23,8 @@ pub enum Event {
     /// The selection changed. This event will not be send if your app isn't in focus.
     /// `None` indicates that the current selection was invalidated.
     SelectionUpdate { offer: Option<DataOffer> },
-    ///  Notification event. (eg. an action was invoked)
-    Notif { id: NotifId, event: NotifEvent },
+    // ///  Notification event. (eg. an action was invoked)
+    // Notif { id: NotifId, event: NotifEvent },
 }
 
 #[derive(Debug)]
@@ -69,7 +69,7 @@ pub enum DataSourceEvent {
 #[derive(Debug)]
 /// Events for a notification.
 pub enum NotifEvent {
-    ActionInvoked { action: InvokedNotifAction }
+    // ActionInvoked { action: InvokedNotifAction }
 }
 
 #[derive(Debug)]

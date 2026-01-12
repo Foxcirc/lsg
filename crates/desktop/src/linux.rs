@@ -3,37 +3,39 @@
 pub mod wayland;
 pub use wayland::*;
 
-// notifs, status icons, ...
-pub mod dbus;
-pub use dbus::*;
-
-use wayland_client::Proxy;
+pub mod signals;
 
 use crate::shared::*;
+use common::SmartMutex;
 
-use std::{ffi::c_void as void, future};
-use futures_lite::FutureExt;
+use std::{ffi::c_void as void, future, task};
 
 // TODO: add better and more unit-tests
 
-// TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
-pub struct EventLoop {
-    proxy: proxy::EventProxyData,
+struct EventLoopState {
+    proxy: common::EventChannel<Event>,
     wayland: wayland::Connection,
     signals: signals::SignalListener,
-    config: EventLoopConfig,
     // dbus: dbus::Connection,
+    config: EventLoopConfig,
 }
+
+pub struct EventLoop {
+    state: SmartMutex<EventLoopState>,
+}
+
+// TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
 
 impl EventLoop {
 
     fn new(config: EventLoopConfig) -> Result<Self, EvlError> {
         Ok(Self {
-            proxy: proxy::EventProxyData::new(),
-            wayland: wayland::Connection::new(&config.appid)?,
-            signals: signals::SignalListener::new()?,
-            config,
-            // dbus: dbus::Connection::new(app)?,
+            state: SmartMutex::new(EventLoopState {
+                proxy: common::EventChannel::new(),
+                wayland: wayland::Connection::new(&config.appid)?,
+                signals: signals::SignalListener::new()?,
+                config,
+            }),
         })
     }
 
@@ -45,12 +47,16 @@ impl EventLoop {
 
     }
 
-    pub async fn next(&mut self) -> Result<Event, EvlError> {
-        self.signals.next() // signals are the most important
-            .or(self.wayland.next())
-            .or(self.proxy.recv())
-            // .or(self.dbus.next())
-            .await
+    pub async fn next(&self) -> Result<Event, EvlError> {
+
+        future::poll_fn(|cx| {
+            let mut state = self.state.lock(); // only lock briefly during polling
+            if let task::Poll::Ready(ev) = state.signals.poll(cx) { return task::Poll::Ready(ev) }
+            if let task::Poll::Ready(ev) = state.proxy  .poll(cx) { return task::Poll::Ready(Ok(ev)) }
+            if let task::Poll::Ready(ev) = state.wayland.poll(cx) { return task::Poll::Ready(ev) }
+            task::Poll::Pending
+        }).await
+
     }
 
     // /// Write pending requests. Call this during cleanup
@@ -61,26 +67,24 @@ impl EventLoop {
     //     Ok(())
     // }
 
-    pub fn config(&self) -> &EventLoopConfig {
-        &self.config
+    pub fn config(&self) -> EventLoopConfig {
+        let guard = self.state.lock();
+        guard.config.clone()
     }
 
-    pub fn suspend(&mut self) {
-        self.proxy.sender
-            .try_send(Event::Suspend)
-            .unwrap();
+    pub fn suspend(&self) {
+        let guard = self.state.lock();
+        guard.proxy.send(Event::Suspend);
     }
 
-    pub fn resume(&mut self) {
-        self.proxy.sender
-            .try_send(Event::Resume)
-            .unwrap();
+    pub fn resume(&self) {
+        let guard = self.state.lock();
+        guard.proxy.send(Event::Resume);
     }
 
-    pub fn quit(&mut self) {
-        self.proxy.sender
-            .try_send(Event::Quit { reason: QuitReason::Program })
-            .unwrap();
+    pub fn quit(&self) {
+        let guard = self.state.lock();
+        guard.proxy.send(Event::Quit { reason: QuitReason::Program });
     }
 
     // TODO: make it be Notif::new(&mut evl) instead
@@ -92,114 +96,11 @@ impl EventLoop {
 
 unsafe impl egl::IsDisplay for EventLoop {
     fn ptr(&self) -> *mut void {
-        self.wayland.display()
+        self.state.lock().wayland.display()
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct EventLoopConfig {
     pub appid: String,
-}
-
-pub use proxy::*;
-pub mod proxy {
-
-    use async_channel::{Sender as AsyncSender, Receiver as AsyncReceiver};
-
-    use crate::*;
-
-    pub(crate) struct EventProxyData {
-        pub(crate) sender: AsyncSender<Event>,
-        pub(crate) receiver: AsyncReceiver<Event>,
-    }
-
-    impl EventProxyData {
-
-        pub fn new() -> Self {
-            let (sender, receiver) = async_channel::unbounded();
-            Self { sender, receiver }
-        }
-
-        pub async fn recv(&mut self) -> Result<Event, EvlError> {
-            Ok(self.receiver.recv().await.unwrap())
-        }
-
-    }
-
-    #[derive(Clone)]
-    pub struct EventProxy {
-        sender: AsyncSender<Event>,
-    }
-
-    // impl<T: Send> Clone for EventProxy<T> {
-    //     fn clone(&self) -> Self {
-    //         Self { sender: self.sender.clone() }
-    //     }
-    // }
-
-    impl EventProxy {
-
-        pub fn new(evl: &EventLoop) -> Self {
-            Self { sender: evl.proxy.sender.clone() }
-        }
-
-        #[track_caller]
-        pub fn send(&self, event: Event) {
-            // the event loop exiting should be the last thing to happen, so this
-            // isn't meant to fail
-            self.sender.try_send(event)
-                .expect("event loop dead")
-        }
-
-    }
-
-}
-
-mod signals {
-
-    use std::io;
-
-    use futures_lite::StreamExt;
-    use nix::sys::signal::Signal;
-
-    use crate::*;
-
-    /// Listens to SIGTERM and SIGINT to emit the apropriate events
-    pub(crate) struct SignalListener {
-        signals: async_signals::Signals,
-    }
-
-    impl SignalListener {
-
-        pub fn new() -> io::Result<Self> {
-
-            let signals = async_signals::Signals::new([
-                Signal::SIGTERM as i32,
-                Signal::SIGINT as i32
-            ]).map_err(io::Error::from)?;
-
-            Ok(Self {
-                signals
-            })
-
-        }
-
-        pub async fn next(&mut self) -> Result<Event, EvlError> {
-
-            loop {
-
-                let signal = self.signals.next().await.unwrap_or(0);
-
-                if signal == Signal::SIGTERM as i32 {
-                    return Ok(Event::Quit { reason: QuitReason::System })
-                } else if signal == Signal::SIGINT as i32 {
-                    return Ok(Event::Quit { reason: QuitReason::CtrlC })
-                }
-
-            }
-
-        }
-
-    }
-
 }

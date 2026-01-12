@@ -1,5 +1,5 @@
 
-use std::{fmt, ops::{self, Range}, sync::{Mutex, MutexGuard}};
+use std::{fmt, future, ops::{self, Range}, sync::{Mutex, MutexGuard}, task};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -329,6 +329,71 @@ impl<T> SmartMutex<T> {
 
     pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
         self.inner.lock().expect("mutex was poisoned")
+    }
+
+}
+
+pub struct EventChannel<T> {
+    inner: SmartMutex<EventChannelInner<T>>,
+}
+
+struct EventChannelInner<T> {
+    waker: Option<task::Waker>,
+    event: Option<T>,
+}
+
+impl<T> Default for EventChannel<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> EventChannel<T> {
+
+    pub fn new() -> Self {
+        Self {
+            inner: SmartMutex::new(EventChannelInner {
+                waker: None,
+                event: None
+            })
+        }
+    }
+
+    pub fn send(&self, event: T) {
+
+        let mut inner = self.inner.lock();
+
+        inner.event = Some(event);
+
+        if let Some(waker) = &inner.waker {
+            waker.wake_by_ref();
+        }
+
+    }
+
+    pub async fn listen(&self) -> T {
+        future::poll_fn(|cx| { self.poll(cx) }).await
+    }
+
+    pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<T> {
+
+        let mut inner = self.inner.lock();
+
+        if let Some(it) = inner.event.take() {
+
+            task::Poll::Ready(it)
+
+        } else {
+
+            match &mut inner.waker {
+                Some(it) => it.clone_from(cx.waker()),
+                None => inner.waker = Some(cx.waker().clone())
+            }
+
+            task::Poll::Pending
+
+        }
+
     }
 
 }
