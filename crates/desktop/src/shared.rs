@@ -29,7 +29,7 @@ pub enum Event {
 
 #[derive(Debug)]
 pub enum WindowEvent {
-    Close,
+    ShouldClose,
     /// You must always redraw if asked to.
     Redraw,
     Resize { size: Size, flags: ConfigureFlags },

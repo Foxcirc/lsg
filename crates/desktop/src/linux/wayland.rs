@@ -1897,7 +1897,7 @@ impl wayland_client::Dispatch<XdgToplevel, Arc<Mutex<WindowShared>>> for Connect
         }
 
         else if let XdgToplevelEvent::Close = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::ShouldClose });
         }
 
     }
@@ -1923,7 +1923,7 @@ impl wayland_client::Dispatch<XdgPopup, Arc<Mutex<WindowShared>>> for Connection
         }
 
         else if let XdgPopupEvent::PopupDone = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::ShouldClose });
         }
 
     }
@@ -1960,7 +1960,7 @@ impl wayland_client::Dispatch<ZwlrLayerSurfaceV1, Arc<Mutex<WindowShared>>> for 
         }
 
         else if let ZwlrLayerSurfaceEvent::Closed = event {
-            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Close });
+            evl.events.push(Event::Window { id: guard.id, event: WindowEvent::ShouldClose });
         }
 
     }

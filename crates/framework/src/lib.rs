@@ -3,76 +3,163 @@
 
 use common::SmartMutex;
 
-use std::{future, sync::Arc, task};
-use futures_lite::future::block_on;
+use std::{collections::HashMap, convert::{Infallible, identity}, sync::{Arc, Weak}};
+use futures_lite::{FutureExt, future::block_on};
 
 #[cfg(test)]
 mod test;
 
 pub struct App {
-    executor: Arc<async_executor::LocalExecutor<'static>>,
-    evl: SmartMutex<desktop::EventLoop>,
-    // windows:
+    executor: async_executor::LocalExecutor<'static>,
+    eventloop: desktop::EventLoop,
+    windows: SmartMutex<HashMap<desktop::WindowId, Weak<Window>>>,
+    handlers: AppEventHandlers,
 }
 
 impl App {
 
-    pub fn run<R, H>(handler: H) -> R
-        where H: AsyncFnOnce(Self) -> R {
+    pub fn run<R, H>(main: H) -> Result<R, desktop::EvlError>
+        where H: AsyncFnOnce(Arc<Self>) -> R + 'static,
+              R: 'static {
 
             let config = desktop::EventLoopConfig {
                 appid: "unknown".into() // TODO
             };
 
-            desktop::EventLoop::run(config, |evl| {
+            desktop::EventLoop::run(config, |eventloop| {
 
-                let this = Self {
-                    executor: Arc::new(async_executor::LocalExecutor::new()),
-                    evl: SmartMutex::new(evl),
-                };
+                let this = Arc::new(Self {
+                    executor: async_executor::LocalExecutor::new(),
+                    windows: SmartMutex::new(HashMap::new()),
+                    handlers: AppEventHandlers::default(),
+                    eventloop,
+                });
 
-                let executor2 = Arc::clone(&this.executor);
+                let this2 = Arc::clone(&this);
+                let this3 = Arc::clone(&this);
 
-                // This task pumps events and calls the event handlers.
-                executor2.spawn(async move {
+                // This task will pump the event-loop. Any errors are
+                // treated as fatal and forewarded immediatly.
+                let dispatcher = this.executor.spawn(async move {
+                    let result = Self::dispatcher(this2).await;
+                    Err(result.unwrap_err())
+                });
 
-                    // loop {
-                        // evl.next()
-                    // }
+                // This is the task running the user code.
+                let main = this.executor.spawn(async move {
+                    let result = main(this3).await;
+                    Ok(result)
+                });
 
-                }).detach();
+                block_on(this.executor.run(
+                    dispatcher.or(main)
+                ))
 
-                // This task is the user-side which can wait for events.
-                block_on(executor2.run(async move {
-                    handler(this).await
-                }))
+            }).and_then(identity)
 
-            }).unwrap()
+    }
 
+    async fn dispatcher(this: Arc<Self>) -> Result<Infallible, desktop::EvlError> {
 
+        loop {
+
+            let event = this.eventloop.next().await?;
+
+            match event {
+
+                desktop::Event::Quit { reason } => {
+                    this.handlers.quit.send(reason)
+                },
+
+                desktop::Event::Window { id, event } => {
+
+                    // Try to get the window, if it wan't dropped already.
+                    let handler = this.windows.lock().get(&id)
+                        .and_then(Weak::upgrade);
+
+                    // Foreward the event to the window.
+                    if let Some(it) = handler {
+                        it.handlers.handle(event);
+                    }
+
+                },
+
+                _ => (),
+
+            }
+
+        }
+
+    }
+
+    pub fn spawn<F>(&self, fut: F)
+        where F: Future<Output = ()> + 'static {
+
+            self.executor.spawn(fut).detach();
+
+    }
+
+    // pub fn connect<T, E, L, F>(&self, data: &Arc<T>, listener: L, handler: F)
+    //     where L: AsyncFn(&T) -> E + 'static,
+    //           F: AsyncFn(E) + 'static,
+    //           T: 'static
+    //     {
+
+    //         let cloned = Arc::clone(data);
+
+    //         self.spawn(async move {
+    //             loop { handler(listener(&*cloned).await).await }
+    //         });
+
+    // }
+
+    pub fn quit(&self) {
+        self.handlers.quit.send(desktop::QuitReason::Program)
+    }
+
+    pub async fn quitted(&self) -> desktop::QuitReason {
+        self.handlers.quit.listen().await
     }
 
 }
 
+#[derive(Default)]
+struct AppEventHandlers {
+    quit: common::EventChannel<desktop::QuitReason>,
+}
+
 pub struct Window {
-    handlers: Arc<WindowEventHandlers>,
+    app: Arc<App>,
+    handlers: WindowEventHandlers,
     inner: desktop::Window
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        // Remove ourselves from the window list.
+        self.app.windows.lock().remove(
+            &self.inner.id()
+        );
+    }
 }
 
 impl Window {
 
-    pub fn new(app: &App) -> Self {
+    pub fn new(app: &Arc<App>) -> Arc<Self> {
 
-        let mut evl = app.evl.lock();
+        let this = Arc::new(Self {
+            app: Arc::clone(&app),
+            handlers: WindowEventHandlers::default(),
+            inner: desktop::Window::new(&app.eventloop),
+        });
 
-        let window = desktop::Window::new(&mut evl);
+        // Insert ourselves into the window list.
+        app.windows.lock().insert(
+            this.inner.id(),
+            Arc::downgrade(&this)
+        );
 
-        let handlers = Arc::new(Default::default());
-
-        Self {
-            handlers,
-            inner: window,
-        }
+        this
 
     }
 
@@ -93,7 +180,7 @@ impl WindowEventHandlers {
 
         match event {
 
-            desktop::WindowEvent::Close => self.closed.send(()),
+            desktop::WindowEvent::ShouldClose => self.closed.send(()),
 
             _ => (),
 

@@ -152,7 +152,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseMotion { .. } => (),
                     WindowEvent::Resize { size, .. } => surface.resize(&renderer, size).unwrap(),
-                    WindowEvent::Close => evl.quit(),
+                    WindowEvent::ShouldClose => evl.quit(),
 
                     other => println!("unhandeled window event '{:?}'", other),
 

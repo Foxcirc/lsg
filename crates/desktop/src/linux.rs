@@ -51,9 +51,9 @@ impl EventLoop {
 
         future::poll_fn(|cx| {
             let mut state = self.state.lock(); // only lock briefly during polling
+            if let task::Poll::Ready(ev) = state.wayland.poll(cx) { return task::Poll::Ready(ev) }
             if let task::Poll::Ready(ev) = state.signals.poll(cx) { return task::Poll::Ready(ev) }
             if let task::Poll::Ready(ev) = state.proxy  .poll(cx) { return task::Poll::Ready(Ok(ev)) }
-            if let task::Poll::Ready(ev) = state.wayland.poll(cx) { return task::Poll::Ready(ev) }
             task::Poll::Pending
         }).await
 

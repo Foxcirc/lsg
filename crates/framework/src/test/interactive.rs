@@ -111,7 +111,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     },
 
-                    WindowEvent::Close => evl.quit(),
+                    WindowEvent::ShouldClose => evl.quit(),
 
                     other => println!("unhandeled window event '{:?}'", other),
 
