@@ -9,6 +9,10 @@ use futures_lite::{FutureExt, future::block_on};
 #[cfg(test)]
 mod test;
 
+pub struct Config {
+    pub appid: String,
+}
+
 pub struct App {
     executor: async_executor::LocalExecutor<'static>,
     eventloop: desktop::EventLoop,
@@ -18,15 +22,15 @@ pub struct App {
 
 impl App {
 
-    pub fn run<R, H>(main: H) -> Result<R, desktop::EvlError>
+    pub fn run<R, H>(main: H, config: Config) -> Result<R, desktop::EvlError>
         where H: AsyncFnOnce(Arc<Self>) -> R + 'static,
               R: 'static {
 
-            let config = desktop::EventLoopConfig {
-                appid: "unknown".into() // TODO
+            let config2 = desktop::EventLoopConfig {
+                appid: config.appid.clone(),
             };
 
-            desktop::EventLoop::run(config, |eventloop| {
+            desktop::EventLoop::run(config2, |eventloop| {
 
                 let this = Arc::new(Self {
                     executor: async_executor::LocalExecutor::new(),

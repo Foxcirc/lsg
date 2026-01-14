@@ -4,7 +4,7 @@ use crate::*;
 
 #[test]
 fn app() -> Result<(), desktop::EvlError> {
-    App::run(handler)
+    App::run(handler, Config { appid: file!().into() })
 }
 
 async fn handler(app: Arc<App>) {
