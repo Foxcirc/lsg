@@ -1,8 +1,8 @@
 
 //! CPU triangulation algorithms and handling of curves.
 //!
-//! The algorithms are purposely written in a way that is similar to the
-//! compute shader implementation.
+//! The algorithms are purposefully written in a way that is similar to an
+//! (eventual) compute shader implementation.
 
 use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;

@@ -125,8 +125,8 @@ impl GlRenderer {
         gl::clear(&gl::FrameBuffer::default(), 0.0, 0.0, 0.0, 1.0);
         gl::clear(&surface.fbo, 0.0, 0.0, 0.0, 0.8); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
 
-        self.shape.draw(geometry, &gl::FrameBuffer::default(), size); // draw the new geometry ontop of the old one
-        // self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass
+        self.shape.draw(geometry, &surface.fbo, size); // draw the new geometry ontop of the old one
+        self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass
 
         self.ctx.swap(&surface.inner, Damage::all())?; // finally swap the buffers
 
@@ -287,7 +287,7 @@ impl ShapeRenderer {
     fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: Size) {
 
         // The layout is packed heavily to minimize memory usage.
-        // A position of 10,000 is converted to NDC coordinates of 1.0
+        // A position of 4096 is converted to NDC coordinates of 1.0
         //
         // Layout:
         // FLAGS  | x, y, z | u, v, l

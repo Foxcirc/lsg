@@ -9,6 +9,12 @@ use futures_lite::{FutureExt, future::block_on};
 #[cfg(test)]
 mod test;
 
+pub use desktop::{
+    MouseButton,
+    ScrollAxis,
+    Key,
+};
+
 pub struct Config {
     pub appid: String,
 }
@@ -44,8 +50,8 @@ impl App {
 
                 // This task will pump the event-loop. Any errors are
                 // treated as fatal and forewarded immediatly.
-                let dispatcher = this.executor.spawn(async move {
-                    let result = Self::dispatcher(this2).await;
+                let eventloop = this.executor.spawn(async move {
+                    let result = Self::eventloop(this2).await;
                     Err(result.unwrap_err())
                 });
 
@@ -56,14 +62,14 @@ impl App {
                 });
 
                 block_on(this.executor.run(
-                    dispatcher.or(main)
+                    eventloop.or(main)
                 ))
 
             }).and_then(identity)
 
     }
 
-    async fn dispatcher(this: Arc<Self>) -> Result<Infallible, desktop::EvlError> {
+    async fn eventloop(this: Arc<Self>) -> Result<Infallible, desktop::EvlError> {
 
         loop {
 
@@ -76,16 +82,10 @@ impl App {
                 },
 
                 desktop::Event::Window { id, event } => {
-
-                    // Try to get the window, if it wan't dropped already.
-                    let handler = this.windows.lock().get(&id)
-                        .and_then(Weak::upgrade);
-
-                    // Foreward the event to the window.
-                    if let Some(it) = handler {
-                        it.handlers.handle(event);
-                    }
-
+                    // Foreward the event to the window, if it wasn't dropped yet.
+                    this.windows.lock().get(&id)
+                        .and_then(Weak::upgrade)
+                        .inspect(|it| it.handle(event));
                 },
 
                 _ => (),
@@ -134,8 +134,9 @@ struct AppEventHandlers {
 
 pub struct Window {
     app: Arc<App>,
+    inner: desktop::Window,
     handlers: WindowEventHandlers,
-    inner: desktop::Window
+    pub content: SmartMutex<Arc<dyn Widget>>,
 }
 
 impl Drop for Window {
@@ -153,8 +154,9 @@ impl Window {
 
         let this = Arc::new(Self {
             app: Arc::clone(&app),
-            handlers: WindowEventHandlers::default(),
             inner: desktop::Window::new(&app.eventloop),
+            handlers: WindowEventHandlers::default(),
+            content: SmartMutex::new(Arc::new(()))
         });
 
         // Insert ourselves into the window list.
@@ -164,6 +166,19 @@ impl Window {
         );
 
         this
+
+    }
+
+    fn handle(&self, event: desktop::WindowEvent) {
+
+        if let desktop::WindowEvent::ShouldClose = &event {
+            self.handlers.closed.send(());
+        }
+
+        // let action = Action::Event { event };
+
+        // Propagate the action through the widget tree.
+        // self.content.lock().action(action);
 
     }
 
@@ -178,23 +193,211 @@ struct WindowEventHandlers {
     closed: common::EventChannel<()>,
 }
 
-impl WindowEventHandlers {
+pub trait Widget {
+    fn action(&self, action: Action);
+}
 
-    fn handle(&self, event: desktop::WindowEvent) {
+impl Widget for () {
+    fn action(&self, _: Action) {}
+}
 
-        match event {
+pub enum Action<'a> {
 
-            desktop::WindowEvent::ShouldClose => self.closed.send(()),
+    Render { space: Space<'a> },
 
-            _ => (),
+    MouseMotion { x: u16, y: u16 },
+    MouseDown { x: u16, y: u16, button: MouseButton },
+    MouseUp { x: u16, y: u16, button: MouseButton },
+    MouseScroll { axis: ScrollAxis, value: i16 },
 
+    Unhover,
+    Unfocus,
+
+    KeyDown { key: Key, repeat: bool },
+    KeyUp { key: Key },
+
+    TextInput { chr: char },
+    TextCompose { chr: char },
+    TextComposeCancel,
+
+}
+
+struct RenderState {
+    geometries: RenderStateGeometries,
+    vertices: RenderStateVertices,
+    curves: RenderStateCurves,
+}
+
+struct RenderStateGeometries {
+    /// Widget-added geometries.
+    inner: Vec<Arc<render::VertexGeometry>>,
+    /// Indexes into `geometries`.
+    instances: Vec<common::Instance>,
+}
+
+struct RenderStateVertices {
+    /// Widget-added vertices.
+    data: Arc<render::VertexGeometry>,
+    /// Indexes into `geometry`.
+    instances: Vec<common::Instance>,
+}
+
+struct RenderStateCurves {
+    // Widget-added curves.
+    // Will be triangulated later on.
+    data: render::CurveGeometry,
+    /// Indexes into `geometry`.
+    instances: Vec<common::Instance>,
+
+}
+
+pub struct Space<'a> {
+    state: &'a mut RenderState,
+    offset: f32,
+    scale: f32,
+}
+
+impl<'a> Space<'a> {
+
+    pub fn curves(&mut self, data: &[common::CurvePoint]) -> SpaceKey {
+
+        let geometry = &mut self.state.curves.data;
+
+        // Insert the curve data.
+        let start = geometry.points.len() as u16;
+        geometry.points.extend_from_slice(data);
+        let end = geometry.points.len() as u16;
+
+        // Create the shape.
+        geometry.shapes.push(common::Shape::new(start..end));
+
+        SpaceKey {
+            kind: SpaceKeyKind::Curves,
+            index: geometry.shapes.len() as u16 - 1,
         }
 
     }
 
+    pub fn vertices(&mut self, data: &[render::PartialVertex]) -> SpaceKey {
+
+        let geometry = Arc::get_mut(&mut self.state.vertices.data)
+            .expect("exclusive ownership of vertex geometry");
+
+        // Insert the curve data.
+        let start = geometry.vertices.len() as u16;
+        geometry.vertices.extend_from_slice(data);
+        let end = geometry.vertices.len() as u16;
+
+        // Create the shape.
+        geometry.shapes.push(common::Shape::new(start..end));
+
+        SpaceKey {
+            kind: SpaceKeyKind::Vertices,
+            index: geometry.shapes.len() as u16 - 1,
+        }
+
+    }
+
+    pub fn geometry(&mut self, geometry: Arc<render::VertexGeometry>) -> GeometryKey {
+        let items = &mut self.state.geometries.inner;
+        items.push(geometry);
+        GeometryKey {
+            index: items.len() as u16 - 1
+        }
+    }
+
+    pub fn instance(&mut self, key: SpaceKey, instance: Instance) {
+
+        let adjusted = common::Instance {
+            target: [0, key.index as usize],
+            pos: instance.pos,
+            scale: instance.scale,
+        };
+
+        match key.kind {
+            SpaceKeyKind::Curves => self.state.curves.instances.push(adjusted),
+            SpaceKeyKind::Vertices => self.state.vertices.instances.push(adjusted),
+        }
+    }
+
+    pub fn targeted(&mut self, key: GeometryKey, shape: u16, instance: Instance) {
+
+        let adjusted = common::Instance {
+            target: [key.index as usize, shape as usize],
+            pos: instance.pos,
+            scale: instance.scale,
+        };
+
+        self.state.geometries.instances.push(adjusted);
+
+    }
+
+    // pub fn subdivide(&self, offset: common::PhysicalPoint, size: common::Size) -> Self {
+
+    //     Self {
+
+    //     }
+
+    // }
+
+}
+
+pub struct SpaceKey {
+    kind: SpaceKeyKind,
+    index: u16,
+}
+
+enum SpaceKeyKind {
+    Curves,
+    Vertices,
+}
+
+pub struct GeometryKey {
+    index: u16,
+}
+
+pub struct Instance {
+    /// offsetX, offsetY
+    pub pos: common::Point,
+    /// Scale which is applied to the targeted shape.
+    pub scale: usize,
 }
 
 /*
+
+    Needed features:
+    - Add shape as list of points
+    - Add shape as vertices
+    - Create (many) instances of one shape
+
+    fn action(&self, action: Action) {
+
+        if let Action::Draw(ctx) = action {
+
+            let cached = ...;
+
+            ctx.geometry.add(cached or shape data, instace);
+
+            ctx.child(|inner| {
+                child.handle(Action::Draw { ctx: inner });
+            })
+
+            let sub = ctx.sub(position, size);
+            child.handle(Action::Draw { ctx: sub });
+
+            // impl DrawContext:
+            fn sub(&self, size, position) -> &mut Self {
+                &mut Self {
+                    vertex geometry: &mut self.VertexGeometry,
+                    curve geom: ...,
+                    self offset + position offset,
+                    self factor + size factor,
+                }
+            }
+
+        }
+
+    }
 
     fn main() {
         lsg::run(app)

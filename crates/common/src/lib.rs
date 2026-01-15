@@ -273,8 +273,8 @@ impl IntersectionRelation {
 /// shape many times in different positions and with a different texture.
 #[derive(Debug, Clone)]
 pub struct Instance {
-    /// Index into the \[[`VertexGeometry`]\] and then the inner \[[`Shape`]\].
-    pub target: [usize; 2],
+    /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
+    pub target: [usize; 2], // TODO: make this a struct with named fields not just a [usize; 2]
     /// offsetX, offsetY
     pub pos: Point,
     /// Scale which is applied to the targeted shape.
@@ -320,6 +320,10 @@ impl<T> SmartMutex<T> {
         Self { inner: Mutex::new(inner) }
     }
 
+    pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
+        self.inner.lock().expect("mutex was poisoned")
+    }
+
     pub fn with<F, R>(&self, f: F) -> R
         where F: FnOnce(&mut T) -> R {
 
@@ -327,8 +331,8 @@ impl<T> SmartMutex<T> {
 
     }
 
-    pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
-        self.inner.lock().expect("mutex was poisoned")
+    pub fn set(&self, val: T) {
+        *self.lock() = val;
     }
 
 }

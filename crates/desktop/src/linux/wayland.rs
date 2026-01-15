@@ -811,7 +811,6 @@ pub type DataOfferId = u32;
 /// Don't hold onto it. You should immediatly decide if you want to receive something or not.
 pub struct DataOffer {
     wl_data_offer: WlDataOffer,
-    con: wayland_client::Connection, // needed to flush all events after accepting the offer
     kinds: DataKinds,
     dnd: bool, // checked in the destructor to determine how wl_data_offer should be destroyed
 }
@@ -837,7 +836,7 @@ impl DataOffer {
     }
 
     /// A `DataOffer` can be read multiple times. Also using different `DataKinds`.
-    pub fn receive(&self, kind: DataKinds, mode: IoMode) -> Result<DataReader, EvlError> {
+    pub fn receive(&self, evl: &EventLoop, kind: DataKinds, mode: IoMode) -> Result<DataReader, EvlError> {
 
         let (reader, writer) = pipe2(OFlag::empty())?;
 
@@ -845,9 +844,10 @@ impl DataOffer {
         let mime_type = kind.to_mime_type();
         self.wl_data_offer.receive(mime_type.to_string(), writer.as_fd());
 
-        self.con.flush()?; // <--- this is important, so we can immediatly read without deadlocking
+         // This is important! We need the compositor to inform the other side
+         // that we want to read now, otherwise reading immediatly would deadlock.
+        evl.state.lock().wayland.state.con.get_ref().flush()?;
 
-        // set only the writing end to be nonblocking, if enabled
         if let IoMode::Nonblocking = mode {
             let old_flags = fcntl::fcntl(reader.as_raw_fd(), fcntl::FcntlArg::F_GETFL)?;
             let new_flags = OFlag::from_bits_retain(old_flags) | OFlag::O_NONBLOCK;
@@ -1610,7 +1610,6 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
 
                 let offer = DataOffer {
                     wl_data_offer,
-                    con: evl.con.get_ref().clone(),
                     kinds,
                     dnd: true,
                 };
@@ -1661,7 +1660,6 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
 
                 let offer = Some(DataOffer {
                     wl_data_offer,
-                    con: evl.con.get_ref().clone(), // should be pretty cheap
                     kinds,
                     dnd: false,
                 });
