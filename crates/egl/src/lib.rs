@@ -1,5 +1,5 @@
 
-use common::{Size, Rect, Damage};
+use common::{Damage, LogicalSize, Rect};
 use std::{ffi::c_void as void, fmt, mem, sync::Arc, error::Error as StdError};
 
 /*
@@ -329,7 +329,7 @@ impl Context {
         self.damage_rects.clear();
         self.damage_rects.extend_from_slice(damage.rects);
         for rect in self.damage_rects.iter_mut() {
-            rect.pos.y = surface.size.h as isize - rect.pos.y - rect.size.h as isize;
+            rect.pos.y = (surface.size.h as isize - rect.pos.y as isize - rect.size.h as isize) as i16;
         }
 
         if let Some(func) = self.instance.swap_buffers_with_damage {
@@ -349,14 +349,14 @@ impl Context {
 /// A double-buffered window surface.
 pub struct Surface {
     inner: egl::Surface,
-    size: Size,
+    size: LogicalSize,
     #[cfg(unix)]
     wl_egl_surface: wayland_egl::WlEglSurface,
 }
 
 impl Surface {
 
-    pub fn new<I: IsSurface>(instance: &Instance, config: &Config, inner: &I, size: Size) -> Result<Self, EglError> {
+    pub fn new<I: IsSurface>(instance: &Instance, config: &Config, inner: &I, size: LogicalSize) -> Result<Self, EglError> {
 
         #[cfg(unix)] // unix means wayland, as far as we are concerned
         let wl_egl_surface = unsafe {
@@ -391,13 +391,13 @@ impl Surface {
 
     }
 
-    pub fn resize(&mut self, size: Size) {
+    pub fn resize(&mut self, size: LogicalSize) {
         self.size = size;
         let (w, h) = (size.w as i32, size.h as i32);
         self.wl_egl_surface.resize(w, h, 0, 0);
     }
 
-    pub fn size(&self) -> Size {
+    pub fn size(&self) -> LogicalSize {
         self.size
     }
 

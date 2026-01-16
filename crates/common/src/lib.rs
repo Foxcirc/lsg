@@ -5,67 +5,82 @@ use std::{fmt, future, ops::{self, Range}, sync::{Mutex, MutexGuard}, task};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rect {
-    pub pos: PhysicalPoint,
-    pub size: Size,
+    pub pos: LogicalPoint,
+    pub size: LogicalSize,
 }
 
 impl Rect {
-    pub const INFINITE: Self = Self::new(PhysicalPoint::ZERO, Size::INFINITE);
-    pub const fn new(pos: PhysicalPoint, size: Size) -> Self {
+    pub const INFINITE: Self = Self::new(LogicalPoint::ZERO, LogicalSize::INFINITE);
+    pub const fn new(pos: LogicalPoint, size: LogicalSize) -> Self {
         Self { pos, size }
     }
-    pub const fn new2(x: isize, y: isize, w: usize, h: usize) -> Self {
-        Self { pos: PhysicalPoint::new(x, y), size: Size::new(w, h) }
+    pub const fn new2(x: i16, y: i16, w: u16, h: u16) -> Self {
+        Self { pos: LogicalPoint::new(x, y), size: LogicalSize::new(w, h) }
     }
 }
 
-#[derive(Debug, Default, Clone, Copy,PartialEq, Eq)]
-pub struct Size {
-    pub w: usize,
-    pub h: usize
-}
+// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+// /// A non-negative size, specified in physical coordinates.
+// pub struct PhysicalSize {
+//     pub w: u16,
+//     pub h: u16
+// }
 
-impl Size {
-    pub const INFINITE: Self = Self::new(usize::MAX, usize::MAX);
-    pub const fn new(w: usize, h: usize) -> Self { Self { w, h } }
-}
-
-/// A point on a window, in physical coordinates.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PhysicalPoint {
-    pub x: isize,
-    pub y: isize,
+/// A non-negative size, specified in logical coordinates.
+///
+/// See [`LogicalPoint`].
+pub struct LogicalSize {
+    pub w: u16,
+    pub h: u16
 }
 
-impl PhysicalPoint {
+impl LogicalSize {
+    pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
+    pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
+}
+
+/// A point, specified in logical coordinates.
+///
+/// The point is assumed to use a "normalized" coordinate system where
+/// (0, 0) is at the the bottom-left and (10,000, 10,000) at the top-right.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LogicalPoint {
+    pub x: i16,
+    pub y: i16,
+}
+
+impl LogicalPoint {
     pub const ZERO: Self = Self::new(0, 0);
-    pub const fn new(x: isize, y: isize) -> Self {
+    pub const MAX: Self = Self::new(10000, 10000);
+    pub const INFINITE: Self = Self::new(i16::MAX, i16::MAX);
+    pub const fn new(x: i16, y: i16) -> Self {
         Self { x, y }
     }
 }
 
-impl From<Point> for PhysicalPoint {
-    fn from(value: Point) -> Self {
-        Self::new(value.x as isize, value.y as isize)
+impl From<MathPoint> for LogicalPoint {
+    fn from(value: MathPoint) -> Self {
+        Self::new(value.x as i16, value.y as i16)
     }
 }
 
 /// Convert discarding curve information.
-impl From<CurvePoint> for PhysicalPoint {
+impl From<CurvePoint> for LogicalPoint {
     fn from(value: CurvePoint) -> Self {
-        Self::new(value.x() as isize, value.y() as isize)
+        Self::new(value.x() as i16, value.y() as i16)
     }
 }
 
 // TODO: I believe we should work with integer points that have high coordinate values (eg. i32::MAX / 2 being the right side of the screen) instead of using f32 generally
 /// A mathematical point.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct Point {
+pub struct MathPoint {
     pub x: f32,
     pub y: f32,
 }
 
-impl Point {
+impl MathPoint {
     pub const ZERO: Self = Self::new(0.0, 0.0);
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
@@ -77,29 +92,29 @@ impl Point {
 
 }
 
-impl From<PhysicalPoint> for Point {
-    fn from(value: PhysicalPoint) -> Self {
+impl From<LogicalPoint> for MathPoint {
+    fn from(value: LogicalPoint) -> Self {
         Self::new(value.x as f32, value.y as f32)
     }
 }
 
 /// Convert discarding curve information.
-impl From<CurvePoint> for Point {
+impl From<CurvePoint> for MathPoint {
     fn from(value: CurvePoint) -> Self {
         Self::new(value.x() as f32, value.y() as f32)
     }
 }
 
-impl ops::Mul<f32> for Point {
-    type Output = Point;
+impl ops::Mul<f32> for MathPoint {
+    type Output = MathPoint;
     fn mul(self, rhs: f32) -> Self::Output {
         Self::new(self.x * rhs, self.y * rhs)
     }
 }
 
-impl ops::Add<Point> for Point {
-    type Output = Point;
-    fn add(self, rhs: Point) -> Self::Output {
+impl ops::Add<MathPoint> for MathPoint {
+    type Output = MathPoint;
+    fn add(self, rhs: MathPoint) -> Self::Output {
         Self::new(self.x + rhs.x, self.y + rhs.y)
     }
 }
@@ -193,17 +208,17 @@ impl CurvePoint {
 }
 
 /// Lossy conversion, see `new` for more details.
-impl CurvePointFrom<PhysicalPoint> for CurvePoint {
+impl CurvePointFrom<LogicalPoint> for CurvePoint {
     #[track_caller]
-    fn convert(point: PhysicalPoint, kind: PointKind) -> Self {
+    fn convert(point: LogicalPoint, kind: PointKind) -> Self {
         Self::new(point.x as u16, point.y as u16, kind)
     }
 }
 
 /// Lossy conversion, see `new` for more details.
-impl CurvePointFrom<Point> for CurvePoint {
+impl CurvePointFrom<MathPoint> for CurvePoint {
     #[track_caller]
-    fn convert(point: Point, kind: PointKind) -> Self {
+    fn convert(point: MathPoint, kind: PointKind) -> Self {
         Self::new(point.x as u16, point.y as u16, kind)
     }
 }
@@ -251,16 +266,16 @@ pub enum IntersectionRelation {
     /// Intesecting
     Inside,
     /// Point lies on an edge
-    OnEdge([[Point; 2]; 1]),
+    OnEdge([[MathPoint; 2]; 1]),
     /// Point lies on a corner.
-    OnCorner([[Point; 2]; 2]),
+    OnCorner([[MathPoint; 2]; 2]),
 }
 
 impl IntersectionRelation {
     /// All edges this intersection touched.
     /// OnEdge => 1 edge
     /// OnCorner => 2 edges
-    pub fn edges(&self) -> &[[Point; 2]] {
+    pub fn edges(&self) -> &[[MathPoint; 2]] {
         match self {
             Self::Outside | Self::Inside => &[],
             Self::OnEdge(edge) => edge,
@@ -276,9 +291,9 @@ pub struct Instance {
     /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
     pub target: [usize; 2], // TODO: make this a struct with named fields not just a [usize; 2]
     /// offsetX, offsetY
-    pub pos: Point,
+    pub pos: LogicalPoint,
     /// Scale which is applied to the targeted shape.
-    pub scale: usize,
+    pub size: LogicalSize,
     // /// texture coordinates and layer
     // pub texture: [f32; 3],
 }

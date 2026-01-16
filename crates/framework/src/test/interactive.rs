@@ -20,7 +20,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     window.set_title(&evl.config().appid);
     window.set_transparency(true);
-    window.set_size(Size::new(500, 500));
+    window.set_size(LogicalSize::new(500, 500));
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
     let mut surface = render::GlSurface::new(&renderer, &*window).unwrap();
@@ -36,8 +36,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     geometry.shapes.push(Shape::new(0..3));
 
     instances.push(Instance {
-        pos: Point::new(0.0, 0.0),
-        scale: 10_000,
+        pos: MathPoint::new(0.0, 0.0),
+        size: 10_000,
         target: [0, 0],
     });
 

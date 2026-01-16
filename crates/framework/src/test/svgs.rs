@@ -18,7 +18,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
     window.set_title(&evl.config().appid);
     window.set_transparency(true);
-    window.set_size(Size::new(1000, 1000));
+    window.set_size(LogicalSize::new(1000, 1000));
 
     let mut renderer = render::GlRenderer::new(&evl).unwrap();
     let mut surface = render::GlSurface::new(&renderer, &*window).unwrap();
@@ -132,8 +132,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                                 let end = geometry.points.len();
                                 geometry.shapes.push(Shape::new(start as u16..end as u16));
                                 instances.push(Instance {
-                                    pos: Point::new(physical_x as f32, physical_y as f32),
-                                    scale: 80,
+                                    pos: MathPoint::new(physical_x as f32, physical_y as f32),
+                                    size: 80,
                                     target: [0, shape_idx],
                                 });
                             }

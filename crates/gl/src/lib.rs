@@ -32,7 +32,7 @@
 /// but adding more is really easy and often a matter of minutes.
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
-use common::{Size, Rect};
+use common::{LogicalSize, Rect};
 
 #[derive(Debug)]
 pub struct FnsUnknown;
@@ -877,12 +877,12 @@ pub fn bind_render_buffer(this: &RenderBuffer) {
     unsafe { gl::BindRenderbuffer(gl::RENDERBUFFER, this.id) }
 }
 
-pub fn render_buffer_storage(this: &RenderBuffer, format: PreciseColorFormat, size: Size) {
+pub fn render_buffer_storage(this: &RenderBuffer, format: PreciseColorFormat, size: LogicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorage(gl::RENDERBUFFER, format as u32, size.w as i32, size.h as i32); }
 }
 
-pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: PreciseColorFormat, size: Size) {
+pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: PreciseColorFormat, size: LogicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.w as i32, size.h as i32); }
 }
@@ -954,7 +954,7 @@ pub fn bind_texture(texture: &Texture) {
     unsafe { gl::BindTexture(texture.kind as u32, texture.id) };
 }
 
-pub fn tex_image_2d(texture: &Texture, lod: usize, fcolor: PreciseColorFormat, size: Size, fpixel: BaseColorFormat, kind: DataType) {
+pub fn tex_image_2d(texture: &Texture, lod: usize, fcolor: PreciseColorFormat, size: LogicalSize, fpixel: BaseColorFormat, kind: DataType) {
     bind_texture(texture);
     unsafe { gl::TexImage2D(
         texture.kind as u32,
@@ -969,7 +969,7 @@ pub fn tex_image_2d(texture: &Texture, lod: usize, fcolor: PreciseColorFormat, s
 }
 
 /// Not available in ES versions.
-pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: PreciseColorFormat, size: Size) {
+pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: PreciseColorFormat, size: LogicalSize) {
     bind_texture(texture);
     unsafe { gl::TexImage2DMultisample(
         texture.kind as u32,
@@ -1135,7 +1135,7 @@ pub fn depth_mask(enabled: bool) {
     unsafe { gl::DepthMask(enabled as u8) }
 }
 
-pub fn resize_viewport(size: Size) {
+pub fn resize_viewport(size: LogicalSize) {
     unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
 }
 

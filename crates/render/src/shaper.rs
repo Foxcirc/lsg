@@ -160,7 +160,7 @@ impl LoweringPass {
                 points[(idx + 3) % len],
             ];
 
-            let [a, b, c, d] = section.map(|it| Point::from(it));
+            let [a, b, c, d] = section.map(|it| MathPoint::from(it));
 
             let increment; // how many points to skip for the next iteration
 
@@ -172,7 +172,7 @@ impl LoweringPass {
                 increment = 2;
 
                 let intersected = points.iter().any(|it|
-                    !section.contains(it) && TriangulationPass::triangle_intersects_point([a, b, c], Point::from(*it)) == IntersectionRelation::Inside
+                    !section.contains(it) && TriangulationPass::triangle_intersects_point([a, b, c], MathPoint::from(*it)) == IntersectionRelation::Inside
                 );
 
                 if intersected {
@@ -354,7 +354,7 @@ impl TriangulationPass {
                 points[(idx + 2) % len],
             ];
 
-            let abc = section.map(|it| Point::from(it));
+            let abc = section.map(|it| MathPoint::from(it));
 
             let increment; // how many points to skip for the next iteration
 
@@ -438,7 +438,7 @@ impl TriangulationPass {
             if self.ears[idx as u64] {
 
                 let [ia, ib, ic] = Self::neighbours(&self.removed, idx);
-                let abc = [ia, ib, ic].map(|it| Point::from(points[it]));
+                let abc = [ia, ib, ic].map(|it| MathPoint::from(points[it]));
                 if ia == ic { // only two points were left
                     break
                 };
@@ -485,7 +485,7 @@ impl TriangulationPass {
 
     }
 
-    fn generate_triangle(points: [Point; 3], outers: [bool; 3], fill: FillKind, out: &mut Vec<PartialVertex>) {
+    fn generate_triangle(points: [MathPoint; 3], outers: [bool; 3], fill: FillKind, out: &mut Vec<PartialVertex>) {
 
         let flags = ((outers[0] as u8) << 2) |
                     ((outers[1] as u8) << 1) |
@@ -569,7 +569,7 @@ impl TriangulationPass {
 
     fn ear(indices: [usize; 3], polygon: &[CurvePoint]) -> bool {
 
-        let abc = indices.map(|it| Point::from(polygon[it]));
+        let abc = indices.map(|it| MathPoint::from(polygon[it]));
 
         // A. short curcuit if the triangle has zero area.
         //
@@ -591,7 +591,7 @@ impl TriangulationPass {
         for (pidx, point) in polygon.iter().enumerate() {
 
             if !indices.contains(&pidx) && // dont include the points that make up the ear
-                Self::triangle_intersects_point(abc, Point::from(*point)) == IntersectionRelation::Inside
+                Self::triangle_intersects_point(abc, MathPoint::from(*point)) == IntersectionRelation::Inside
             {
                 return false
             }
@@ -661,7 +661,7 @@ impl TriangulationPass {
 
     /// Check if the three points are convex, assuming counter clockwise orientation.
     /// Y-flipped version.
-    fn convex(neighbours: [Point; 3]) -> bool {
+    fn convex(neighbours: [MathPoint; 3]) -> bool {
 
         let [a, b, c] = neighbours;
 
@@ -689,7 +689,7 @@ impl TriangulationPass {
 
     /// Area of the triangle ABC.
     /// Y-flipped version.
-    fn triangle_area([a, b, c]: [Point; 3]) -> f32 {
+    fn triangle_area([a, b, c]: [MathPoint; 3]) -> f32 {
         ((a.x as f32 * (c.y as f32 - b.y as f32) +
           b.x as f32 * (a.y as f32 - c.y as f32) +
           c.x as f32 * (b.y as f32 - a.y as f32)) / 2.0).abs()
@@ -703,7 +703,7 @@ impl TriangulationPass {
     // TODO: I am keeping this function around until further testing is done since special handling
     // for cases where the point lies on an EDGE/CORNER may be needed for rare edge cases,
     // but in general I wanna revert it back to returning a simple boolean
-    fn triangle_intersects_point([a, b, c]: [Point; 3], point: Point) -> IntersectionRelation {
+    fn triangle_intersects_point([a, b, c]: [MathPoint; 3], point: MathPoint) -> IntersectionRelation {
 
         let abc = Self::triangle_area([a, b, c]);
 
@@ -740,15 +740,15 @@ impl TriangulationPass {
 
     }
 
-    fn lerp(p1: Point, p2: Point, t: f32) -> Point {
-        Point::new(
+    fn lerp(p1: MathPoint, p2: MathPoint, t: f32) -> MathPoint {
+        MathPoint::new(
             p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
             p1.y as f32 + (p2.y as f32 - p1.y as f32) * t
         )
     }
 
     // Function to split a quadratic bézier curve at t
-    fn split_quadratic([a, b, c]: [Point; 3], t: f32) -> [[Point; 3]; 2] {
+    fn split_quadratic([a, b, c]: [MathPoint; 3], t: f32) -> [[MathPoint; 3]; 2] {
         let q1 = Self::lerp(a, b, t);
         let q2 = Self::lerp(b, c, t);
         let r0 = Self::lerp(q1, q2, t);
@@ -756,7 +756,7 @@ impl TriangulationPass {
         //  curve1       curve2
     }
 
-    fn split_cubic([a, b, c, d]: [Point; 4], t: f32) -> [[Point; 4]; 2] {
+    fn split_cubic([a, b, c, d]: [MathPoint; 4], t: f32) -> [[MathPoint; 4]; 2] {
         let p1  = Self::lerp(a, b, t);
         let p2  = Self::lerp(b, c, t);
         let p3  = Self::lerp(c, d, t);
@@ -767,13 +767,13 @@ impl TriangulationPass {
         // -- curve1 --    -- curve2  --
     }
 
-    fn bezier_point([a, b, c]: [Point; 3], t: f32) -> Point {
+    fn bezier_point([a, b, c]: [MathPoint; 3], t: f32) -> MathPoint {
         let x = (1.0 - t) * (1.0 - t) * a.x + 2.0 * (1.0 - t) * t * b.x + t * t * c.x;
         let y = (1.0 - t) * (1.0 - t) * a.y + 2.0 * (1.0 - t) * t * b.y + t * t * c.y;
-        Point { x, y }
+        MathPoint { x, y }
     }
 
-    fn favoured_split_point(curve: [Point; 3], p: Point) -> f32 {
+    fn favoured_split_point(curve: [MathPoint; 3], p: MathPoint) -> f32 {
 
         #![allow(non_snake_case)]
 
@@ -802,7 +802,7 @@ impl TriangulationPass {
 
     }
 
-    fn closest_split_point(curve: [Point; 3], p: Point) -> f32 {
+    fn closest_split_point(curve: [MathPoint; 3], p: MathPoint) -> f32 {
 
         // get coefficients for this curve
         let [a, b, c, d] = Self::distance_derivative_coefficients(curve, p);
@@ -843,7 +843,7 @@ impl TriangulationPass {
 
     }
 
-    fn distance_derivative_coefficients([a, b, c]: [Point; 3], p: Point) -> [f32; 4] {
+    fn distance_derivative_coefficients([a, b, c]: [MathPoint; 3], p: MathPoint) -> [f32; 4] {
 
         #![allow(non_snake_case)]
 

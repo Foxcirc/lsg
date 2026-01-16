@@ -5,12 +5,12 @@ use common::*;
 
 #[derive(Debug, Clone, Copy)]
 pub enum PathCommand {
-    Move(Point),
-    Line(Point),
+    Move(MathPoint),
+    Line(MathPoint),
     Horizontal(f32),
     Vertical(f32),
-    Quadratic(Point, Point),
-    Cubic(Point, Point, Point),
+    Quadratic(MathPoint, MathPoint),
+    Cubic(MathPoint, MathPoint, MathPoint),
     Return,
 }
 
@@ -158,10 +158,10 @@ pub mod parser {
     //     recognize(many0(map(coord, |_| ()))).parse(text)
     // }
 
-    fn point(text: &str) -> IResult<&str, Point> {
+    fn point(text: &str) -> IResult<&str, MathPoint> {
         map((
             coord, coord
-        ), |(v1, v2)| Point::new(v1, v2)
+        ), |(v1, v2)| MathPoint::new(v1, v2)
         ).parse(text)
     }
 
@@ -212,8 +212,8 @@ pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Result<Vec<Vec<Curve
 
     let mut sections: Vec<Section> = Vec::with_capacity(4);
     let mut current: Vec<CurvePoint> = Vec::with_capacity(24);
-    let mut start = Point::default();
-    let mut cursor = Point::default();
+    let mut start = MathPoint::default();
+    let mut cursor = MathPoint::default();
 
     for command in path {
 
@@ -236,11 +236,11 @@ pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Result<Vec<Vec<Curve
                 cursor = p1;
             },
             PathCommand::Horizontal(pos) => {
-                current.push(CurvePoint::convert(Point::new(pos, cursor.y) * scale, PointKind::Base));
+                current.push(CurvePoint::convert(MathPoint::new(pos, cursor.y) * scale, PointKind::Base));
                 cursor.x = pos;
             },
             PathCommand::Vertical(pos) => {
-                current.push(CurvePoint::convert(Point::new(cursor.x, pos) * scale, PointKind::Base));
+                current.push(CurvePoint::convert(MathPoint::new(cursor.x, pos) * scale, PointKind::Base));
                 cursor.y = pos;
             },
             PathCommand::Quadratic(ct, p1) => {
@@ -488,7 +488,7 @@ fn find_connection_spot_for_group(lhs: &[CurvePoint], rhs: &[CurvePoint], sectio
     'l: for (lhs_point_idx, lhs_point) in lhs.iter().enumerate() {
         'r: for (rhs_point_idx, rhs_point) in rhs.iter().enumerate() {
 
-            let connection_edge = [*lhs_point, *rhs_point].map(Point::from);
+            let connection_edge = [*lhs_point, *rhs_point].map(MathPoint::from);
 
             // We can't connect at a control point, since the control point always belongs to
             // it's neightbours.
@@ -506,7 +506,7 @@ fn find_connection_spot_for_group(lhs: &[CurvePoint], rhs: &[CurvePoint], sectio
 
             for check_section in sections.iter().filter(|it| it.group == group) {
                 for check_edge in pair_windows_wrapping(&check_section.points) {
-                    if edges_intersect(connection_edge, check_edge.map(Point::from)) {
+                    if edges_intersect(connection_edge, check_edge.map(MathPoint::from)) {
                         continue 'r;
                     }
                 }
@@ -552,14 +552,14 @@ struct IndexedConnectionSpot {
 /// * +1.0 = CW
 /// * -1.0 = CCW
 /// * 0.0  = colinear
-fn three_point_orientation(a: Point, b: Point, c: Point) -> f32 {
+fn three_point_orientation(a: MathPoint, b: MathPoint, c: MathPoint) -> f32 {
     let result = (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
     result.signum() * (result != 0.0) as u32 as f32
 }
 
 /// Simple test for intersection.
 /// If the edges overlap on one point that doesn't count as intersecting.
-fn edges_intersect(lhs: [Point; 2], rhs: [Point; 2]) -> bool {
+fn edges_intersect(lhs: [MathPoint; 2], rhs: [MathPoint; 2]) -> bool {
     let [a, b] = lhs;
     let [c, d] = rhs;
     let abc = three_point_orientation(a, b, c);
@@ -574,7 +574,7 @@ fn edges_intersect(lhs: [Point; 2], rhs: [Point; 2]) -> bool {
 }
 
 /// `false` if the point lies exactly on one of the end points
-fn strictly_inside(a: Point, b: Point, q: Point) -> bool {
+fn strictly_inside(a: MathPoint, b: MathPoint, q: MathPoint) -> bool {
     a.x.min(b.x) <= q.x && q.x <= a.x.max(b.x) &&
     a.y.min(b.y) <= q.y && q.y <= a.y.max(b.y) &&
     a != q && b != q
@@ -583,9 +583,9 @@ fn strictly_inside(a: Point, b: Point, q: Point) -> bool {
 #[test]
 fn test_strictly_inside() {
     let test_cases = [
-        ([Point::new(100.0, 500.0), Point::new(200.0, 500.0), Point::new(400.0, 500.0)], false),
-        ([Point::new(100.0, 500.0), Point::new(200.0, 500.0), Point::new(200.0, 500.0)], false),
-        ([Point::new(100.0, 500.0), Point::new(200.0, 500.0), Point::new(188.0, 500.0)], true),
+        ([MathPoint::new(100.0, 500.0), MathPoint::new(200.0, 500.0), MathPoint::new(400.0, 500.0)], false),
+        ([MathPoint::new(100.0, 500.0), MathPoint::new(200.0, 500.0), MathPoint::new(200.0, 500.0)], false),
+        ([MathPoint::new(100.0, 500.0), MathPoint::new(200.0, 500.0), MathPoint::new(188.0, 500.0)], true),
     ];
     for (input, expected) in test_cases {
         let result = strictly_inside(input[0], input[1], input[2]);
@@ -596,9 +596,9 @@ fn test_strictly_inside() {
 #[test]
 fn test_edges_intersect() {
     let test_cases = [
-        ([Point::new(100.0, 500.0), Point::new(300.0, 1800.0), Point::new(300.0, 600.0), Point::new(2100.0, 600.0)], false),
-        ([Point::new(100.0, 500.0), Point::new(300.0, 600.0),  Point::new(300.0, 1800.0), Point::new(300.0, 600.0)], false),
-        ([Point::new(900.0, 1000.0), Point::new(100.0, 500.0),  Point::new(300.0, 1800.0), Point::new(300.0, 600.0)], true),
+        ([MathPoint::new(100.0, 500.0), MathPoint::new(300.0, 1800.0), MathPoint::new(300.0, 600.0), MathPoint::new(2100.0, 600.0)], false),
+        ([MathPoint::new(100.0, 500.0), MathPoint::new(300.0, 600.0),  MathPoint::new(300.0, 1800.0), MathPoint::new(300.0, 600.0)], false),
+        ([MathPoint::new(900.0, 1000.0), MathPoint::new(100.0, 500.0),  MathPoint::new(300.0, 1800.0), MathPoint::new(300.0, 600.0)], true),
     ];
     for (idx, (input, expected)) in test_cases.into_iter().enumerate() {
         let result = edges_intersect([input[0], input[1]], [input[2], input[3]]);

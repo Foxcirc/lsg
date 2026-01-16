@@ -253,8 +253,8 @@ struct RenderStateCurves {
 
 pub struct Space<'a> {
     state: &'a mut RenderState,
-    offset: f32,
-    scale: f32,
+    offset: Point,
+    size: Size,
 }
 
 impl<'a> Space<'a> {
@@ -308,10 +308,26 @@ impl<'a> Space<'a> {
 
     pub fn instance(&mut self, key: SpaceKey, instance: Instance) {
 
+        let pos = match instance.pos.measure {
+            Measure::Absolute => instance.pos,
+            Measure::Relative => Position::abs(
+                rescale(instance.pos.x, self.size.x),
+                rescale(instnce.pos.y, self.size.y),
+            ),
+        };
+
+        let size = match instance.size.measure {
+            Measure::Absolute => instance.size,
+            Measure::Relative => Size::abs(
+                rescale(instance.size.x, self.size.x),
+                rescale(instnce.size.y, self.size.y),
+            ),
+        };
+
         let adjusted = common::Instance {
             target: [0, key.index as usize],
-            pos: instance.pos,
-            scale: instance.scale,
+            pos: common::LogicalPoint::new(pos.x, pos.y),
+            size: common::LogicalSize::new(pos.w, pos.h), // TODO: write a From<Size> for LogicalSize impl
         };
 
         match key.kind {
@@ -322,25 +338,91 @@ impl<'a> Space<'a> {
 
     pub fn targeted(&mut self, key: GeometryKey, shape: u16, instance: Instance) {
 
+        let pos = match instance.pos.measure {
+            Measure::Absolute => instance.pos,
+            Measure::Relative => Position::abs(
+                rescale(instance.pos.x, self.size.x),
+                rescale(instnce.pos.y, self.size.y),
+            ),
+        };
+
+        let size = match instance.size.measure {
+            Measure::Absolute => instance.size,
+            Measure::Relative => Size::abs(
+                rescale(instance.size.x, self.size.x),
+                rescale(instnce.size.y, self.size.y),
+            ),
+        };
+
         let adjusted = common::Instance {
             target: [key.index as usize, shape as usize],
-            pos: instance.pos,
-            scale: instance.scale,
+            pos: common::LogicalPoint::new(pos.x, pos.y),
+            size: common::LogicalSize::new(pos.w, pos.h), // TODO: write a From<Size> for LogicalSize impl
         };
 
         self.state.geometries.instances.push(adjusted);
 
     }
 
-    // pub fn subdivide(&self, offset: common::PhysicalPoint, size: common::Size) -> Self {
+    pub fn subdivide(&self, offset: Position, size: Size) -> Self {
 
-    //     Self {
+        /// It's like value% * scale%, but using parmyriad.
+        /// So if value = 5,000 and scale = 5,000 this returns 2,500.
+        fn rescale(value: i16, scale: i16) -> i16 {
+            ((it as isize * scale as isize) / 10_000isize) as i16
+        }
 
-    //     }
+        let offset = match offset.measure {
+            Measure::Absolute => offset + self.offset,
+            Measure::Relative => Position::abs(
+                rescale(offset.x, self.size.x) + self.offset.x,
+                rescale(offset.y, self.size.y) + self.offset.y,
+            ),
+        };
 
-    // }
+        let size = match rescale.measure {
+            Measure::Absolute => size,
+            Measure::Relative => Size::abs(
+                rescale(size.w as i16, self.size.x as i16) as u16,
+                rescale(size.h as i16, self.size.y as i16) as u16,
+            ),
+        };
+
+        Self {
+            state: self.state,
+            offset,
+            size
+        }
+
+    }
 
 }
+
+// pub const fn size(input: &str) -> u16 {
+
+//     let mut count = 0;
+
+//     for chr in input.chars() {
+//         if chr.is_ascii_digit() { count += 1 }
+//     }
+
+//     let unit = input.get(count..count + 1)
+//         .unwrap_or_default();
+
+//     let percent = unit == "%";
+
+//     let mut number = u16::from_str_radix(&input[..count], 10)
+//         .expect("not a valid number");
+
+//     if percent {
+//         number *= 100;
+//     }
+
+//     number
+
+// }
+
+// const FULL: u16 = size("100%");
 
 pub struct SpaceKey {
     kind: SpaceKeyKind,
@@ -356,11 +438,38 @@ pub struct GeometryKey {
     index: u16,
 }
 
+pub enum Measure {
+    Absolute,
+    Relative,
+}
+
+pub struct Position {
+    x: i16,
+    y: i16,
+    measure: Measure,
+}
+
+impl Position {
+    pub fn abs(x: i16, y: i16) -> Self { Self { x, y, measure: Measure::Absolute } }
+    pub fn rel(x: i16, y: i16) -> Self { Self { x, y, measure: Measure::Relative } }
+}
+
+pub struct Size {
+    w: u16,
+    h: u16,
+    measure: Measure,
+}
+
+impl Size {
+    pub fn abs(w: u16, h: u16) -> Self { Self { w, h, measure: Measure::Absolute } }
+    pub fn rel(w: u16, h: u16) -> Self { Self { w, h, measure: Measure::Relative } }
+}
+
 pub struct Instance {
     /// offsetX, offsetY
-    pub pos: common::Point,
-    /// Scale which is applied to the targeted shape.
-    pub scale: usize,
+    pub pos: Position,
+    /// Size of the shape in logical pixels.
+    pub size: Size,
 }
 
 /*

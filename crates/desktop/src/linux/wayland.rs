@@ -633,7 +633,7 @@ impl Window {
         };
     }
 
-    pub fn set_size(&mut self, size: Size) {
+    pub fn set_size(&mut self, size: LogicalSize) {
 
         // Immediatly update the stored values, which will also be used as the size
         // if the next `Configure` event does not provide an alternative hint.
@@ -646,19 +646,19 @@ impl Window {
 
     }
 
-    pub fn set_min_size(&mut self, optional_size: Option<Size>) {
+    pub fn set_min_size(&mut self, optional_size: Option<LogicalSize>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_min_size(size.w as i32, size.h as i32);
         self.base.wl_surface.commit();
     }
 
-    pub fn set_max_size(&mut self, optional_size: Option<Size>) {
+    pub fn set_max_size(&mut self, optional_size: Option<LogicalSize>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.w as i32, size.h as i32);
         self.base.wl_surface.commit();
     }
 
-    pub fn set_fixed_size(&mut self, optional_size: Option<Size>) {
+    pub fn set_fixed_size(&mut self, optional_size: Option<LogicalSize>) {
         let size = optional_size.unwrap_or_default();
         self.xdg_toplevel.set_max_size(size.w as i32, size.h as i32);
         self.xdg_toplevel.set_min_size(size.w as i32, size.h as i32);
@@ -1017,7 +1017,7 @@ impl CustomIcon {
 
     /// Currently uses env::temp_dir() so the image content of your icon could be leaked to other users.
     #[track_caller]
-    pub fn new(evl: &EventLoop, size: Size, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
+    pub fn new(evl: &EventLoop, size: LogicalSize, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
 
         let evb = &evl.state.lock().wayland.state;
 
@@ -1042,7 +1042,7 @@ impl CustomIcon {
         // some basic checks that the dimensions of the data match the specified size
 
         debug_assert!(
-            data.len() == size.w * size.h * bytes_per_pixel as usize,
+            data.len() == size.w as usize * size.h as usize * bytes_per_pixel as usize,
             "length of data doesn't match specified dimensions and format"
         );
 
@@ -1100,7 +1100,7 @@ impl Drop for PopupWindow {
 
 impl PopupWindow {
 
-    pub fn new(evl: &EventLoop, size: Size, parent: &Window) -> Self {
+    pub fn new(evl: &EventLoop, size: LogicalSize, parent: &Window) -> Self {
 
         // TODO: this doesn't implement positioning of the popup window (where on the parent should it be)
         //       this is implemented using xdg_positioner.set_anchor or smth
@@ -1498,7 +1498,7 @@ impl wayland_client::Dispatch<WlOutput, Mutex<MonitorInfo>> for ConnectionState 
             },
             WlOutputEvent::Mode { flags, width, height, refresh } => {
                 if flags.into_result().is_ok_and(|it| it.contains(WlOutputMode::Current)) {
-                        guard.size = Size { w: width as usize, h: height as usize };
+                        guard.size = LogicalSize { w: width as u16, h: height as u16 };
                     guard.refresh = refresh as u32;
                 }
             },
@@ -1978,7 +1978,7 @@ fn process_configure(evl: &mut ConnectionState, mut guard: MutexGuard<WindowShar
 
     // foreward the final configuration state to the user
     evl.events.push(Event::Window { id: guard.id, event: WindowEvent::Resize {
-        size: Size { w: width as usize, h: height as usize },
+        size: LogicalSize { w: width as u16, h: height as u16 },
         flags: guard.flags
     } });
 

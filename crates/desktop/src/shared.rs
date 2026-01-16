@@ -32,7 +32,7 @@ pub enum WindowEvent {
     ShouldClose,
     /// You must always redraw if asked to.
     Redraw,
-    Resize { size: Size, flags: ConfigureFlags },
+    Resize { size: LogicalSize, flags: ConfigureFlags },
     Rescale { scale: f64 },
     Decorations { active: bool },
     Enter,
@@ -82,7 +82,7 @@ pub enum DndEvent {
 #[derive(Debug)]
 pub enum CursorStyle {
     Hidden,
-    Custom { icon: CustomIcon, hotspot: PhysicalPoint },
+    Custom { icon: CustomIcon, hotspot: LogicalPoint },
     Predefined { shape: CursorShape }
 }
 
@@ -275,7 +275,7 @@ pub enum ScrollAxis {
 pub struct MonitorInfo {
     pub name: String,
     pub description: String,
-    pub size: Size,
+    pub size: LogicalSize,
     /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
     pub refresh: u32,
 }

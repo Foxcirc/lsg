@@ -14,7 +14,7 @@ impl GlSurface {
 
     pub fn new<W: egl::IsSurface>(gl: &GlRenderer, window: &W) -> Result<Self, RenderError> {
 
-        const MINSIZE: Size = Size::new(1, 1);
+        const MINSIZE: LogicalSize = LogicalSize::new(1, 1);
 
         let surface = egl::Surface::new(
             &gl.instance, &gl.config, window, MINSIZE,
@@ -38,7 +38,7 @@ impl GlSurface {
 
     }
 
-    pub fn resize(&mut self, gl: &GlRenderer, size: Size) -> Result<(), RenderError> {
+    pub fn resize(&mut self, gl: &GlRenderer, size: LogicalSize) -> Result<(), RenderError> {
 
         gl.ctx.bind(&gl.instance, Some(&self.inner))?;
 
@@ -195,9 +195,9 @@ impl CompositeRenderer {
 
     }
 
-    pub fn draw(&mut self, source: &gl::FrameBuffer, target: &gl::FrameBuffer, size: Size) {
+    pub fn draw(&mut self, source: &gl::FrameBuffer, target: &gl::FrameBuffer, size: LogicalSize) {
 
-        let rect = Rect::new(PhysicalPoint::ZERO, size);
+        let rect = Rect::new(LogicalPoint::ZERO, size);
         gl::blit_frame_buffer((target, rect), (source, rect), gl::FilterValue::Nearest);
 
     }
@@ -284,10 +284,10 @@ impl ShapeRenderer {
     }
 
     /// Convert geometry into internal representation.
-    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: Size) {
+    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: LogicalSize) {
 
         // The layout is packed heavily to minimize memory usage.
-        // A position of 4096 is converted to NDC coordinates of 1.0
+        // A position of 10,000 is converted to NDC coordinates of 1.0
         //
         // Layout:
         // FLAGS  | x, y, z | u, v, l
@@ -310,14 +310,14 @@ impl ShapeRenderer {
 
             for (vertex, index) in zip(vertices, ivertices) {
 
-                let physical_x = vertex.pos[0] as usize * instance.scale / 10_000;
-                let physical_y = vertex.pos[1] as usize * instance.scale / 10_000;
+                let physical_x = vertex.pos[0] as u32 * instance.size.w as u32 / 10_000;
+                let physical_y = vertex.pos[1] as u32 * instance.size.h as u32 / 10_000;
 
-                let shifted_x = physical_x + instance.pos.x as usize;
-                let shifted_y = physical_y + instance.pos.y as usize;
+                let shifted_x = physical_x + instance.pos.x as u32;
+                let shifted_y = physical_y + instance.pos.y as u32;
 
-                let scaled_x = ((shifted_x * 4096) / size.w) as u32;
-                let scaled_y = ((shifted_y * 4096) / size.h) as u32;
+                let scaled_x = (shifted_x * 4096) / size.w as u32;
+                let scaled_y = (shifted_y * 4096) / size.h as u32;
 
                 let packed_pos = 0u32 |
                     ((0b0      & 255)  << 0) | // no Z for now
@@ -351,7 +351,7 @@ impl ShapeRenderer {
 
     }
 
-    pub fn draw<'s, 'b>(&'s mut self, geometry: &DrawableGeometry<'b>, target: &gl::FrameBuffer, size: Size) -> Damage<'s> {
+    pub fn draw<'s, 'b>(&'s mut self, geometry: &DrawableGeometry<'b>, target: &gl::FrameBuffer, size: LogicalSize) -> Damage<'s> {
 
         self.prepare(geometry, size);
 
