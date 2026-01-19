@@ -287,7 +287,6 @@ impl ShapeRenderer {
     fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: LogicalSize) {
 
         // The layout is packed heavily to minimize memory usage.
-        // A position of 10,000 is converted to NDC coordinates of 1.0
         //
         // Layout:
         // FLAGS  | x, y, z | u, v, l
@@ -312,6 +311,7 @@ impl ShapeRenderer {
 
                 let physical_x = vertex.pos[0] as u32 * instance.size.w as u32 / 10_000;
                 let physical_y = vertex.pos[1] as u32 * instance.size.h as u32 / 10_000;
+                //    this is the conversion from the 10,000x10,000 widget space ^^^^^^
 
                 let shifted_x = physical_x + instance.pos.x as u32;
                 let shifted_y = physical_y + instance.pos.y as u32;

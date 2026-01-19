@@ -19,13 +19,6 @@ impl Rect {
     }
 }
 
-// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-// /// A non-negative size, specified in physical coordinates.
-// pub struct PhysicalSize {
-//     pub w: u16,
-//     pub h: u16
-// }
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 /// A non-negative size, specified in logical coordinates.
 ///
@@ -38,12 +31,27 @@ pub struct LogicalSize {
 impl LogicalSize {
     pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
+    pub const fn physical(&self, scale: f32) -> PhysicalSize {
+
+        // With a scaling factor of 1.0, 1920 pixels should be 5000 units.
+        const FACTOR: f32 = 5000.0 / 1920.0;
+
+        PhysicalSize {
+            w: (self.w as f32 * FACTOR * scale).round() as u16,
+            h: (self.h as f32 * FACTOR * scale).round() as u16,
+        }
+
+    }
+}
+
+// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+// /// A non-negative size, specified in physical coordinates.
+pub struct PhysicalSize {
+    pub w: u16,
+    pub h: u16
 }
 
 /// A point, specified in logical coordinates.
-///
-/// The point is assumed to use a "normalized" coordinate system where
-/// (0, 0) is at the the bottom-left and (10,000, 10,000) at the top-right.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LogicalPoint {
     pub x: i16,

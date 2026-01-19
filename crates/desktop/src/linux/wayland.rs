@@ -421,7 +421,7 @@ impl BaseWindow {
         // fractional scaling, if present
         let frac_scale_data = evb.globals.frac_scale_mgrs.as_ref().map(|val| {
             let viewport = val.viewport_mgr.get_viewport(&surface, &evb.qh, ());
-            let frac_scale = val.frac_scaling_mgr.get_fractional_scale(&surface, &evb.qh, id);
+            let frac_scale = val.frac_scaling_mgr.get_fractional_scale(&surface, &evb.qh);
             FracScaleData { viewport, frac_scale }
         });
 
@@ -440,6 +440,8 @@ impl BaseWindow {
 
             // need to access some wayland objects
             frac_scale_data,
+
+            scaling_factor: 1.0,
 
         }));
 
@@ -537,6 +539,8 @@ struct WindowShared {
     /// and used to assure only a single redraw event will be generated each frame.
     already_got_redraw_event: bool,
     frac_scale_data: Option<FracScaleData>,
+    /// Used to convert LogicalSize to PhysicalSize
+    scaling_factor: f64,
 }
 
 impl Drop for WindowShared {
@@ -636,8 +640,12 @@ impl Window {
     pub fn set_size(&mut self, size: LogicalSize) {
 
         // Immediatly update the stored values, which will also be used as the size
-        // if the next `Configure` event does not provide an alternative hint.
+        // if the next `Configure` event does not provide an alternative value.
+
         let mut guard = self.base.shared.lock().unwrap();
+
+        // let size = size.physical(guard.scaling_factor);
+
         guard.width = size.w as u32;
         guard.height = size.h as u32;
 
@@ -2020,20 +2028,24 @@ impl wayland_client::Dispatch<WlCompositor, ()> for ConnectionState { ignore!(Wl
 impl wayland_client::Dispatch<WlSurface, ()> for ConnectionState { ignore!(WlSurface, ()); }
 impl wayland_client::Dispatch<WlRegion, ()> for ConnectionState { ignore!(WlRegion, ()); }
 
-impl wayland_client::Dispatch<WpFractionalScaleV1, WindowId> for ConnectionState {
+impl wayland_client::Dispatch<WpFractionalScaleV1, Arc<Mutex<WindowShared>>> for ConnectionState {
     fn event(
             evl: &mut Self,
             _proxy: &WpFractionalScaleV1,
             event: WpFractionalScaleV1Event,
-            data: &WindowId,
+            data: &Arc<Mutex<WindowShared>>,
             _conn: &wayland_client::Connection,
             _qh: &QueueHandle<Self>,
         ) {
 
         if let WpFractionalScaleV1Event::PreferredScale { scale } = event {
 
+            let mut guard = data.lock().unwrap();
+
+            guard.scaling_factor = scale as f64 / 120.0;
+
             evl.events.push(Event::Window {
-                id: *data,
+                id: guard.id,
                 event: WindowEvent::Rescale { scale: scale as f64 / 120.0 }
             });
 
