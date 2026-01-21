@@ -1,5 +1,5 @@
 
-use std::{fmt, future, ops::{self, Range}, sync::{Mutex, MutexGuard}, task};
+use std::{fmt, future, ops::{self, Range}, sync::{Mutex, MutexGuard}, task, ffi::c_void as void};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -19,10 +19,10 @@ impl Rect {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 /// A non-negative size, specified in logical coordinates.
 ///
 /// See [`LogicalPoint`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LogicalSize {
     pub w: u16,
     pub h: u16
@@ -30,6 +30,7 @@ pub struct LogicalSize {
 
 impl LogicalSize {
     pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
+    pub const MAX: Self = Self::new(5000, 5000);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
     pub const fn physical(&self, scale: f32) -> PhysicalSize {
 
@@ -46,6 +47,7 @@ impl LogicalSize {
 
 // #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 // /// A non-negative size, specified in physical coordinates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalSize {
     pub w: u16,
     pub h: u16
@@ -174,34 +176,34 @@ impl CurvePoint {
 
     /// Creates a new point.
     /// # Panic (debug-assertions)
-    /// X and Y must be smaller then u16::MAX / 2 since they
+    /// X and Y must be smaller then i16::MAX / 2 since they
     /// are stored as 15-bit numbers internally.
-    pub const fn new(x: u16, y: u16, kind: PointKind) -> Self {
+    pub const fn new(x: i16, y: i16, kind: PointKind) -> Self {
 
-        debug_assert!(x < 32767, "x must be < u16::MAX / 2");
-        debug_assert!(y < 32767, "y must be < u16::MAX / 2");
+        debug_assert!(x >= i16::MIN / 2 && x <= i16::MAX / 2);
+        debug_assert!(y >= i16::MIN / 2 && y <= i16::MAX / 2);
 
         let f1 = match kind {
-            PointKind::Base => 0b00,
-            PointKind::Ctrl => 0b01,
+            PointKind::Base => 0b0,
+            PointKind::Ctrl => 0b1,
         };
 
         let f2 = 0b0; // not used rn
 
-        let inner = ((f1 as u32 & 0b1)    << 0 ) |
-                    ((f2 as u32 & 0b1)    << 1 ) |
-                    ((x  as u32 & 0x7fff) << 2 ) |
-                    ((y  as u32 & 0x7fff) << 17);
+        let inner = ((f1 as u32 & 0b1) << 0 ) |
+                    ((f2 as u32 & 0b1) << 1 ) |
+                    ((x as u32 & 0x7fff) << 2 ) |
+                    ((y as u32 & 0x7fff) << 17);
 
         Self { inner }
     }
 
-    pub fn x(&self) -> u16 {
-        ((self.inner >> 2) & 0x7fff) as u16
+    pub fn x(&self) -> i16 {
+        ((((self.inner >> 2) & 0x7fff) as i32) << 17 >> 17) as i16
     }
 
-    pub fn y(&self) -> u16 {
-        ((self.inner >> 17) & 0x7fff) as u16
+    pub fn y(&self) -> i16 {
+        ((((self.inner >> 17) & 0x7fff) as i32) << 17 >> 17) as i16
     }
 
     pub fn kind(&self) -> PointKind {
@@ -215,11 +217,22 @@ impl CurvePoint {
 
 }
 
+#[test]
+fn curvepoint() {
+
+    let p = CurvePoint::new(20, -40, PointKind::Base);
+
+    assert_eq!(p.x(), 20);
+    assert_eq!(p.y(), -40);
+    assert_eq!(p.kind(), PointKind::Base);
+
+}
+
 /// Lossy conversion, see `new` for more details.
 impl CurvePointFrom<LogicalPoint> for CurvePoint {
     #[track_caller]
     fn convert(point: LogicalPoint, kind: PointKind) -> Self {
-        Self::new(point.x as u16, point.y as u16, kind)
+        Self::new(point.x as i16, point.y as i16, kind)
     }
 }
 
@@ -227,7 +240,7 @@ impl CurvePointFrom<LogicalPoint> for CurvePoint {
 impl CurvePointFrom<MathPoint> for CurvePoint {
     #[track_caller]
     fn convert(point: MathPoint, kind: PointKind) -> Self {
-        Self::new(point.x as u16, point.y as u16, kind)
+        Self::new(point.x as i16, point.y as i16, kind)
     }
 }
 
@@ -306,6 +319,13 @@ pub struct Instance {
     // pub texture: [f32; 3],
 }
 
+pub struct InstanceTarget {
+    /// Index into the associated list of vertex gemoetries.
+    pub geometry: u16,
+    /// Index into the list of shapes of that geometry.
+    pub shape: u16,
+}
+
 /// A point in normalized device coordinates.
 // #[derive(Debug, Clone, Copy)]
 // pub struct GlPoint {
@@ -332,6 +352,29 @@ pub struct Instance {
 //     }
 //
 // }
+
+/// Implemented by a type that can provide the platform specific display pointer.
+/// ### Safety
+/// You must always return a valid pointer.
+pub unsafe trait IsDisplay {
+    /// ### Platforms
+    /// **On Wayland,**
+    /// should return a pointer to the `wl-display` proxy object.
+    // TODO: add link to example in the desktop crate
+    fn ptr(&self) -> *mut void;
+}
+
+/// Implemented by a type that can provide the platform surface pointer.
+/// ### Safety
+/// You must always return a valid pointer.
+// TODO: when can the surface wayland object be dropped?
+pub unsafe trait IsSurface {
+    /// ### Platforms
+    /// **On Wayland,**
+    /// should return a pointer to a `wl-surface` proxy object.
+    // TODO: add link to example in the desktop crate
+    fn ptr(&self) -> *mut void;
+}
 
 pub struct SmartMutex<T> {
     inner: Mutex<T>,

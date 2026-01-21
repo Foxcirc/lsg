@@ -4,9 +4,11 @@ use std::{io, task::ready};
 
 use common::SmartMutex;
 use futures_lite::StreamExt;
-use nix::sys::signal::Signal;
 
 use crate::*;
+
+const SIGTERM: i32 = 15;
+const SIGINT: i32 = 2;
 
 /// Listens to SIGTERM and SIGINT to emit the apropriate events
 pub(crate) struct SignalListener {
@@ -18,8 +20,8 @@ impl SignalListener {
     pub fn new() -> io::Result<Self> {
 
         let signals = async_signals::Signals::new([
-            Signal::SIGTERM as i32,
-            Signal::SIGINT as i32
+            SIGTERM,
+            SIGINT
         ]).map_err(io::Error::from)?;
 
         Ok(Self {
@@ -35,9 +37,9 @@ impl SignalListener {
             let mut guard = self.signals.lock();
             let signal = ready!(guard.poll_next(cx)).unwrap_or_default();
 
-            if signal == Signal::SIGTERM as i32 {
+            if signal == SIGTERM {
                 return task::Poll::Ready(Ok(Event::Quit { reason: QuitReason::System }))
-            } else if signal == Signal::SIGINT as i32 {
+            } else if signal == SIGINT as i32 {
                 return task::Poll::Ready(Ok(Event::Quit { reason: QuitReason::CtrlC }))
             }
 

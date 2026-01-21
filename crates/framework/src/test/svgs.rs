@@ -1,5 +1,5 @@
 
-use std::{fs, panic::catch_unwind};
+use std::{fs, panic::catch_unwind, sync::Arc};
 
 use futures_lite::future::block_on;
 
@@ -12,16 +12,16 @@ fn svgs() -> Result<(), Box<dyn std::error::Error>> {
     EventLoop::run(EventLoopConfig { appid: file!().into() }, app)?
 }
 
-fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
+fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
-    let mut window = Window::new(&mut evl);
+    let mut window = Window::new(&evl);
 
-    window.set_title(&evl.config().appid);
-    window.set_transparency(true);
-    window.set_size(LogicalSize::new(1000, 1000));
+    window.title(&evl.config().appid);
+    window.transparency(true);
+    window.resize(LogicalSize::new(1000, 1000));
 
-    let mut renderer = render::GlRenderer::new(&evl).unwrap();
-    let mut surface = render::GlSurface::new(&renderer, &*window).unwrap();
+    let mut renderer = render::GlRenderer::new(&*evl).unwrap();
+    let mut surface = render::GlSurface::new(&renderer, &window).unwrap();
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut instances: Vec<Instance> = Vec::new();
@@ -91,13 +91,13 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     },
 
-                    WindowEvent::MouseDown { x, y, .. } => {
+                    WindowEvent::MouseDown { point, .. } => {
 
                         // let physical_x = 10 + (idx % 10) * 100; // idx from 0 to 9
                         // let physical_y = 10 + (idx / 10) * 100;
 
-                        let idx_first_half = (x as f32 - 10.0) / 100.0;
-                        let idx_second_half = ((y as f32 - 10.0) / 100.0).floor() * 10.0;
+                        let idx_first_half = (point.x as f32 - 10.0) / 100.0;
+                        let idx_second_half = ((point.y as f32 - 10.0) / 100.0).floor() * 10.0;
 
                         let idx = page * 50 + idx_first_half.floor() as usize + idx_second_half.floor() as usize;
 
@@ -132,9 +132,9 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
                                 let end = geometry.points.len();
                                 geometry.shapes.push(Shape::new(start as u16..end as u16));
                                 instances.push(Instance {
-                                    pos: MathPoint::new(physical_x as f32, physical_y as f32),
-                                    size: 80,
                                     target: [0, shape_idx],
+                                    pos: LogicalPoint::new(physical_x as i16, physical_y as i16),
+                                    size: LogicalSize::new(80, 80),
                                 });
                             }
 
@@ -142,7 +142,7 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                         page += 1;
 
-                        window.redraw_with_vsync(&mut evl);
+                        window.redraw(&mut evl);
 
                     }
 

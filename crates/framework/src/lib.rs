@@ -21,7 +21,7 @@ pub struct Config {
 
 pub struct App {
     executor: async_executor::LocalExecutor<'static>,
-    eventloop: desktop::EventLoop,
+    eventloop: Arc<desktop::EventLoop>,
     windows: SmartMutex<HashMap<desktop::WindowId, Weak<Window>>>,
     handlers: AppEventHandlers,
 }
@@ -143,7 +143,7 @@ impl Drop for Window {
     fn drop(&mut self) {
         // Remove ourselves from the window list.
         self.app.windows.lock().remove(
-            &self.inner.id()
+            &self.inner.id
         );
     }
 }
@@ -161,7 +161,7 @@ impl Window {
 
         // Insert ourselves into the window list.
         app.windows.lock().insert(
-            this.inner.id(),
+            this.inner.id,
             Arc::downgrade(&this)
         );
 
@@ -253,7 +253,7 @@ struct RenderStateCurves {
 
 pub struct Space<'a> {
     state: &'a mut RenderState,
-    offset: Point,
+    offset: Position,
     size: Size,
 }
 
@@ -308,92 +308,86 @@ impl<'a> Space<'a> {
 
     pub fn instance(&mut self, key: SpaceKey, instance: Instance) {
 
-        let pos = match instance.pos.measure {
-            Measure::Absolute => instance.pos,
-            Measure::Relative => Position::abs(
-                rescale(instance.pos.x, self.size.x),
-                rescale(instnce.pos.y, self.size.y),
-            ),
-        };
+        let pos  = self.apply_transform_pos(instance.pos);
+        let size = self.apply_transform_size(instance.size);
 
-        let size = match instance.size.measure {
-            Measure::Absolute => instance.size,
-            Measure::Relative => Size::abs(
-                rescale(instance.size.x, self.size.x),
-                rescale(instnce.size.y, self.size.y),
-            ),
-        };
-
-        let adjusted = common::Instance {
+        let inner = common::Instance {
             target: [0, key.index as usize],
-            pos: common::LogicalPoint::new(pos.x, pos.y),
-            size: common::LogicalSize::new(pos.w, pos.h), // TODO: write a From<Size> for LogicalSize impl
+            pos: pos.into(),
+            size: size.into(),
         };
 
         match key.kind {
-            SpaceKeyKind::Curves => self.state.curves.instances.push(adjusted),
-            SpaceKeyKind::Vertices => self.state.vertices.instances.push(adjusted),
+            SpaceKeyKind::Curves => self.state.curves.instances.push(inner),
+            SpaceKeyKind::Vertices => self.state.vertices.instances.push(inner),
         }
     }
 
     pub fn targeted(&mut self, key: GeometryKey, shape: u16, instance: Instance) {
 
-        let pos = match instance.pos.measure {
-            Measure::Absolute => instance.pos,
-            Measure::Relative => Position::abs(
-                rescale(instance.pos.x, self.size.x),
-                rescale(instnce.pos.y, self.size.y),
-            ),
-        };
+        let pos  = self.apply_transform_pos(instance.pos);
+        let size = self.apply_transform_size(instance.size);
 
-        let size = match instance.size.measure {
-            Measure::Absolute => instance.size,
-            Measure::Relative => Size::abs(
-                rescale(instance.size.x, self.size.x),
-                rescale(instnce.size.y, self.size.y),
-            ),
-        };
-
-        let adjusted = common::Instance {
+        let inner = common::Instance {
             target: [key.index as usize, shape as usize],
-            pos: common::LogicalPoint::new(pos.x, pos.y),
-            size: common::LogicalSize::new(pos.w, pos.h), // TODO: write a From<Size> for LogicalSize impl
+            pos: pos.into(),
+            size: size.into(),
         };
 
-        self.state.geometries.instances.push(adjusted);
+        self.state.geometries.instances.push(inner);
 
     }
 
-    pub fn subdivide(&self, offset: Position, size: Size) -> Self {
+    pub fn subdivide<'s>(&'s mut self, offset: Position, size: Size) -> Space<'s> {
 
-        /// It's like value% * scale%, but using parmyriad.
-        /// So if value = 5,000 and scale = 5,000 this returns 2,500.
-        fn rescale(value: i16, scale: i16) -> i16 {
-            ((it as isize * scale as isize) / 10_000isize) as i16
-        }
+        let offset = self.apply_transform_pos(offset);
+        let size = self.apply_transform_size(size);
 
-        let offset = match offset.measure {
-            Measure::Absolute => offset + self.offset,
-            Measure::Relative => Position::abs(
-                rescale(offset.x, self.size.x) + self.offset.x,
-                rescale(offset.y, self.size.y) + self.offset.y,
-            ),
-        };
-
-        let size = match rescale.measure {
-            Measure::Absolute => size,
-            Measure::Relative => Size::abs(
-                rescale(size.w as i16, self.size.x as i16) as u16,
-                rescale(size.h as i16, self.size.y as i16) as u16,
-            ),
-        };
-
-        Self {
+        Space {
             state: self.state,
             offset,
             size
         }
 
+    }
+
+    // /// Computes value% * scale%, but using units per 5000.
+    // ///
+    // /// So if value = 1,250 and scale = 2,500 this returns 625, equivalent to
+    // ///       value = 25%       sccale = 50%       returns 12.5%
+    // fn applyscale(value: i16, scale: i16) -> i16 {
+    //     ((value as isize * scale as isize) / 5000isize) as i16
+    // }
+
+    fn apply_transform_pos(&self, pos: Position) -> Position {
+        match pos.measure {
+            Measure::Absolute => Position::abs(
+                pos.x + self.offset.x,
+                pos.y + self.offset.y
+            ),
+            Measure::Relative => Position::abs(
+                Self::rescale_value(pos.x, self.size.w as i16) + self.offset.x,
+                Self::rescale_value(pos.y, self.size.h as i16) + self.offset.y,
+            ),
+        }
+    }
+
+    fn apply_transform_size(&self, size: Size) -> Size {
+        match size.measure {
+            Measure::Absolute => size,
+            Measure::Relative => Size::abs(
+                Self::rescale_value(size.w as i16, self.size.w as i16) as u16,
+                Self::rescale_value(size.h as i16, self.size.h as i16) as u16,
+            ),
+        }
+    }
+
+    /// Computes value% * scale%, but using units per 5000.
+    ///
+    /// So if value = 1,250 and scale = 2,500 this returns 625, equivalent to
+    ///       value = 25%       sccale = 50%       returns 12.5%
+    fn rescale_value(value: i16, scale: i16) -> i16 {
+        ((value as isize * scale as isize) / 5000isize) as i16
     }
 
 }
@@ -438,11 +432,13 @@ pub struct GeometryKey {
     index: u16,
 }
 
+#[derive(Clone, Copy)] // TODO: derive all necessary traits on all types (also impl a good Debug)
 pub enum Measure {
     Absolute,
     Relative,
 }
 
+#[derive(Clone, Copy)]
 pub struct Position {
     x: i16,
     y: i16,
@@ -454,6 +450,25 @@ impl Position {
     pub fn rel(x: i16, y: i16) -> Self { Self { x, y, measure: Measure::Relative } }
 }
 
+impl From<Position> for Size {
+    #[track_caller]
+    fn from(it: Position) -> Self {
+        debug_assert!(it.x > 0 && it.y > 0);
+        Self {
+            w: it.x as u16,
+            h: it.y as u16,
+            measure: it.measure,
+        }
+    }
+}
+
+impl From<Position> for common::LogicalPoint {
+    fn from(it: Position) -> Self {
+        Self::new(it.x, it.y)
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct Size {
     w: u16,
     h: u16,
@@ -463,6 +478,23 @@ pub struct Size {
 impl Size {
     pub fn abs(w: u16, h: u16) -> Self { Self { w, h, measure: Measure::Absolute } }
     pub fn rel(w: u16, h: u16) -> Self { Self { w, h, measure: Measure::Relative } }
+}
+
+impl From<Size> for Position {
+    #[track_caller]
+    fn from(it: Size) -> Self {
+        Self {
+            x: it.w as i16,
+            y: it.h as i16,
+            measure: it.measure,
+        }
+    }
+}
+
+impl From<Size> for common::LogicalSize {
+    fn from(it: Size) -> Self {
+        Self::new(it.w, it.h)
+    }
 }
 
 pub struct Instance {

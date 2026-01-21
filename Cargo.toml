@@ -1,6 +1,6 @@
 
 [workspace]
-resolver = "3" # use the cutting-edge resolver tech
+resolver = "3"
 members = [
     "crates/framework",
     "crates/common",
@@ -9,7 +9,7 @@ members = [
     "crates/gl",
     "crates/render",
     "crates/text",
-    "crates/widget",
+    # "crates/widget",
     "crates/xtask",
 ]
 

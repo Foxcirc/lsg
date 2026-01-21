@@ -11,27 +11,6 @@ TODO: verify thread safety and add more constraints
      - how is this in lsg, can you render from multiple threads using this in theory rn, at least if you implement your own renderer
  */
 
-/// ### Safety
-/// You must always return a valid pointer.
-pub unsafe trait IsDisplay {
-    /// ### Platforms
-    /// **On Wayland,**
-    /// should return a pointer to the `wl-display` proxy object.
-    // TODO: add link to example in the desktop crate
-    fn ptr(&self) -> *mut void;
-}
-
-/// ### Safety
-/// You must always return a valid pointer.
-// TODO: when can the surface wayland object be dropped?
-pub unsafe trait IsSurface {
-    /// ### Platforms
-    /// **On Wayland,**
-    /// should return a pointer to a `wl-surface` proxy object.
-    // TODO: add link to example in the desktop crate
-    fn ptr(&self) -> *mut void;
-}
-
 pub struct EglError {
     msg: String
 }
@@ -79,7 +58,7 @@ pub struct Instance {
 impl Instance {
 
     /// Should be only be called once.
-    pub fn new<D: IsDisplay>(display: &D) -> Result<Self, EglError> {
+    pub fn new<D: common::IsDisplay>(display: &D) -> Result<Self, EglError> {
 
         let lib = unsafe {
             let loaded = egl::DynamicInstance::<egl::EGL1_5>::load_required()
@@ -356,7 +335,7 @@ pub struct Surface {
 
 impl Surface {
 
-    pub fn new<I: IsSurface>(instance: &Instance, config: &Config, inner: &I, size: LogicalSize) -> Result<Self, EglError> {
+    pub fn new<I: common::IsSurface>(instance: &Instance, config: &Config, inner: &I, size: LogicalSize) -> Result<Self, EglError> {
 
         #[cfg(unix)] // unix means wayland, as far as we are concerned
         let wl_egl_surface = unsafe {

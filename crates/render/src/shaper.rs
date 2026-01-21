@@ -213,7 +213,7 @@ impl LoweringPass {
 
                     self.output.points.extend_from_slice(&[
                         CurvePoint::convert(curve[0], PointKind::Base),
-                        CurvePoint::new(new_ctrl_point_x as u16, new_ctrl_point_y as u16, PointKind::Ctrl)
+                        CurvePoint::new(new_ctrl_point_x as i16, new_ctrl_point_y as i16, PointKind::Ctrl)
                     ]);
 
                 }

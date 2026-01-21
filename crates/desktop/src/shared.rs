@@ -32,16 +32,16 @@ pub enum WindowEvent {
     ShouldClose,
     /// You must always redraw if asked to.
     Redraw,
-    Resize { size: LogicalSize, flags: ConfigureFlags },
+    Resize { size: LogicalSize, fullscreen: bool },
     Rescale { scale: f64 },
     Decorations { active: bool },
     Enter,
     Leave,
     MouseEnter,
     MouseLeave,
-    MouseMotion { x: u16, y: u16 },
-    MouseDown { x: u16, y: u16, button: MouseButton },
-    MouseUp { x: u16, y: u16, button: MouseButton },
+    MouseMotion { point: LogicalPoint },
+    MouseDown { point: LogicalPoint, button: MouseButton },
+    MouseUp { point: LogicalPoint, button: MouseButton },
     MouseScroll { axis: ScrollAxis, value: i16 },
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
@@ -129,13 +129,6 @@ pub enum CursorShape {
     AllScroll,
     ZoomIn,
     ZoomOut,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub enum IoMode {
-    #[default]
-    Blocking,
-    Nonblocking,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -260,11 +253,6 @@ impl Default for DataKinds {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ConfigureFlags {
-    pub fullscreen: bool
-}
-
 #[derive(Debug)]
 pub enum ScrollAxis {
     Vertical,
@@ -275,7 +263,8 @@ pub enum ScrollAxis {
 pub struct MonitorInfo {
     pub name: String,
     pub description: String,
-    pub size: LogicalSize,
+    /// Size in physical millimeters.
+    pub size: PhysicalSize,
     /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
     pub refresh: u32,
 }

@@ -12,9 +12,9 @@ pub struct GlSurface {
 
 impl GlSurface {
 
-    pub fn new<W: egl::IsSurface>(gl: &GlRenderer, window: &W) -> Result<Self, RenderError> {
+    pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Result<Self, RenderError> {
 
-        const MINSIZE: LogicalSize = LogicalSize::new(1, 1);
+        const MINSIZE: LogicalSize = LogicalSize::new(100, 100);
 
         let surface = egl::Surface::new(
             &gl.instance, &gl.config, window, MINSIZE,
@@ -82,7 +82,7 @@ pub struct GlRenderer {
 
 impl GlRenderer {
 
-    pub fn new<D: egl::IsDisplay>(display: &D) -> Result<Self, RenderError> {
+    pub fn new<D: common::IsDisplay>(display: &D) -> Result<Self, RenderError> {
 
         let instance = egl::Instance::new(display)?;
         gl::load_with(|name| instance.get_proc_address(name))?;

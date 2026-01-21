@@ -1,7 +1,7 @@
 
 //! Interactive test to try out features that are currently being worked on.
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use futures_lite::future::block_on;
 
@@ -14,16 +14,16 @@ fn interactive() -> Result<(), Box<dyn std::error::Error>> {
     EventLoop::run(EventLoopConfig { appid: file!().into() }, app)?
 }
 
-fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
+fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
-    let mut window = Window::new(&mut evl);
+    let window = Window::new(&evl);
 
-    window.set_title(&evl.config().appid);
-    window.set_transparency(true);
-    window.set_size(LogicalSize::new(500, 500));
+    window.title(&evl.config().appid);
+    window.transparency(true);
+    window.resize(LogicalSize::new(500, 500));
 
-    let mut renderer = render::GlRenderer::new(&evl).unwrap();
-    let mut surface = render::GlSurface::new(&renderer, &*window).unwrap();
+    let mut renderer = render::GlRenderer::new(&*evl).unwrap();
+    let mut surface = render::GlSurface::new(&renderer, &window).unwrap();
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut instances: Vec<Instance> = Vec::new();
@@ -36,8 +36,8 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
     geometry.shapes.push(Shape::new(0..3));
 
     instances.push(Instance {
-        pos: MathPoint::new(0.0, 0.0),
-        size: 10_000,
+        pos: LogicalPoint::new(0, 0),
+        size: LogicalSize::MAX,
         target: [0, 0],
     });
 
@@ -71,42 +71,32 @@ fn app(mut evl: EventLoop) -> Result<(), Box<dyn std::error::Error>> {
 
                     },
 
-                    WindowEvent::Resize { size, .. } => surface.resize(&renderer, size).unwrap(),
+                    WindowEvent::Resize { size, .. } => surface.resize(&renderer, dbg!(size)).unwrap(),
 
-                    WindowEvent::MouseMotion { x, y } => {
-                        if let Some(point) = geometry.points.last_mut() {
-                            *point = CurvePoint::new(x, y, point.kind());
-                            window.redraw_with_vsync(&mut evl);
+                    WindowEvent::MouseMotion { point } => {
+                        if let Some(gpoint) = geometry.points.last_mut() {
+                            *gpoint = CurvePoint::new(point.x, point.y, gpoint.kind());
+                            window.redraw(&mut evl);
                         }
                     },
 
-                    WindowEvent::MouseDown { button: MouseButton::Left, x, y } => {
+                    WindowEvent::MouseDown { point, button } => {
 
-                        println!("add point {:?}", geometry.points.last().unwrap());
+                        let kind = match button {
+                            MouseButton::Left => PointKind::Base,
+                            MouseButton::Right => PointKind::Ctrl,
+                            _ => continue,
+                        };
+
+                        println!("add point {:?}", point);
 
                         geometry.points.push(
-                            CurvePoint::new(x as u16, y as u16, PointKind::Base)
+                            CurvePoint::new(point.x, point.y, kind)
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
                             shape.target.end += 1;
-                            window.redraw_with_vsync(&mut evl);
-                        }
-
-                    },
-
-
-                    WindowEvent::MouseDown { button: MouseButton::Right, x, y } => {
-
-                        println!("add point {:?}", geometry.points.last().unwrap());
-
-                        geometry.points.push(
-                            CurvePoint::new(x as u16, y as u16, PointKind::Ctrl)
-                        );
-
-                        if let Some(shape) = geometry.shapes.last_mut() {
-                            shape.target.end += 1;
-                            window.redraw_with_vsync(&mut evl);
+                            window.redraw(&mut evl);
                         }
 
                     },
