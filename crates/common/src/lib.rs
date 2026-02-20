@@ -1,5 +1,5 @@
 
-use std::{fmt, future, ops::{self, Range}, sync::{Mutex, MutexGuard}, task, ffi::c_void as void};
+use std::{convert::identity, ffi::c_void as void, fmt, future, ops::{self, Range}, pin::Pin, sync::{Mutex, MutexGuard}, task};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -382,7 +382,7 @@ pub struct SmartMutex<T> {
 
 impl<T> SmartMutex<T> {
 
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         Self { inner: Mutex::new(inner) }
     }
 
@@ -403,28 +403,30 @@ impl<T> SmartMutex<T> {
 
 }
 
-pub struct EventChannel<T> {
+pub struct EventChannel<T: Clone> {
     inner: SmartMutex<EventChannelInner<T>>,
 }
 
-struct EventChannelInner<T> {
-    waker: Option<task::Waker>,
-    event: Option<T>,
-}
-
-impl<T> Default for EventChannel<T> {
+impl<T: Clone> Default for EventChannel<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> EventChannel<T> {
+struct EventChannelInner<T: Clone> {
+    event: Option<T>,
+    wakers: Vec<Option<task::Waker>>,
+    counter: usize,
+}
 
-    pub fn new() -> Self {
+impl<T: Clone> EventChannel<T> {
+
+    pub const fn new() -> Self {
         Self {
             inner: SmartMutex::new(EventChannelInner {
-                waker: None,
-                event: None
+                event: None,
+                wakers: Vec::new(),
+                counter: 0,
             })
         }
     }
@@ -434,34 +436,68 @@ impl<T> EventChannel<T> {
         let mut inner = self.inner.lock();
 
         inner.event = Some(event);
+        inner.counter = inner.wakers.len();
 
-        if let Some(waker) = &inner.waker {
-            waker.wake_by_ref();
+        let alive = inner.wakers.iter()
+            .filter_map(|it| it.as_ref());
+
+        for waker in alive {
+            waker.wake_by_ref()
         }
 
     }
 
-    pub async fn listen(&self) -> T {
-        future::poll_fn(|cx| { self.poll(cx) }).await
-    }
-
-    pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<T> {
+    pub async fn listen<'s>(&'s self) -> ListenFuture<'s, T> {
 
         let mut inner = self.inner.lock();
 
-        if let Some(it) = inner.event.take() {
+        let slot = inner.wakers.iter().enumerate()
+            .find(|(.., it)| it.is_none())
+            .map(|(idx, ..)| idx)
+            .unwrap_or_else(|| {
+                inner.wakers.push(None);
+                inner.wakers.len() - 1
+            });
 
-            task::Poll::Ready(it)
+        ListenFuture {
+            channel: self,
+            slot,
+        }
+    }
 
+}
+
+pub struct ListenFuture<'a, T: Clone> {
+    channel: &'a EventChannel<T>,
+    slot: usize,
+}
+
+impl<'a, T: Clone> Drop for ListenFuture<'a, T> {
+    fn drop(&mut self) {
+        let mut inner = self.channel.inner.lock();
+        inner.wakers[self.slot] = None;
+    }
+}
+
+impl<'a, T: Clone> Future for ListenFuture<'a, T> {
+
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
+
+        let mut inner = self.channel.inner.lock();
+
+        if let Some(it) = &inner.event {
+            task::Poll::Ready(it.clone())
         } else {
 
-            match &mut inner.waker {
-                Some(it) => it.clone_from(cx.waker()),
-                None => inner.waker = Some(cx.waker().clone())
+            let new = cx.waker();
+            match &mut inner.wakers[self.slot] {
+                Some(wk)  => wk.clone_from(new), // optimized, checks if equivalent
+                it @ None => *it = Some(new.clone()),
             }
 
             task::Poll::Pending
-
         }
 
     }

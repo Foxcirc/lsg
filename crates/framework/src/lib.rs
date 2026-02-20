@@ -1,7 +1,7 @@
 
 #![doc(html_logo_url = "https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/icon.png")]
 
-use common::SmartMutex;
+use common::{LogicalSize, SmartMutex};
 
 use std::{collections::HashMap, convert::{Infallible, identity}, sync::{Arc, Weak}};
 use futures_lite::{FutureExt, future::block_on};
@@ -136,7 +136,7 @@ pub struct Window {
     app: Arc<App>,
     inner: desktop::Window,
     handlers: WindowEventHandlers,
-    pub content: SmartMutex<Arc<dyn Widget>>,
+    content: SmartMutex<Arc<dyn Widget>>,
 }
 
 impl Drop for Window {
@@ -180,6 +180,18 @@ impl Window {
         // Propagate the action through the widget tree.
         // self.content.lock().action(action);
 
+    }
+
+    pub fn resize(&self, size: LogicalSize) {
+        self.inner.resize(size);
+    }
+
+    pub fn show(&self, size: LogicalSize) {
+        // self.inner.
+    }
+
+    pub fn content<W: Widget + 'static>(&self, widget: Arc<W>) {
+        self.content.set(widget);
     }
 
     pub async fn closed(&self) {

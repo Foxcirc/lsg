@@ -56,6 +56,8 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Redraw => {
 
+                        println!("got redraw event...");
+
                         let vertices = shaper.process(&geometry);
 
                         let drawable = DrawableGeometry {
@@ -71,7 +73,10 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     },
 
-                    WindowEvent::Resize { size, .. } => surface.resize(&renderer, dbg!(size)).unwrap(),
+                    WindowEvent::Resize { size, .. } => {
+                        println!("got resize event: new size = {size:?}");
+                        surface.resize(&renderer, size).unwrap()
+                    },
 
                     WindowEvent::MouseMotion { point } => {
                         if let Some(gpoint) = geometry.points.last_mut() {
