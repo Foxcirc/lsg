@@ -137,7 +137,7 @@ pub enum InputMode {
     Text,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum QuitReason {
     /// Quit requested programatically.
     Program,

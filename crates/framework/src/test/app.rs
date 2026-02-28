@@ -14,16 +14,10 @@ async fn handler(app: Arc<App>) {
 
     let app2 = Arc::clone(&app);
     app.spawn(async move {
-        window.closed().await;
+        window.closed().next().await;
         app2.quit();
     });
 
-    // let app2 = Arc::clone(&app);
-
-    // app.connect(&window, Window::closed, async move |()| {
-    //     app2.quit();
-    // });
-
-    app.quitted().await;
+    app.quitted().next().await;
 
 }

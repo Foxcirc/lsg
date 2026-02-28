@@ -14,7 +14,7 @@ fn interactive() -> Result<(), Box<dyn std::error::Error>> {
     EventLoop::run(EventLoopConfig { appid: file!().into() }, app)?
 }
 
-fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
+fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     let window = Window::new(&evl);
 
@@ -50,6 +50,8 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
         while let Ok(event) = evl.next().await {
 
+            dbg!(&event);
+
             match event {
 
                 Event::Window { event, .. } => match event {
@@ -57,6 +59,10 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::Redraw => {
 
                         println!("got redraw event...");
+
+                        for instance in instances.iter_mut() {
+                            instance.pos.x += 1;
+                        }
 
                         let vertices = shaper.process(&geometry);
 
@@ -71,6 +77,8 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                         println!("dt: {:?}", Instant::now() - lt);
                         lt = Instant::now();
 
+                        window.redraw();
+
                     },
 
                     WindowEvent::Resize { size, .. } => {
@@ -81,7 +89,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::MouseMotion { point } => {
                         if let Some(gpoint) = geometry.points.last_mut() {
                             *gpoint = CurvePoint::new(point.x, point.y, gpoint.kind());
-                            window.redraw(&mut evl);
+                            // window.redraw();
                         }
                     },
 
@@ -101,7 +109,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                         if let Some(shape) = geometry.shapes.last_mut() {
                             shape.target.end += 1;
-                            window.redraw(&mut evl);
+                            window.redraw();
                         }
 
                     },

@@ -142,7 +142,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                         page += 1;
 
-                        window.redraw(&mut evl);
+                        window.redraw();
 
                     }
 

@@ -1,7 +1,7 @@
 
 #![doc(html_logo_url = "https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/icon.png")]
 
-use common::{LogicalSize, SmartMutex};
+use common::{BroadcastFuture, LogicalSize, SmartMutex};
 
 use std::{collections::HashMap, convert::{Infallible, identity}, sync::{Arc, Weak}};
 use futures_lite::{FutureExt, future::block_on};
@@ -103,6 +103,18 @@ impl App {
 
     }
 
+    // pub fn connect<E, H>(self: &Arc<Self>, mut source: BroadcastFuture<E>, handler: H)
+    //    where H: AsyncFn(&Arc<App>, E),
+    //          E: Clone {
+
+    //         let this = Arc::clone(self);
+
+    //         self.spawn(async move {
+    //             loop { handler(&this, source.next().await).await }
+    //         });
+
+    // }
+
     // pub fn connect<T, E, L, F>(&self, data: &Arc<T>, listener: L, handler: F)
     //     where L: AsyncFn(&T) -> E + 'static,
     //           F: AsyncFn(E) + 'static,
@@ -121,15 +133,15 @@ impl App {
         self.handlers.quit.send(desktop::QuitReason::Program)
     }
 
-    pub async fn quitted(&self) -> desktop::QuitReason {
-        self.handlers.quit.listen().await
+    pub fn quitted(&self) -> BroadcastFuture<desktop::QuitReason> {
+        self.handlers.quit.listen()
     }
 
 }
 
 #[derive(Default)]
 struct AppEventHandlers {
-    quit: common::EventChannel<desktop::QuitReason>,
+    quit: common::EventBroadcaster<desktop::QuitReason>,
 }
 
 pub struct Window {
@@ -194,15 +206,15 @@ impl Window {
         self.content.set(widget);
     }
 
-    pub async fn closed(&self) {
-        self.handlers.closed.listen().await
+    pub fn closed(&self) -> BroadcastFuture<()> {
+        self.handlers.closed.listen()
     }
 
 }
 
 #[derive(Default)]
 struct WindowEventHandlers {
-    closed: common::EventChannel<()>,
+    closed: common::EventBroadcaster<()>,
 }
 
 pub trait Widget {
@@ -250,7 +262,7 @@ struct RenderStateGeometries {
 struct RenderStateVertices {
     /// Widget-added vertices.
     data: Arc<render::VertexGeometry>,
-    /// Indexes into `geometry`.
+    /// Indexes into `data`.
     instances: Vec<common::Instance>,
 }
 
@@ -258,7 +270,7 @@ struct RenderStateCurves {
     // Widget-added curves.
     // Will be triangulated later on.
     data: render::CurveGeometry,
-    /// Indexes into `geometry`.
+    /// Indexes into `data`.
     instances: Vec<common::Instance>,
 
 }
@@ -362,14 +374,6 @@ impl<'a> Space<'a> {
         }
 
     }
-
-    // /// Computes value% * scale%, but using units per 5000.
-    // ///
-    // /// So if value = 1,250 and scale = 2,500 this returns 625, equivalent to
-    // ///       value = 25%       sccale = 50%       returns 12.5%
-    // fn applyscale(value: i16, scale: i16) -> i16 {
-    //     ((value as isize * scale as isize) / 5000isize) as i16
-    // }
 
     fn apply_transform_pos(&self, pos: Position) -> Position {
         match pos.measure {

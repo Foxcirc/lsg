@@ -36,13 +36,7 @@ use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
 use std::{
-    io, env, fmt, task,
-    os::fd::{OwnedFd, AsFd},
-    sync::Arc,
-    collections::HashMap,
-    time::{Duration, Instant},
-    error::Error as IsError,
-    ffi::c_void as void,
+    collections::{HashMap, VecDeque}, env, error::Error as IsError, ffi::c_void as void, fmt, io, os::fd::{AsFd, OwnedFd}, sync::Arc, task, time::{Duration, Instant}
 };
 
 use common::*;
@@ -56,8 +50,8 @@ pub(crate) struct ConnectionState {
     qh: QueueHandle<Self>,
     globals: WaylandGlobals,
     // -- outputs --
-    events: Vec<Event>, // used to push events from inside dispatch
-    errors: Vec<EvlError>, // used to push errors from inside dispatch
+    events: VecDeque<Event>, // used to push events from inside dispatch
+    errors: VecDeque<EvlError>, // used to push errors from inside dispatch
     // -- windowing state --
     windows: WindowData,
     mouse: MouseData,
@@ -189,8 +183,6 @@ pub(crate) struct Connection {
     queue: EventQueue<ConnectionState>,
 }
 
-// TODO: don't use Deref<BaseWindow> for Window, since Deref can be confusing
-
 impl Connection {
 
     pub fn new(application: &str) -> Result<Self, EvlError> {
@@ -204,20 +196,17 @@ impl Connection {
 
         let globals = WaylandGlobals::from_globals(globals, &qh)?;
 
-        let mut events = Vec::new();
-        events.push(Event::Resume);
-
         let state = ConnectionState {
             appid: application.to_string(),
             con, qh, globals,
-            events,
-            errors: Vec::new(),
+            events: VecDeque::from([Event::Resume]),
+            errors: VecDeque::new(),
             windows: WindowData::default(),
             mouse: MouseData::default(),
             keyboard: KeyboardData::new(),
             offer: OfferData::default(),
             monitors: MonitorData::default(),
-            last_serial: 0, // we don't use an option here since an invalid serial can be a common case
+            last_serial: 0,
         };
 
         Ok(Self {
@@ -229,57 +218,50 @@ impl Connection {
 
     pub fn poll(&mut self, cx: &mut task::Context<'_>) -> task::Poll<Result<Event, EvlError>> {
 
+        // TODO: (BUG)
+        // Right now frame callback events don't cause a wakeup for some reason.
+        // Since I can't seem to figure out why and I'm getting frustrated with
+        // async_io, I will remove the dependency and write my own simple waiter using
+        // `polling`. However this shall be done after implementing wasm support as I
+        // expect wasm to "sharpen" the codebase a lot.
+
+        // 1.
+        // try to read new data from the connection
+
+        self.queue.flush()?;
+        self.queue.dispatch_pending(&mut self.state)?;
+
         loop {
-
-            // 1.
-            // flush all outgoing requests and process all events that we've stored
-
-            self.state.con.get_ref().flush()?;
-            self.queue.dispatch_pending(&mut self.state)?;
-
-            if let Some(event) = self.state.events.pop() {
-                return task::Poll::Ready(Ok(event))
-            }
-
-            if let Some(error) = self.state.errors.pop() {
-                return task::Poll::Ready(Err(error))
-            };
-
-            // 2.
-            // try to read new data from the connection
-
             if let Some(guard) = self.queue.prepare_read() {
-
                 ignore_wouldblock(guard.read_without_dispatch())?;
-
-                if let task::Poll::Ready(..) = self.state.con.poll_readable(cx)? {
-                    continue // we need to read more data
-                } else {
-                    // fallthrough
-                }
-
-            } else {
-                continue // we need to dispatch more events
-            };
-
-            // 3.
-            // check if the key-repeat timer is ready
-
-            if let task::Poll::Ready(..) = self.state.keyboard.repeat_timer.poll(cx) {
-
-                // insert the synthetic key-repeat event
-                let key = self.state.keyboard.repeat_key;
-                process_key_event(&mut self.state, key, Direction::Down, Source::KeyRepeat);
-
-                continue
-
-            } else {
-                // fallthrough
             }
-
-            return task::Poll::Pending
-
+            if let task::Poll::Ready(res) = self.state.con.poll_readable(cx) {
+                res?;
+            } else {
+                break
+            }
         }
+
+        // 2.
+        // check if the key-repeat timer is ready
+
+        if let task::Poll::Ready(..) = self.state.keyboard.repeat_timer.poll(cx) {
+            // insert the synthetic key-repeat event
+            let key = self.state.keyboard.repeat_key;
+            process_key_event(&mut self.state, key, KeyDirection::Down, KeySource::Repeat);
+        }
+
+        // 4.
+        // foreward events
+
+        if let Some(event) = self.state.events.pop_front() {
+            task::Poll::Ready(Ok(event))
+        } else if let Some(error) = self.state.errors.pop_front() {
+            task::Poll::Ready(Err(error))
+        } else {
+            task::Poll::Pending
+        }
+
 
     }
 
@@ -660,8 +642,9 @@ impl Window {
         // you have to request the frame callback before swapping buffers.
         // really, the frame callback will start counting from the moment the buffers are swapped
         if !state.redraw.frame_callback_registered { // make sure to only request a frame callback once
+            println!("new callback registered");
             state.redraw.frame_callback_registered = true;
-            state.wl_surface.frame(&evb.qh, self.id); // TODO: every time an arc is cloned rn
+            state.wl_surface.frame(&evb.qh, self.id);
             state.wl_surface.commit();
         }
 
@@ -677,21 +660,21 @@ impl Window {
     ///
     /// In practice this means you can call this function as often or as rarely as you want and
     /// it will always generate at most one redraw event for every monitor frame.
-    pub fn redraw(&self, evl: &EventLoop) {
+    pub fn redraw(&self) {
 
         let evb = &mut self.evl.state.lock().wayland.state;
-        let state = evb.windows.get(self.id);
+        let window = evb.windows.get(self.id);
 
-        if state.redraw.frame_callback_registered {
-            // since a frame callback is currently in-flight which means we are wanting to redraw faster
-            // then the monitor refresh rate, we will wait for vsync
-            state.redraw.should_emit_event = true;
-        } else if !state.redraw.already_got_event {
+        if window.redraw.frame_callback_registered {
+            // since a frame callback is currently in-flight which means we are wanting
+            // to redraw faster then the monitor refresh rate, we will wait for vsync
+            window.redraw.should_emit_event = true;
+        } else if !window.redraw.already_got_event {
             // force-redraw, since we are apperently drawing slower then the monitor refresh rate
-            state.redraw.already_got_event = true; // will be reset next frame by `pre_present_notify`.
-            evl.state.lock().channel
-                .send(Event::Window { id: self.id, event: WindowEvent::Redraw });
+            window.redraw.already_got_event = true; // will be reset next frame by `pre_present_notify`
+            evb.events.push_back(Event::Window { id: self.id, event: WindowEvent::Redraw });
         }
+
     }
 
     pub fn transparency(&self, value: bool) {
@@ -1791,7 +1774,7 @@ impl wayland_client::Dispatch<WlRegistry, GlobalListContents> for ConnectionStat
         else if let WlRegistryEvent::GlobalRemove { name: id } = event {
             if evl.monitors.inner.contains_key(&id) {
                 evl.monitors.inner.remove(&id);
-                evl.events.push(Event::MonitorRemove { id })
+                evl.events.push_back(Event::MonitorRemove { id })
             }
         }
 
@@ -1837,7 +1820,7 @@ impl wayland_client::Dispatch<WlOutput, ()> for ConnectionState {
                     info: info.clone(),
                     wl_output: wl_output.clone(),
                 };
-                evl.events.push(Event::MonitorUpdate {
+                evl.events.push_back(Event::MonitorUpdate {
                     id, state,
                 });
             },
@@ -1891,7 +1874,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 wl_data_offer,
             };
 
-            evl.events.push(Event::Window {
+            evl.events.push_back(Event::Window {
                 id,
                 event: WindowEvent::Dnd {
                     event: DndEvent::Motion { x, y, handle },
@@ -1914,7 +1897,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
             let surface = evl.offer.dnd.focused.as_ref().unwrap();
             let sameapp = evl.offer.dnd.ours;
 
-            evl.events.push(Event::Window {
+            evl.events.push_back(Event::Window {
                 id: get_window_id(surface),
                 event: WindowEvent::Dnd {
                     event: DndEvent::Motion { x, y, handle },
@@ -1943,7 +1926,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 let surface = evl.offer.dnd.focused.as_ref().unwrap();
                 let sameapp = evl.offer.dnd.ours;
 
-                evl.events.push(Event::Window {
+                evl.events.push_back(Event::Window {
                     id: get_window_id(surface),
                     event: WindowEvent::Dnd {
                         event: DndEvent::Drop { x, y, offer },
@@ -1959,7 +1942,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
             // this maybe sent twice :(, so has_offer could be None
             if let Some(ref surface) = evl.offer.dnd.focused {
 
-                evl.events.push(Event::Window {
+                evl.events.push_back(Event::Window {
                     id: get_window_id(surface),
                     event: WindowEvent::Dnd {
                         event: DndEvent::Cancel,
@@ -1988,12 +1971,12 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                     dnd: false,
                 });
 
-                evl.events.push(Event::SelectionUpdate { offer });
+                evl.events.push_back(Event::SelectionUpdate { offer });
 
             } else {
 
                 evl.offer.advertised_data_kinds = None;
-                evl.events.push(Event::SelectionUpdate { offer: None });
+                evl.events.push_back(Event::SelectionUpdate { offer: None });
 
             }
 
@@ -2054,7 +2037,7 @@ impl wayland_client::Dispatch<WlDataSource, ()> for ConnectionState {
                 inner: io::PipeWriter::from(fd)
             };
 
-            evl.events.push(Event::DataSource {
+            evl.events.push_back(Event::DataSource {
                 id, event: DataSourceEvent::Send { kind, writer }
             });
 
@@ -2062,7 +2045,7 @@ impl wayland_client::Dispatch<WlDataSource, ()> for ConnectionState {
 
         else if let WlDataSourceEvent::DndFinished = event { // emitted on succesfull write
 
-            evl.events.push(Event::DataSource {
+            evl.events.push_back(Event::DataSource {
                 id, event: DataSourceEvent::Success
             });
 
@@ -2073,7 +2056,7 @@ impl wayland_client::Dispatch<WlDataSource, ()> for ConnectionState {
             evl.offer.dnd.ours = false;
             evl.offer.dnd.icon = None;
 
-            evl.events.push(Event::DataSource {
+            evl.events.push_back(Event::DataSource {
                 id, event: DataSourceEvent::Close
             });
 
@@ -2119,7 +2102,7 @@ impl wayland_client::Dispatch<ZxdgToplevelDecorationV1, WindowId> for Connection
                 WEnum::Value(ZxdgDecorationMode::ClientSide) => WindowEvent::Decorations { active: false },
                 _ => return,
             };
-            evl.events.push(Event::Window { id: *data, event });
+            evl.events.push_back(Event::Window { id: *data, event });
         }
 
     }
@@ -2207,16 +2190,16 @@ impl wayland_client::Dispatch<XdgSurface, WindowId> for ConnectionState {
             //     frac_scale_data.viewport.set_destination(size.w as i32, size.h as i32);
             // };
 
-            if !window.redraw.already_got_event {
-                window.redraw.already_got_event = true;
-                evl.events.push(Event::Window { id: *id, event: WindowEvent::Redraw });
-            }
-
             // foreward the final configuration state to the user
-            evl.events.push(Event::Window { id: *id, event: WindowEvent::Resize {
+            evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Resize {
                 size: LogicalSize { w: size.w as u16, h: size.h as u16 },
                 fullscreen: window.fullscreen,
             } });
+
+            if !window.redraw.already_got_event {
+                window.redraw.already_got_event = true;
+                evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Redraw });
+            }
 
         }
     }
@@ -2255,7 +2238,7 @@ impl wayland_client::Dispatch<XdgToplevel, WindowId> for ConnectionState {
         }
 
         else if let XdgToplevelEvent::Close = event {
-            evl.events.push(Event::Window { id: *id, event: WindowEvent::ShouldClose });
+            evl.events.push_back(Event::Window { id: *id, event: WindowEvent::ShouldClose });
         }
 
     }
@@ -2361,9 +2344,11 @@ impl wayland_client::Dispatch<WlCallback, WindowId> for ConnectionState {
 
         let window = evl.windows.get(*id);
 
+        println!("got callback");
         if !window.redraw.already_got_event && window.redraw.should_emit_event {
             window.redraw.already_got_event = true;
-            evl.events.push(Event::Window { id: *id, event: WindowEvent::Redraw });
+            evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Redraw });
+            println!("callback event pushed.");
         }
 
         window.redraw.frame_callback_registered = false;
@@ -2392,7 +2377,7 @@ impl wayland_client::Dispatch<WpFractionalScaleV1, WindowId> for ConnectionState
 
             window.scaling_factor = scale as f64 / 120.0;
 
-            evl.events.push(Event::Window {
+            evl.events.push_back(Event::Window {
                 id: *id,
                 event: WindowEvent::Rescale { scale: scale as f64 / 120.0 }
             });
@@ -2426,8 +2411,8 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                         xkb::KEYMAP_COMPILE_NO_FLAGS
                     ) } {
                         Ok(Some(val)) => val,
-                        Ok(None) => { evl.errors.push(EvlError::fatal(format!("cannot load keymap")));          return },
-                        Err(err) => { evl.errors.push(EvlError::fatal(format!("cannot load keymap, {}", err))); return }
+                        Ok(None) => { evl.errors.push_back(EvlError::fatal(format!("cannot load keymap")));          return },
+                        Err(err) => { evl.errors.push_back(EvlError::fatal(format!("cannot load keymap, {}", err))); return }
                     }
                 };
 
@@ -2450,7 +2435,7 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                         //       exits immediatly with an errors message (wonderful library design there...).
                         //       It seems that Qt Apps like KWrite will actually not crash on an invalid locale, even though
                         //       I think they use libxkbcommon aswell. This requires further investigation.
-                        evl.errors.push(EvlError::fatal(format!("invalid keymap locale, {:?}", locale)));
+                        evl.errors.push_back(EvlError::fatal(format!("invalid keymap locale, {:?}", locale)));
                         return
                     }
                 };
@@ -2473,13 +2458,13 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                     .flat_map(|chunk| chunk.try_into())
                     .map(|bytes| u32::from_ne_bytes(bytes));
 
+                // emit the enter event
+                evl.events.push_back(Event::Window { id, event: WindowEvent::Enter });
+
                 // emit a key-down event for all keys that are pressed when entering focus
                 for raw_key in iter {
-                    process_key_event(evl, raw_key, Direction::Down, Source::Event);
+                    process_key_event(evl, raw_key, KeyDirection::Down, KeySource::Event);
                 }
-
-                // emit the enter event (so it is received BEFORE the key events)
-                evl.events.push(Event::Window { id, event: WindowEvent::Enter });
 
             },
 
@@ -2490,9 +2475,6 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                     let surface = evl.keyboard.focused.as_ref().unwrap();
                     let id = get_window_id(&surface);
 
-                    // emit the leave event (so it is received AFTER the key events)
-                    evl.events.push(Event::Window { id, event: WindowEvent::Leave });
-
                     // We get these keys in a kind of weird way to avoid memory
                     // allocation and ownership problems.
                     let mut buf = [xkb::Keycode::default(); 10];
@@ -2501,13 +2483,16 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
 
                     // emit a synthetic key-up event for all keys that are still pressed
                     for key in pressed {
-                        process_key_event(evl, key.raw(), Direction::Up, Source::Event);
+                        process_key_event(evl, key.raw(), KeyDirection::Up, KeySource::Event);
                     }
 
-                    evl.keyboard.focused = None;
+                    // emit the leave event
+                    evl.events.push_back(Event::Window { id, event: WindowEvent::Leave });
 
                     // also invalidate selection, to be more correct
-                    evl.events.push(Event::SelectionUpdate { offer: None });
+                    evl.events.push_back(Event::SelectionUpdate { offer: None });
+
+                    evl.keyboard.focused = None;
 
                 };
 
@@ -2516,15 +2501,15 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
             WlKeyboardEvent::Key { key: raw_key, state, serial, .. } => {
 
                 let dir = match state {
-                    WEnum::Value(KeyState::Pressed) => Direction::Down,
-                    WEnum::Value(KeyState::Released) => Direction::Up,
+                    WEnum::Value(KeyState::Pressed) => KeyDirection::Down,
+                    WEnum::Value(KeyState::Released) => KeyDirection::Up,
                     WEnum::Value(..) => return,
                     WEnum::Unknown(..) => return
                 };
 
                 evl.last_serial = serial;
 
-                process_key_event(evl, raw_key, dir, Source::Event);
+                process_key_event(evl, raw_key, dir, KeySource::Event);
 
 
             },
@@ -2557,18 +2542,18 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
 }
 
 #[derive(PartialEq, Eq)]
-enum Direction {
+enum KeyDirection {
     Down,
     Up,
 }
 
 #[derive(PartialEq, Eq)]
-enum Source {
+enum KeySource {
     Event,
-    KeyRepeat,
+    Repeat,
 }
 
-fn process_key_event(evl: &mut ConnectionState, raw_key: u32, dir: Direction, source: Source) {
+fn process_key_event(evl: &mut ConnectionState, raw_key: u32, dir: KeyDirection, source: KeySource) {
 
     // NOTE: uses evl.keyboard_data and evl.events
 
@@ -2579,51 +2564,53 @@ fn process_key_event(evl: &mut ConnectionState, raw_key: u32, dir: Direction, so
 
     let xkb_key = xkb::Keycode::new(raw_key + 8); // "+8" says the wayland docs
 
-    let repeat = source == Source::KeyRepeat;
+    let repeat = source == KeySource::Repeat;
 
-    if dir == Direction::Down {
+    if dir == KeyDirection::Down {
+
+        /* KEY DOWN HANDLER */
 
         let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
         let modifier = xkb_sym.is_modifier_key(); // if this key is a modifier key
 
         // emit a generic key down event
         let key = translate_xkb_sym(xkb_sym);
-        evl.events.push(Event::Window { id, event: WindowEvent::KeyDown { key, repeat } });
+        evl.events.push_back(Event::Window { id, event: WindowEvent::KeyDown { key, repeat } });
 
         // turn this key into utf8 text and emit text input events
         keymap_specific.compose_state.feed(xkb_sym);
         match keymap_specific.compose_state.status() {
             xkb::Status::Nothing => {
                 if let Some(chr) = xkb_sym.key_char() {
-                    evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
+                    evl.events.push_back(Event::Window { id, event: WindowEvent::TextInput { chr } })
                 }
             },
             xkb::Status::Composing => {
                 // sadly we can't just get the string repr of a dead-char
                 if let Some(chr) = translate_dead_to_normal_sym(xkb_sym).and_then(xkb::Keysym::key_char) {
-                    evl.events.push(Event::Window { id, event: WindowEvent::TextCompose { chr } })
+                    evl.events.push_back(Event::Window { id, event: WindowEvent::TextCompose { chr } })
                 }
             },
             xkb::Status::Composed => {
                 if let Some(text) = keymap_specific.compose_state.utf8() {
                     for chr in text.chars() {
-                        evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
+                        evl.events.push_back(Event::Window { id, event: WindowEvent::TextInput { chr } })
                     }
                 }
                 keymap_specific.compose_state.reset();
             },
             xkb::Status::Cancelled => {
                 // order is important, so that the cancel event is received first
+                evl.events.push_back(Event::Window { id, event: WindowEvent::TextComposeCancel });
                 if let Some(chr) = xkb_sym.key_char() {
-                    evl.events.push(Event::Window { id, event: WindowEvent::TextInput { chr } })
+                    evl.events.push_back(Event::Window { id, event: WindowEvent::TextInput { chr } })
                 }
-                evl.events.push(Event::Window { id, event: WindowEvent::TextComposeCancel });
             },
         }
 
         // implement key repeat
         // only re-arm if this was NOT called from a repeated key event
-        if !modifier && source != Source::KeyRepeat {
+        if !modifier && source != KeySource::Repeat {
 
             evl.keyboard.repeat_key = raw_key;
 
@@ -2636,9 +2623,11 @@ fn process_key_event(evl: &mut ConnectionState, raw_key: u32, dir: Direction, so
             // update the key state
             keymap_specific.pressed_keys.update_key_state(xkb_key, KeyState::Pressed);
 
-    }
+        }
 
     } else {
+
+        /* KEY UP HANDLER */
 
         // unarm key-repeat timer
         evl.keyboard.repeat_timer.set_after(Duration::MAX);
@@ -2648,7 +2637,7 @@ fn process_key_event(evl: &mut ConnectionState, raw_key: u32, dir: Direction, so
 
         let xkb_sym = keymap_specific.xkb_state.key_get_one_sym(xkb_key);
         let key = translate_xkb_sym(xkb_sym);
-        evl.events.push(Event::Window { id, event: WindowEvent::KeyUp { key } });
+        evl.events.push_back(Event::Window { id, event: WindowEvent::KeyUp { key } });
 
     };
 
@@ -2676,8 +2665,8 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                 evl.mouse.pos.x = x;
                 evl.mouse.pos.y = y;
 
-                evl.events.push(Event::Window { id, event: WindowEvent::MouseEnter });
-                evl.events.push(Event::Window { id, event:
+                evl.events.push_back(Event::Window { id, event: WindowEvent::MouseEnter });
+                evl.events.push_back(Event::Window { id, event:
                     WindowEvent::MouseMotion { point: evl.mouse.pos }
                 });
 
@@ -2691,7 +2680,7 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
 
                 evl.mouse.focused = None;
 
-                evl.events.push(Event::Window { id, event: WindowEvent::MouseLeave });
+                evl.events.push_back(Event::Window { id, event: WindowEvent::MouseLeave });
 
              },
 
@@ -2706,7 +2695,7 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                 let surface = evl.mouse.focused.as_ref().unwrap();
                 let id = get_window_id(&surface);
 
-                evl.events.push(Event::Window {
+                evl.events.push_back(Event::Window {
                     id,
                     event: WindowEvent::MouseMotion { point: evl.mouse.pos }
                 });
@@ -2750,7 +2739,7 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                 let surface = evl.mouse.focused.as_ref().unwrap();
                 let id = get_window_id(&surface);
 
-                evl.events.push(Event::Window {
+                evl.events.push_back(Event::Window {
                     id,
                     event
                 });
@@ -2762,7 +2751,7 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                 let axis = match axis {
                     WEnum::Value(Axis::VerticalScroll) => ScrollAxis::Vertical,
                     WEnum::Value(Axis::HorizontalScroll) => ScrollAxis::Horizontal,
-                    WEnum::Value(..) => return, // TODO: raise more soft-errors in general, maybe there's an "error" event
+                    WEnum::Value(..) => return,
                     WEnum::Unknown(..) => return
                 };
 
@@ -2771,7 +2760,7 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
 
                 let adjusted_value = (value * 1000.0) as i16;
 
-                evl.events.push(Event::Window {
+                evl.events.push_back(Event::Window {
                     id,
                     event: WindowEvent::MouseScroll { axis, value: adjusted_value }
                 });

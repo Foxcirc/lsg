@@ -14,7 +14,7 @@ impl GlSurface {
 
     pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Result<Self, RenderError> {
 
-        const MINSIZE: LogicalSize = LogicalSize::new(100, 100);
+        const MINSIZE: LogicalSize = LogicalSize::new(500, 500);
 
         let surface = egl::Surface::new(
             &gl.instance, &gl.config, window, MINSIZE,
@@ -309,9 +309,9 @@ impl ShapeRenderer {
 
             for (vertex, index) in zip(vertices, ivertices) {
 
-                let physical_x = vertex.pos[0] as u32 * instance.size.w as u32 / 10_000;
-                let physical_y = vertex.pos[1] as u32 * instance.size.h as u32 / 10_000;
-                //    this is the conversion from the 10,000x10,000 widget space ^^^^^^
+                let physical_x = vertex.pos[0] as u32 * instance.size.w as u32 / 5_000;
+                let physical_y = vertex.pos[1] as u32 * instance.size.h as u32 / 5_000;
+                //      this is the conversion from the 5,000x5,000 widget space ^^^^^^
 
                 let shifted_x = physical_x + instance.pos.x as u32;
                 let shifted_y = physical_y + instance.pos.y as u32;

@@ -1,6 +1,7 @@
 
 // windowing, ...
 pub mod wayland;
+use futures_lite::FutureExt;
 pub use wayland::*;
 
 pub mod signals;
@@ -8,7 +9,7 @@ pub mod signals;
 use crate::shared::*;
 use common::SmartMutex;
 
-use std::{ffi::c_void as void, future, sync::Arc, task};
+use std::{ffi::c_void as void, future, sync::{Arc, MutexGuard}, task};
 
 // TODO: add better and more unit-tests
 
@@ -56,9 +57,9 @@ impl EventLoop {
 
         future::poll_fn(|cx| {
             let mut state = self.state.lock(); // only lock briefly during polling
-            if let task::Poll::Ready(ev) = state.wayland.poll(cx) { return task::Poll::Ready(ev) }
-            if let task::Poll::Ready(ev) = state.signals.poll(cx) { return task::Poll::Ready(ev) }
-            if let task::Poll::Ready(ev) = state.channel.poll(cx) { return task::Poll::Ready(Ok(ev)) }
+            if let task::Poll::Ready(ev) =    state.wayland.poll(cx) { return task::Poll::Ready(ev) }
+            if let task::Poll::Ready(ev) =    state.signals.poll(cx) { return task::Poll::Ready(ev) }
+            if let task::Poll::Ready(ev) = (&state.channel).poll(cx) { return task::Poll::Ready(Ok(ev)) }
             task::Poll::Pending
         }).await
 

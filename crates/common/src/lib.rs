@@ -1,5 +1,5 @@
 
-use std::{convert::identity, ffi::c_void as void, fmt, future, ops::{self, Range}, pin::Pin, sync::{Mutex, MutexGuard}, task};
+use std::{collections::VecDeque, convert::identity, ffi::c_void as void, fmt, future, marker::PhantomData, ops::{self, Range}, pin::{Pin, pin}, sync::{Mutex, MutexGuard}, task};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -386,10 +386,12 @@ impl<T> SmartMutex<T> {
         Self { inner: Mutex::new(inner) }
     }
 
+    #[track_caller]
     pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
         self.inner.lock().expect("mutex was poisoned")
     }
 
+    #[track_caller]
     pub fn with<F, R>(&self, f: F) -> R
         where F: FnOnce(&mut T) -> R {
 
@@ -397,49 +399,162 @@ impl<T> SmartMutex<T> {
 
     }
 
+    #[track_caller]
     pub fn set(&self, val: T) {
         *self.lock() = val;
     }
 
 }
 
-pub struct EventChannel<T: Clone> {
+pub struct EventChannel<T> {
     inner: SmartMutex<EventChannelInner<T>>,
 }
 
-impl<T: Clone> Default for EventChannel<T> {
+impl<T> Default for EventChannel<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-struct EventChannelInner<T: Clone> {
-    event: Option<T>,
-    wakers: Vec<Option<task::Waker>>,
-    counter: usize,
+struct EventChannelInner<T> {
+    events: VecDeque<T>,
+    waker: Option<task::Waker>,
 }
 
-impl<T: Clone> EventChannel<T> {
+impl<T> EventChannel<T> {
 
     pub const fn new() -> Self {
         Self {
             inner: SmartMutex::new(EventChannelInner {
-                event: None,
-                wakers: Vec::new(),
-                counter: 0,
-            })
+                events: VecDeque::new(),
+                waker: None,
+            }),
         }
+    }
+
+    /// Returns `true` if this channel has any listeners.
+    pub fn active(&self) -> bool {
+        self.inner.with(|it| it.waker.is_some())
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.with(|it| it.events.len())
     }
 
     pub fn send(&self, event: T) {
 
         let mut inner = self.inner.lock();
 
-        inner.event = Some(event);
-        inner.counter = inner.wakers.len();
+        inner.events.push_back(event);
+
+        if let Some(waker) = &inner.waker {
+            waker.wake_by_ref();
+        }
+
+    }
+
+}
+
+impl<T> Future for &EventChannel<T> {
+
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
+
+        let mut inner = self.inner.lock();
+
+        let maybe = inner.events.pop_front();
+
+        if let Some(it) = maybe {
+            task::Poll::Ready(it)
+        } else {
+
+            let old = &mut inner.waker;
+            let new = cx.waker();
+
+            let same = old.as_mut()
+                .map(|it| it.will_wake(new))
+                .unwrap_or_default();
+
+            if !same {
+                *old = Some(new.clone());
+            }
+
+            task::Poll::Pending
+        }
+
+    }
+
+}
+
+pub struct EventBroadcaster<T: Clone> {
+    inner: SmartMutex<EventBroadcasterInner<T>>,
+}
+
+impl<T: Clone> Default for EventBroadcaster<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct EventBroadcasterInner<T: Clone> {
+    events: VecDeque<Event<T>>,
+    wakers: Vec<Option<task::Waker>>,
+    listeners: u16, // currently active listeners
+    tick: u16, // incremental counter, used to avoid double-reading an event
+}
+
+#[derive(Clone)]
+struct Event<T: Clone> {
+    value: T,
+    pending: u16, // listeners that have yet to respond
+    tick: u16, // which tick this event belongs to
+}
+
+impl<T: Clone> EventBroadcaster<T> {
+
+    pub const fn new() -> Self {
+        Self {
+            inner: SmartMutex::new(EventBroadcasterInner {
+                events: VecDeque::new(),
+                wakers: Vec::new(),
+                listeners: 0,
+                tick: 0,
+            }),
+        }
+    }
+
+    /// Returns `true` if this channel has any listeners.
+    pub fn active(&self) -> bool {
+        self.inner.with(|it| it.listeners > 0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.with(|it| it.events.len())
+    }
+
+    pub fn send(&self, event: T) {
+
+        // Don't send anything if there are no listeners, as
+        // this would create events which can never be consumed.
+        if !self.active() {
+            return
+        }
+
+        let mut inner = self.inner.lock();
+
+        inner.tick = inner.tick.wrapping_add(1);
+
+        let pending = inner.listeners;
+        let tick = inner.tick;
+        inner.events.push_back(Event {
+            value: event,
+            pending,
+            tick,
+        });
 
         let alive = inner.wakers.iter()
-            .filter_map(|it| it.as_ref());
+            .filter_map(Option::as_ref);
 
         for waker in alive {
             waker.wake_by_ref()
@@ -447,9 +562,11 @@ impl<T: Clone> EventChannel<T> {
 
     }
 
-    pub async fn listen<'s>(&'s self) -> ListenFuture<'s, T> {
+    pub fn listen<'s>(&'s self) -> BroadcastFuture<'s, T> {
 
         let mut inner = self.inner.lock();
+
+        inner.listeners += 1;
 
         let slot = inner.wakers.iter().enumerate()
             .find(|(.., it)| it.is_none())
@@ -459,47 +576,137 @@ impl<T: Clone> EventChannel<T> {
                 inner.wakers.len() - 1
             });
 
-        ListenFuture {
+        BroadcastFuture {
             channel: self,
-            slot,
+            slot: slot as u16,
+            tick: inner.tick,
         }
+
     }
 
 }
 
-pub struct ListenFuture<'a, T: Clone> {
-    channel: &'a EventChannel<T>,
-    slot: usize,
+pub struct BroadcastFuture<'a, T: Clone> {
+    channel: &'a EventBroadcaster<T>,
+    slot: u16,
+    tick: u16, // only acknowledge events newer then this tick
 }
 
-impl<'a, T: Clone> Drop for ListenFuture<'a, T> {
+impl<'a, T: Clone> Drop for BroadcastFuture<'a, T> {
     fn drop(&mut self) {
         let mut inner = self.channel.inner.lock();
-        inner.wakers[self.slot] = None;
+        inner.wakers[self.slot as usize] = None;
+        inner.listeners -= 1;
     }
 }
 
-impl<'a, T: Clone> Future for ListenFuture<'a, T> {
+impl<'a, T: Clone> BroadcastFuture<'a, T> {
+    pub async fn next(&mut self) -> T {
+        self.await
+    }
+}
+
+impl<'a, T: Clone> Future for &mut BroadcastFuture<'a, T> {
 
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
 
-        let mut inner = self.channel.inner.lock();
+        let this = self.get_mut();
+        let mut inner = this.channel.inner.lock();
 
-        if let Some(it) = &inner.event {
-            task::Poll::Ready(it.clone())
+        let maybe = inner.events.iter_mut()
+            .find(|it| it.tick > this.tick);
+
+        // if we found an event, read it now
+
+        if let Some(it) = maybe {
+
+            // this event was now read by us
+            this.tick = it.tick;
+            it.pending -= 1;
+
+            let expired = it.pending == 0;
+
+            let result = it.value.clone();
+
+            if expired {
+                // remove the event if it was consumed by all listeners
+                drop(inner.events.pop_front());
+            }
+
+            task::Poll::Ready(result)
+
         } else {
 
+            let old = &mut inner.wakers[this.slot as usize];
             let new = cx.waker();
-            match &mut inner.wakers[self.slot] {
-                Some(wk)  => wk.clone_from(new), // optimized, checks if equivalent
-                it @ None => *it = Some(new.clone()),
+
+            let same = old.as_mut()
+                .map(|it| it.will_wake(new))
+                .unwrap_or_default();
+
+            if !same {
+                *old = Some(new.clone());
             }
 
             task::Poll::Pending
+
         }
 
     }
+
+}
+
+#[test]
+fn channels() {
+
+    use futures_lite::future::block_on;
+
+    let single = EventChannel::new();
+
+    single.send(1);
+    single.send(2);
+    single.send(3);
+
+    block_on(async move {
+        assert_eq!((&single).await, 1);
+        assert_eq!((&single).await, 2);
+        assert_eq!((&single).await, 3);
+    });
+
+    let multi = EventBroadcaster::new();
+
+    multi.send(0);
+
+    let mut listener1 = multi.listen();
+
+    multi.send(1);
+
+    let mut listener2 = multi.listen();
+
+    multi.send(2);
+    multi.send(3);
+
+    block_on(async move {
+
+        // Both should receive only events that
+        // happen after their creation.
+
+        // listener1:
+        assert_eq!((&mut listener1).await, 1);
+        assert_eq!((&mut listener1).await, 2);
+        assert_eq!((&mut listener1).await, 3);
+
+        // listener2:
+        assert_eq!((&mut listener2).await, 2);
+        assert_eq!((&mut listener2).await, 3);
+
+    });
+
+    // the listeners were moved and dropped
+    assert_eq!(multi.active(), false);
+    assert_eq!(multi.len(), 0);
+
 
 }
