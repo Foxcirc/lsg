@@ -218,18 +218,8 @@ impl Connection {
 
     pub fn poll(&mut self, cx: &mut task::Context<'_>) -> task::Poll<Result<Event, EvlError>> {
 
-        // TODO: (BUG)
-        // Right now frame callback events don't cause a wakeup for some reason.
-        // Since I can't seem to figure out why and I'm getting frustrated with
-        // async_io, I will remove the dependency and write my own simple waiter using
-        // `polling`. However this shall be done after implementing wasm support as I
-        // expect wasm to "sharpen" the codebase a lot.
-
         // 1.
         // try to read new data from the connection
-
-        self.queue.flush()?;
-        self.queue.dispatch_pending(&mut self.state)?;
 
         loop {
             if let Some(guard) = self.queue.prepare_read() {
@@ -241,6 +231,9 @@ impl Connection {
                 break
             }
         }
+
+        self.queue.flush()?;
+        self.queue.dispatch_pending(&mut self.state)?;
 
         // 2.
         // check if the key-repeat timer is ready
