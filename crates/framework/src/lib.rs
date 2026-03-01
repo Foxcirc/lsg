@@ -104,7 +104,7 @@ impl App {
     }
 
     pub fn connect<T, E, L, F>(self: &Arc<Self>, data: &Arc<T>, listener: L, handler: F)
-        where F: AsyncFn(&Arc<App>, E) + 'static,
+        where F: AsyncFn((&Arc<App>, &Arc<T>, E)) + 'static,
               L: Fn(&T) -> BroadcastFuture<E> + 'static,
               E: Clone,
               T: 'static
@@ -115,7 +115,10 @@ impl App {
 
             self.spawn(async move {
                 let mut source = listener(&data2);
-                loop { handler(&app2, source.next().await).await }
+                loop { handler((
+                    &app2, &data2,
+                    source.next().await
+                )).await }
             });
 
     }

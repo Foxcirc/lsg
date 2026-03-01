@@ -11,16 +11,9 @@ async fn handler(app: Arc<App>) {
 
     let window = Window::new(&app);
 
-    // app.spawn(async move {
-    //     window.closed().next().await;
-    //     app2.quit();
-    // });
-
-    app.connect(&window, Window::closed, async move |app, ()| {
+    app.connect(&window, Window::closed, async move |(app, ..)| {
         app.quit();
     });
-
-    // window.content(widget);
 
     app.quitted().next().await;
 
