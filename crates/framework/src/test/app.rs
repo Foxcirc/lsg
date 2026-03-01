@@ -12,11 +12,16 @@ async fn handler(app: Arc<App>) {
     let window = Window::new(&app);
     window.resize(LogicalSize::new(500, 500));
 
-    let app2 = Arc::clone(&app);
-    app.spawn(async move {
-        window.closed().next().await;
-        app2.quit();
+    // app.spawn(async move {
+    //     window.closed().next().await;
+    //     app2.quit();
+    // });
+
+    app.connect(&window, Window::closed, async move |app, ()| {
+        app.quit();
     });
+
+    // window.content(widget);
 
     app.quitted().next().await;
 

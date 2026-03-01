@@ -103,31 +103,22 @@ impl App {
 
     }
 
-    // pub fn connect<E, H>(self: &Arc<Self>, mut source: BroadcastFuture<E>, handler: H)
-    //    where H: AsyncFn(&Arc<App>, E),
-    //          E: Clone {
+    pub fn connect<T, E, L, F>(self: &Arc<Self>, data: &Arc<T>, listener: L, handler: F)
+        where F: AsyncFn(&Arc<App>, E) + 'static,
+              L: Fn(&T) -> BroadcastFuture<E> + 'static,
+              E: Clone,
+              T: 'static
+        {
 
-    //         let this = Arc::clone(self);
+            let data2 = Arc::clone(data);
+            let app2 = Arc::clone(&self);
 
-    //         self.spawn(async move {
-    //             loop { handler(&this, source.next().await).await }
-    //         });
+            self.spawn(async move {
+                let mut source = listener(&data2);
+                loop { handler(&app2, source.next().await).await }
+            });
 
-    // }
-
-    // pub fn connect<T, E, L, F>(&self, data: &Arc<T>, listener: L, handler: F)
-    //     where L: AsyncFn(&T) -> E + 'static,
-    //           F: AsyncFn(E) + 'static,
-    //           T: 'static
-    //     {
-
-    //         let cloned = Arc::clone(data);
-
-    //         self.spawn(async move {
-    //             loop { handler(listener(&*cloned).await).await }
-    //         });
-
-    // }
+    }
 
     pub fn quit(&self) {
         self.handlers.quit.send(desktop::QuitReason::Program)
