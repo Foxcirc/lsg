@@ -635,7 +635,6 @@ impl Window {
         // you have to request the frame callback before swapping buffers.
         // really, the frame callback will start counting from the moment the buffers are swapped
         if !state.redraw.frame_callback_registered { // make sure to only request a frame callback once
-            println!("new callback registered");
             state.redraw.frame_callback_registered = true;
             state.wl_surface.frame(&evb.qh, self.id);
             state.wl_surface.commit();
@@ -734,23 +733,6 @@ impl Window {
 
     }
 
-    pub fn resize(&self, size: LogicalSize) {
-
-        let evb = &mut self.evl.state.lock().wayland.state;
-        let state = evb.windows.get(self.id);
-
-        // Immediatly update the stored values, which will also be used as the size
-        // if the next `Configure` event does not provide an alternative value.
-
-        // let size = size.physical(guard.scaling_factor);
-
-        state.size = size;
-
-        state.xdg_surface.set_window_geometry(0, 0, size.w as i32, size.h as i32);
-        state.wl_surface.commit();
-
-    }
-
     pub fn minsize(&self, size: Option<LogicalSize>) {
 
         let evb = &mut self.evl.state.lock().wayland.state;
@@ -809,6 +791,11 @@ unsafe impl common::IsSurface for Window {
         let evb = &mut self.evl.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
         state.wl_surface.id().as_ptr().cast()
+    }
+    fn size(&self) -> LogicalSize {
+        let evb = &mut self.evl.state.lock().wayland.state;
+        let state = evb.windows.get(self.id);
+        state.size
     }
 }
 
@@ -2226,8 +2213,6 @@ impl wayland_client::Dispatch<XdgToplevel, WindowId> for ConnectionState {
             //                                  ^^^^ if the window was programatically hidden, the
             //                                       `suspended` flag might not be set
 
-            println!("got toplevel configure: {width}, {height}; hidden = {}", window.hidden);
-
         }
 
         else if let XdgToplevelEvent::Close = event {
@@ -2337,11 +2322,9 @@ impl wayland_client::Dispatch<WlCallback, WindowId> for ConnectionState {
 
         let window = evl.windows.get(*id);
 
-        println!("got callback");
         if !window.redraw.already_got_event && window.redraw.should_emit_event {
             window.redraw.already_got_event = true;
             evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Redraw });
-            println!("callback event pushed.");
         }
 
         window.redraw.frame_callback_registered = false;

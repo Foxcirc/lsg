@@ -20,7 +20,6 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     window.title(&evl.config().appid);
     window.transparency(true);
-    window.resize(LogicalSize::new(500, 500));
 
     let mut renderer = render::GlRenderer::new(&*evl).unwrap();
     let mut surface = render::GlSurface::new(&renderer, &window).unwrap();
@@ -43,26 +42,16 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };
 
-    let mut lt = Instant::now();
-
     // run the event loop
     block_on(async {
 
         while let Ok(event) = evl.next().await {
-
-            dbg!(&event);
 
             match event {
 
                 Event::Window { event, .. } => match event {
 
                     WindowEvent::Redraw => {
-
-                        println!("got redraw event...");
-
-                        for instance in instances.iter_mut() {
-                            instance.pos.x += 1;
-                        }
 
                         let vertices = shaper.process(&geometry);
 
@@ -74,10 +63,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                         window.pre_present_notify();
                         renderer.draw(&drawable, &surface).unwrap();
 
-                        println!("dt: {:?}", Instant::now() - lt);
-                        lt = Instant::now();
-
-                        window.redraw();
+                        // window.redraw();
 
                     },
 
@@ -89,7 +75,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                     WindowEvent::MouseMotion { point } => {
                         if let Some(gpoint) = geometry.points.last_mut() {
                             *gpoint = CurvePoint::new(point.x, point.y, gpoint.kind());
-                            // window.redraw();
+                            window.redraw();
                         }
                     },
 

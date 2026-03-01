@@ -185,10 +185,6 @@ impl Window {
 
     }
 
-    pub fn resize(&self, size: LogicalSize) {
-        self.inner.resize(size);
-    }
-
     pub fn show(&self, size: LogicalSize) {
         // self.inner.
     }

@@ -10,7 +10,6 @@ fn app() -> Result<(), desktop::EvlError> {
 async fn handler(app: Arc<App>) {
 
     let window = Window::new(&app);
-    window.resize(LogicalSize::new(500, 500));
 
     // app.spawn(async move {
     //     window.closed().next().await;

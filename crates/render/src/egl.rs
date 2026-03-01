@@ -14,10 +14,8 @@ impl GlSurface {
 
     pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Result<Self, RenderError> {
 
-        const MINSIZE: LogicalSize = LogicalSize::new(500, 500);
-
         let surface = egl::Surface::new(
-            &gl.instance, &gl.config, window, MINSIZE,
+            &gl.instance, &gl.config, window, window.size(),
         )?;
 
         // Bind a context for initialization.
@@ -27,7 +25,7 @@ impl GlSurface {
         let rbo = gl::gen_render_buffer();
 
         // IMPORTANT: call `render_buffer_storage` before `frame_buffer_render_buffer` (i hate opengl)
-        gl::render_buffer_storage(&rbo, gl::PreciseColorFormat::Rgba8, MINSIZE);
+        gl::render_buffer_storage(&rbo, gl::PreciseColorFormat::Rgba8, window.size());
         gl::frame_buffer_render_buffer(&fbo, gl::AttachmentPoint::Color0, &rbo);
 
         Ok(Self {

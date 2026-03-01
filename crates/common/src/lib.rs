@@ -374,6 +374,9 @@ pub unsafe trait IsSurface {
     /// should return a pointer to a `wl-surface` proxy object.
     // TODO: add link to example in the desktop crate
     fn ptr(&self) -> *mut void;
+    /// Get the current size of the surface.
+    /// Must not be `0` in any dimension.
+    fn size(&self) -> LogicalSize;
 }
 
 pub struct SmartMutex<T> {
