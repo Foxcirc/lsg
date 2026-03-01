@@ -85,7 +85,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             instances: &instances,
                         };
 
-                        window.pre_present_notify();
+                        window.present();
                         renderer.draw(&drawable, &surface).unwrap();
 
                     },

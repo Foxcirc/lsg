@@ -53,6 +53,8 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Redraw => {
 
+                        println!("redrawing...");
+
                         let vertices = shaper.process(&geometry);
 
                         let drawable = DrawableGeometry {
@@ -60,10 +62,8 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             instances: &instances,
                         };
 
-                        window.pre_present_notify();
+                        window.present();
                         renderer.draw(&drawable, &surface).unwrap();
-
-                        // window.redraw();
 
                     },
 

@@ -621,7 +621,7 @@ impl Window {
 
     /// Notify the windowing system that you are going to draw to the window now.
     /// This function is mandatory and you must call it, otherwise the window will behave weirdly.
-    pub fn pre_present_notify(&self) {
+    pub fn present(&self) {
 
         let evb = &mut self.evl.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
@@ -644,17 +644,18 @@ impl Window {
 
     /// Tells the windowing systen to redraw the window.
     ///
-    /// Don't forget to call [`pre_present_notify`](Self::pre_present_notify).
+    /// Don't forget to call [`present`](Self::present).
     ///
     /// The next redraw will automatically be throttled to align with the "desired"
-    /// framerate that may be chosen by the system. In most cases, this is the refresh rate of
-    /// the monitor.
+    /// framerate that may be chosen by the system. In most cases, this is the refresh
+    /// rate of the monitor.
     ///
     /// In practice this means you can call this function as often or as rarely as you want and
     /// it will always generate at most one redraw event for every monitor frame.
     pub fn redraw(&self) {
 
-        let evb = &mut self.evl.state.lock().wayland.state;
+        let mut guard = self.evl.state.lock();
+        let evb = &mut guard.wayland.state;
         let window = evb.windows.get(self.id);
 
         if window.redraw.frame_callback_registered {
@@ -665,6 +666,8 @@ impl Window {
             // force-redraw, since we are apperently drawing slower then the monitor refresh rate
             window.redraw.already_got_event = true; // will be reset next frame by `pre_present_notify`
             evb.events.push_back(Event::Window { id: self.id, event: WindowEvent::Redraw });
+        } else {
+            panic!("forgot to call `window.present` before drawing");
         }
 
     }
