@@ -349,7 +349,7 @@ impl ShapeRenderer {
 
     }
 
-    pub fn draw<'s, 'b>(&'s mut self, geometry: &DrawableGeometry<'b>, target: &gl::FrameBuffer, size: LogicalSize) -> Damage<'s> {
+    pub fn draw(&mut self, geometry: &DrawableGeometry, target: &gl::FrameBuffer, size: LogicalSize) {
 
         self.prepare(geometry, size);
 
@@ -373,15 +373,59 @@ impl ShapeRenderer {
         //     gl::draw_arrays_indirect(target, &self.program, &self.instanced.vao, &self.instanced.commands, gl::Primitive::Triangles, 0);
         // }
 
-        Damage::all()
-
     }
 
 }
 
+/*
+
+space.add(VertexShape(shape, vertexData));
+...
+space.add(CachedGeometry(geometry, shapes));
+...
+space.add(CustomRendering(renderfn));
+...
+
+fn renderfn(&self, outputTexture: u32) {
+
+    // assumes a gl-viewport-coords screen space, which will be backed by a small slice of the actual render target
+
+    let out = gl::Texture::from(outputTexture);
+
+    gl::... // cross-platform render
+
+
+
+}
+
+// (1) Drawing Child:
+
+let childscene = space.child(dimensions...); // a.k.a subdivide
+child.handle(Action::Draw(childscene));
+
+// if you want to do smth with the pixels of this scene, it
+// now contains the things that the child wants to draw, and you
+// can tell the system to access these in two ways:
+
+let texture = child.texturize();
+Instance::new(..., texture);
+
+// what happens like if scene.texturize() is called "recursively" on our own scene
+
+// (2) Simple Version:
+
+let child = // ...popolate child as above
+
+let pixels = scene.render(child);
+// pixels is a texture handle which is ready to be read from!
+
+scene.gl(renderfn, pixels);
+
+ */
+
 /// Vertex data which is ready to be rendered.
 #[derive(Default)]
-pub struct PreparedGeometry {
+struct PreparedGeometry {
     pub singular: SingularPreparedGeometry,
     pub instanced: InstancedPreparedGeometry,
 }
@@ -395,21 +439,18 @@ impl PreparedGeometry {
 }
 
 #[derive(Default)]
-pub struct SingularPreparedGeometry {
+struct SingularPreparedGeometry {
     pub vertices: gl::AttribVec,
 }
 
 #[derive(Default)]
-pub struct InstancedPreparedGeometry {
+struct InstancedPreparedGeometry {
     pub vertices:  gl::AttribVec,
     pub instances: gl::AttribVec,
     pub commands:  Vec<gl::DrawArraysIndirectCommand>,
 }
 
 /// An error that occured when rendering.
-///
-/// # Returning this yourself
-/// Implements From<&str>, so you can use that to easily construct it.
 #[derive(Debug)] // TODO: impl StdError
 pub enum RenderError {
     /// Likely unrecoverable error, like a graphics device reset or
