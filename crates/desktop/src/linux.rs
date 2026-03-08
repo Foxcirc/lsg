@@ -23,9 +23,9 @@ pub struct EventLoop {
 }
 
 struct EventLoopState {
-    channel: common::EventChannel<Event>,
     wayland: wayland::Connection,
     signals: signals::SignalListener,
+    injected: Vec<Event>,
     // dbus: dbus::Connection,
     config: EventLoopConfig,
 }
@@ -37,9 +37,9 @@ impl EventLoop {
     fn new(config: EventLoopConfig) -> Result<Arc<Self>, EvlError> {
         Ok(Arc::new(Self {
             state: SmartMutex::new(EventLoopState {
-                channel: common::EventChannel::new(),
                 wayland: wayland::Connection::new(&config.appid)?,
                 signals: signals::SignalListener::new()?,
+                injected: Vec::with_capacity(1),
                 config,
             }),
         }))
@@ -55,12 +55,14 @@ impl EventLoop {
 
     pub async fn next(&self) -> Result<Event, EvlError> {
 
+        use task::Poll::*;
+
         future::poll_fn(|cx| {
             let mut state = self.state.lock(); // only lock briefly during polling
-            if let task::Poll::Ready(ev) =    state.wayland.poll(cx) { return task::Poll::Ready(ev) }
-            if let task::Poll::Ready(ev) =    state.signals.poll(cx) { return task::Poll::Ready(ev) }
-            if let task::Poll::Ready(ev) = (&state.channel).poll(cx) { return task::Poll::Ready(Ok(ev)) }
-            task::Poll::Pending
+                 if let Ready(ev) = state.wayland.poll(cx) { Ready(ev) }
+            else if let Ready(ev) = state.signals.poll(cx) { Ready(ev) }
+            else if let Some(ev)  = state.injected.pop()   { Ready(Ok(ev)) }
+            else { Pending }
         }).await
 
     }
@@ -79,18 +81,18 @@ impl EventLoop {
     }
 
     pub fn suspend(&self) {
-        let guard = self.state.lock();
-        guard.channel.send(Event::Suspend);
+        let mut guard = self.state.lock();
+        guard.injected.push(Event::Suspend);
     }
 
     pub fn resume(&self) {
-        let guard = self.state.lock();
-        guard.channel.send(Event::Resume);
+        let mut guard = self.state.lock();
+        guard.injected.push(Event::Resume);
     }
 
     pub fn quit(&self) {
-        let guard = self.state.lock();
-        guard.channel.send(Event::Quit { reason: QuitReason::Program });
+        let mut guard = self.state.lock();
+        guard.injected.push(Event::Quit { reason: QuitReason::Program });
     }
 
     // TODO: make it be Notif::new(&mut evl) instead

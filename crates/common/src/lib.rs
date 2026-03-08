@@ -409,86 +409,86 @@ impl<T> SmartMutex<T> {
 
 }
 
-pub struct EventChannel<T> {
-    inner: SmartMutex<EventChannelInner<T>>,
-}
+// pub struct EventChannel<T> {
+//     inner: SmartMutex<EventChannelInner<T>>,
+// }
 
-impl<T> Default for EventChannel<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// impl<T> Default for EventChannel<T> {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
 
-struct EventChannelInner<T> {
-    events: VecDeque<T>,
-    waker: Option<task::Waker>,
-}
+// struct EventChannelInner<T> {
+//     events: VecDeque<T>,
+//     waker: Option<task::Waker>,
+// }
 
-impl<T> EventChannel<T> {
+// impl<T> EventChannel<T> {
 
-    pub const fn new() -> Self {
-        Self {
-            inner: SmartMutex::new(EventChannelInner {
-                events: VecDeque::new(),
-                waker: None,
-            }),
-        }
-    }
+//     pub const fn new() -> Self {
+//         Self {
+//             inner: SmartMutex::new(EventChannelInner {
+//                 events: VecDeque::new(),
+//                 waker: None,
+//             }),
+//         }
+//     }
 
-    /// Returns `true` if this channel has any listeners.
-    pub fn active(&self) -> bool {
-        self.inner.with(|it| it.waker.is_some())
-    }
+//     /// Returns `true` if this channel has any listeners.
+//     pub fn active(&self) -> bool {
+//         self.inner.with(|it| it.waker.is_some())
+//     }
 
-    pub fn len(&self) -> usize {
-        self.inner.with(|it| it.events.len())
-    }
+//     pub fn len(&self) -> usize {
+//         self.inner.with(|it| it.events.len())
+//     }
 
-    pub fn send(&self, event: T) {
+//     pub fn send(&self, event: T) {
 
-        let mut inner = self.inner.lock();
+//         let mut inner = self.inner.lock();
 
-        inner.events.push_back(event);
+//         inner.events.push_back(event);
 
-        if let Some(waker) = &inner.waker {
-            waker.wake_by_ref();
-        }
+//         if let Some(waker) = &inner.waker {
+//             waker.wake_by_ref();
+//         }
 
-    }
+//     }
 
-}
+// }
 
-impl<T> Future for &EventChannel<T> {
+// impl<T> Future for &EventChannel<T> {
 
-    type Output = T;
+//     type Output = T;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
+//     fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
 
-        let mut inner = self.inner.lock();
+//         let mut inner = self.inner.lock();
 
-        let maybe = inner.events.pop_front();
+//         let maybe = inner.events.pop_front();
 
-        if let Some(it) = maybe {
-            task::Poll::Ready(it)
-        } else {
+//         if let Some(it) = maybe {
+//             task::Poll::Ready(it)
+//         } else {
 
-            let old = &mut inner.waker;
-            let new = cx.waker();
+//             let old = &mut inner.waker;
+//             let new = cx.waker();
 
-            let same = old.as_mut()
-                .map(|it| it.will_wake(new))
-                .unwrap_or_default();
+//             let same = old.as_mut()
+//                 .map(|it| it.will_wake(new))
+//                 .unwrap_or_default();
 
-            if !same {
-                *old = Some(new.clone());
-            }
+//             if !same {
+//                 *old = Some(new.clone());
+//             }
 
-            task::Poll::Pending
-        }
+//             task::Poll::Pending
+//         }
 
-    }
+//     }
 
-}
+// }
 
 pub struct EventBroadcaster<T: Clone> {
     inner: SmartMutex<EventBroadcasterInner<T>>,
@@ -673,17 +673,17 @@ fn channels() {
 
     use futures_lite::future::block_on;
 
-    let single = EventChannel::new();
+    // let single = EventChannel::new();
 
-    single.send(1);
-    single.send(2);
-    single.send(3);
+    // single.send(1);
+    // single.send(2);
+    // single.send(3);
 
-    block_on(async move {
-        assert_eq!((&single).await, 1);
-        assert_eq!((&single).await, 2);
-        assert_eq!((&single).await, 3);
-    });
+    // block_on(async move {
+    //     assert_eq!((&single).await, 1);
+    //     assert_eq!((&single).await, 2);
+    //     assert_eq!((&single).await, 3);
+    // });
 
     let multi = EventBroadcaster::new();
 
