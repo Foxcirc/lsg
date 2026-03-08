@@ -589,6 +589,13 @@ impl<T: Clone> EventBroadcaster<T> {
 
 }
 
+impl EventBroadcaster<()> {
+    /// Convenience method for events with no data.
+    pub fn fire(&self) {
+        self.send(());
+    }
+}
+
 pub struct BroadcastFuture<'a, T: Clone> {
     channel: &'a EventBroadcaster<T>,
     slot: u16,

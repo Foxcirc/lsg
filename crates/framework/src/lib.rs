@@ -1,19 +1,13 @@
 
 #![doc(html_logo_url = "https://raw.githubusercontent.com/Foxcirc/lsg/main/docs/icon.png")]
 
-use common::{BroadcastFuture, LogicalSize, SmartMutex};
-
-use std::{collections::HashMap, convert::{Infallible, identity}, sync::{Arc, Weak}};
-use futures_lite::{FutureExt, future::block_on};
-
 #[cfg(test)]
 mod test;
 
-pub use desktop::{
-    MouseButton,
-    ScrollAxis,
-    Key,
-};
+use common::{BroadcastFuture, LogicalSize, SmartMutex};
+use desktop::{MouseButton, ScrollAxis, Key};
+use std::{collections::HashMap, convert::{Infallible, identity}, sync::{Arc, Weak}};
+use futures_lite::{FutureExt, future::block_on};
 
 pub struct Config {
     pub appid: String,
@@ -177,8 +171,27 @@ impl Window {
 
     fn handle(&self, event: desktop::WindowEvent) {
 
-        if let desktop::WindowEvent::ShouldClose = &event {
-            self.handlers.closed.send(());
+        use desktop::WindowEvent;
+
+        match event {
+            // Event handlers.
+            WindowEvent::ShouldClose => self.handlers.closed.fire(),
+            WindowEvent::Resize { size, fullscreen } => {
+                todo!();
+            },
+            // Special events.
+            WindowEvent::Redraw => {
+                // Render the top widget with our currently desired size.
+                todo!()
+                // let state = RenderState {
+
+                // }
+                // let space = Space {
+
+                // };
+                // self.content.lock().action(Action::Render { space })
+            },
+            _ => (),
         }
 
         // let action = Action::Event { event };
