@@ -53,8 +53,6 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Redraw => {
 
-                        println!("redrawing...");
-
                         let vertices = shaper.process(&geometry);
 
                         let drawable = DrawableGeometry {

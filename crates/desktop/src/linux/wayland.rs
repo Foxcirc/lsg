@@ -668,7 +668,11 @@ impl Window {
             window.redraw.already_got_event = true; // will be reset next frame by `pre_present_notify`
             evb.events.push_back(Event::Window { id: self.id, event: WindowEvent::Redraw });
         } else {
-            panic!("forgot to call `window.present` before drawing");
+            // it would be nice to get a friendly panic here, but this
+            // case is possible when a redraw event is dispatched along with
+            // another event, but the other event is handeled first and causes
+            // a call to redraw.
+            // panic!("forgot to call `window.present` before drawing");
         }
 
     }
