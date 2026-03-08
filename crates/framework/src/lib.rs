@@ -237,8 +237,9 @@ let rect = ForceResize::build().size((5000, 5000))
 
 let rect = ForceResize::new((5000, 5000), "rect-red-round25")
 
+let rect = ForceResize((5000, 5000), Rect().red().round25());
 
-let rect = lsg::spec("ForceResize(5000x5000, Rect(red, round25))");
+let rect = widget("ForceResize(5000x5000, Rect(red, round25))");
 
  */
 
@@ -272,7 +273,7 @@ struct RenderState {
 struct RenderStateGeometries {
     /// Widget-added geometries.
     inner: Vec<Arc<render::VertexGeometry>>,
-    /// Indexes into `geometries`.
+    /// Indexes into `inner`.
     instances: Vec<common::Instance>,
 }
 

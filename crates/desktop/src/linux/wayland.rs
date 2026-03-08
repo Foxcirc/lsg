@@ -2395,8 +2395,8 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                         xkb::KEYMAP_COMPILE_NO_FLAGS
                     ) } {
                         Ok(Some(val)) => val,
-                        Ok(None) => { evl.errors.push_back(EvlError::fatal(format!("cannot load keymap")));          return },
-                        Err(err) => { evl.errors.push_back(EvlError::fatal(format!("cannot load keymap, {}", err))); return }
+                        Ok(None) => panic!("cannot load keymap"),
+                        Err(err) => panic!("cannot load keymap, {}", err)
                     }
                 };
 
@@ -2406,7 +2406,7 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                 // initialize composition state
 
                 let locale = env::var_os("LANG")
-                    .unwrap_or_else(|| "en_US.UTF-8".into());
+                    .expect("missing LOCALE environment variable");
 
                 let compose_table = match xkb::Table::new_from_locale(
                     &evl.keyboard.xkb_context,
@@ -2415,12 +2415,11 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                 ) {
                     Ok(val) => val,
                     Err(()) => {
-                        // TODO: currently this line is never reachable. if the locale is invalid libxkbcommon actually
-                        //       exits immediatly with an errors message (wonderful library design there...).
-                        //       It seems that Qt Apps like KWrite will actually not crash on an invalid locale, even though
-                        //       I think they use libxkbcommon aswell. This requires further investigation.
-                        evl.errors.push_back(EvlError::fatal(format!("invalid keymap locale, {:?}", locale)));
-                        return
+                        // Currently this line is never reachable. if the locale is invalid libxkbcommon actually
+                        // exits immediatly with an errors message (wonderful library design there...).
+                        // It seems that Qt Apps like KWrite will actually not crash on an invalid locale, even though
+                        // I think they use libxkbcommon aswell. They probably validate the locale beforehand.
+                        panic!("invalid keymap locale, {:?}", locale);
                     }
                 };
 
@@ -2796,7 +2795,7 @@ pub enum EvlErrorSeverity {
     Fatal,
     /// Something has gone wrong but the application may continue to run.
     Warning,
-    /// Some platforms or environments don't support all special/niche features.
+    /// Some environments may not support a feature. Especially in a diverse ecosystem like wayland.
     Unsupported,
 }
 
