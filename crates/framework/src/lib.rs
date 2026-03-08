@@ -228,6 +228,20 @@ impl Widget for () {
     fn action(&self, _: Action) {}
 }
 
+/*
+
+Some cool ideas:
+
+let rect = ForceResize::build().size((5000, 5000))
+    .inner(Rect::build().color(Color::Red));
+
+let rect = ForceResize::new((5000, 5000), "rect-red-round25")
+
+
+let rect = lsg::spec("ForceResize(5000x5000, Rect(red, round25))");
+
+ */
+
 pub enum Action<'a> {
 
     Render { space: Space<'a> },
