@@ -21,8 +21,8 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     window.title(&evl.config().appid);
     window.transparency(true);
 
-    let mut renderer = render::GlRenderer::new(&*evl).unwrap();
-    let mut surface = render::GlSurface::new(&renderer, &window).unwrap();
+    let mut renderer = render::GlRenderer::new(&*evl)?;
+    let mut surface = render::GlSurface::new(&renderer, &window)?;
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut instances: Vec<Instance> = Vec::new();
@@ -43,7 +43,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };
 
     // run the event loop
-    block_on(async {
+    block_on(async move {
 
         while let Ok(event) = evl.next().await {
 
@@ -61,13 +61,13 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         window.present();
-                        renderer.draw(&drawable, &surface).unwrap();
+                        renderer.draw(&drawable, &surface)?;
 
                     },
 
                     WindowEvent::Resize { size, .. } => {
                         println!("got resize event: new size = {size:?}");
-                        surface.resize(&renderer, size).unwrap()
+                        surface.resize(&renderer, size)?
                     },
 
                     WindowEvent::MouseMotion { point } => {
@@ -115,8 +115,8 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
         }
 
-    });
+        Ok(())
 
-    Ok(())
+    })
 
 }

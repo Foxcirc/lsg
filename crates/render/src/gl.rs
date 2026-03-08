@@ -1,5 +1,5 @@
 
-use std::{iter::{repeat, zip}};
+use std::{fmt, iter::{repeat, zip}, error::Error as StdError};
 
 use common::*;
 use crate::VertexGeometry;
@@ -451,41 +451,54 @@ struct InstancedPreparedGeometry {
 }
 
 /// An error that occured when rendering.
-#[derive(Debug)] // TODO: impl StdError
-pub enum RenderError {
-    /// Likely unrecoverable error, like a graphics device reset or
-    /// missing libraries/functions.
-    Fatal(String),
-    /// Invalid input was given. Otherwise everything is probably alright.
-    InvalidInput(String),
+///
+/// Likely an unrecoverable error, like a graphics device reset or
+/// missing libraries/functions.
+#[derive(Debug)]
+pub struct RenderError {
+    msg: String,
 }
+
+impl RenderError {
+    pub fn new(msg: String) -> Self {
+        Self { msg }
+    }
+}
+
+impl fmt::Display for RenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "render error, {}", self.msg)
+    }
+}
+
+impl StdError for RenderError {}
 
 impl From<egl::EglError> for RenderError {
     fn from(value: egl::EglError) -> Self {
-        Self::Fatal(format!("egl call failed, {}", value))
+        Self::new(format!("egl call failed, {}", value))
     }
 }
 
 impl From<gl::ShaderError> for RenderError {
     fn from(value: gl::ShaderError) -> Self {
-        Self::Fatal(format!("compiling shader failed, {}", value))
+        Self::new(format!("compiling shader failed, {}", value))
     }
 }
 
 impl From<gl::LinkError> for RenderError {
     fn from(value: gl::LinkError) -> Self {
-        Self::Fatal(format!("linking shader program failed, {}", value))
+        Self::new(format!("linking shader program failed, {}", value))
     }
 }
 
 impl From<gl::UniformUnknown> for RenderError {
     fn from(_: gl::UniformUnknown) -> Self {
-        Self::Fatal(format!("cannot query uniform"))
+        Self::new(format!("cannot query uniform"))
     }
 }
 
 impl From<gl::FnsUnknown> for RenderError {
     fn from(_: gl::FnsUnknown) -> Self {
-        Self::Fatal(format!("cannot load gl functions"))
+        Self::new(format!("cannot load gl functions"))
     }
 }

@@ -446,7 +446,7 @@ pub struct LinkError {
 impl fmt::Debug for LinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f,
-            "LinkErrorError {{\n\tmsg: {}}}",
+            "LinkError {{\n\tmsg: {}}}",
             self.msg.to_string_lossy().trim_end_matches("\n")
         )
     }
@@ -454,7 +454,7 @@ impl fmt::Debug for LinkError {
 
 impl fmt::Display for LinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.msg.to_string_lossy().trim_end_matches("\n"))
+        write!(f, "program link error, {}", self.msg.to_string_lossy().trim_end_matches("\n"))
     }
 }
 

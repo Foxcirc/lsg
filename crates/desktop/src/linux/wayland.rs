@@ -36,7 +36,7 @@ use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
 use std::{
-    collections::{HashMap, VecDeque}, env, error::Error as IsError, ffi::c_void as void, fmt, io, os::fd::{AsFd, OwnedFd}, sync::Arc, task, time::{Duration, Instant}
+    collections::{HashMap, VecDeque}, env, error::Error as StdError, ffi::c_void as void, fmt, io, os::fd::{AsFd, OwnedFd}, sync::Arc, task, time::{Duration, Instant}
 };
 
 use common::*;
@@ -2806,7 +2806,7 @@ impl fmt::Display for EvlError {
     }
 }
 
-impl IsError for EvlError {}
+impl StdError for EvlError {}
 
 impl<'a> From<&'a str> for EvlError {
     fn from(value: &'a str) -> Self {
