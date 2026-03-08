@@ -42,7 +42,7 @@ void main() {
 
     vec3 xyz = vec3(
         float(int(uintXYZ.x) - 2048) / 2048.0,
-        float(int(uintXYZ.y) - 2048) / -2048.0, // INVERTED!
+        float(int(uintXYZ.y) - 2048) / 2048.0,
         float(uintXYZ.z) / 255.0
     );
 

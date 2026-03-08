@@ -652,6 +652,7 @@ impl Window {
     ///
     /// In practice this means you can call this function as often or as rarely as you want and
     /// it will always generate at most one redraw event for every monitor frame.
+    #[track_caller]
     pub fn redraw(&self) {
 
         let mut guard = self.evl.state.lock();
@@ -2637,14 +2638,21 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
              WlPointerEvent::Enter { surface, surface_x, surface_y, serial } => {
 
                 let id = get_window_id(&surface);
+                let window = evl.windows.get(id);
+
                 let (x, y) = (surface_x.max(0.) as i16,
                               surface_y.max(0.) as i16); // must not be negative
 
-                evl.mouse.focused = Some(surface);
+                // convert to mathematical coordinate space
                 evl.mouse.pos.x = x;
-                evl.mouse.pos.y = y;
+                evl.mouse.pos.y = window.size.h as i16 - y;
 
-                evl.events.push_back(Event::Window { id, event: WindowEvent::MouseEnter });
+                evl.mouse.focused = Some(surface);
+
+                evl.events.push_back(Event::Window { id, event:
+                    WindowEvent::MouseEnter
+                });
+
                 evl.events.push_back(Event::Window { id, event:
                     WindowEvent::MouseMotion { point: evl.mouse.pos }
                 });
@@ -2655,24 +2663,27 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
 
              WlPointerEvent::Leave { surface, .. } => {
 
-                let id = get_window_id(&surface);
-
                 evl.mouse.focused = None;
 
+                let id = get_window_id(&surface);
                 evl.events.push_back(Event::Window { id, event: WindowEvent::MouseLeave });
 
              },
 
              WlPointerEvent::Motion { surface_x, surface_y, .. } => {
 
+                 let surface = evl.mouse.focused.as_ref()
+                     .expect("surface must have been entered");
+
+                 let id = get_window_id(&surface);
+                 let window = evl.windows.get(id);
+
                  let (x, y) = (surface_x.max(0.) as i16,
-                               surface_y.max(0.) as i16);
+                               surface_y.max(0.) as i16); // must not be negative
 
-                evl.mouse.pos.x = x;
-                evl.mouse.pos.y = y;
-
-                let surface = evl.mouse.focused.as_ref().unwrap();
-                let id = get_window_id(&surface);
+                 // convert to mathematical coordinate space
+                 evl.mouse.pos.x = x;
+                 evl.mouse.pos.y = window.size.h as i16 - y;
 
                 evl.events.push_back(Event::Window {
                     id,
@@ -2715,13 +2726,12 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
 
                 evl.last_serial = serial;
 
-                let surface = evl.mouse.focused.as_ref().unwrap();
+                let surface = evl.mouse.focused.as_ref()
+                    .unwrap();
+
                 let id = get_window_id(&surface);
 
-                evl.events.push_back(Event::Window {
-                    id,
-                    event
-                });
+                evl.events.push_back(Event::Window { id, event });
 
             },
 
@@ -2730,8 +2740,8 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                 let axis = match axis {
                     WEnum::Value(Axis::VerticalScroll) => ScrollAxis::Vertical,
                     WEnum::Value(Axis::HorizontalScroll) => ScrollAxis::Horizontal,
-                    WEnum::Value(..) => return,
-                    WEnum::Unknown(..) => return
+                    WEnum::Value(..) => unreachable!(),
+                    WEnum::Unknown(..) => unreachable!()
                 };
 
                 let surface = evl.mouse.focused.as_ref().unwrap();

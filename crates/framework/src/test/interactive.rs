@@ -28,9 +28,9 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut instances: Vec<Instance> = Vec::new();
     let mut shaper = shaper::GeometryShaper::new();
 
-    geometry.points.push(CurvePoint::new(40, 400, PointKind::Base));
-    geometry.points.push(CurvePoint::new(240, 400, PointKind::Ctrl));
-    geometry.points.push(CurvePoint::new(240, 200, PointKind::Base));
+    geometry.points.push(CurvePoint::new(40, 100, PointKind::Base));
+    geometry.points.push(CurvePoint::new(240, 100, PointKind::Ctrl));
+    geometry.points.push(CurvePoint::new(240, 300, PointKind::Base));
 
     geometry.shapes.push(Shape::new(0..3));
 

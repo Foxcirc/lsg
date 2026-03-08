@@ -634,7 +634,7 @@ impl TriangulationPass {
                     // - the vector must must inside the ear in respect to ALL edges
                     // - moving to the LEFT of the edge means moving INSIDE the ear
                     let invalid = nbs.iter().any(|nb| edges.iter().all(|edge|
-                        // Y-Inverted version (MovingLeft vs. MovingRight)
+                        // non inverted version (updated now) (MovingLeft vs. MovingRight)
                         two_vector_relation(*edge, [*point, *nb]) == TwoVectorRelation::MovingLeft
                     ));
 
@@ -660,44 +660,27 @@ impl TriangulationPass {
 
 
     /// Check if the three points are convex, assuming counter clockwise orientation.
-    /// Y-flipped version.
     fn convex(neighbours: [MathPoint; 3]) -> bool {
 
         let [a, b, c] = neighbours;
 
-        let ba = [a.x as i32 - b.x as i32, -(a.y as i32 - b.y as i32)];
-        let bc = [c.x as i32 - b.x as i32, -(c.y as i32 - b.y as i32)];
-        //                                     ^ this minus adjusts it for being y-flipped
+        let ba = [a.x as i32 - b.x as i32, a.y as i32 - b.y as i32];
+        let bc = [c.x as i32 - b.x as i32, c.y as i32 - b.y as i32];
 
-        // calcualte the angle BA to BC
+        let cross = bc[0] * ba[1] - bc[1] * ba[0];
 
-        let dot = (bc[0] * ba[0] + bc[1] * ba[1]) as f32;
-        let det = (bc[0] * ba[1] - bc[1] * ba[0]) as f32;
-        let signed = det.atan2(dot) * 180.0/PI;
-
-        let angle = if signed.is_sign_negative() {
-            360.0 + signed
-        } else {
-            signed
-        };
-
-        // check if any other vertex is inside the triangle ABC
-
-        angle < 180.0
+        cross > 0
 
     }
 
     /// Area of the triangle ABC.
-    /// Y-flipped version.
+    // TODO: could use signed area (remove "abs") to also get the convexity from this
     fn triangle_area([a, b, c]: [MathPoint; 3]) -> f32 {
-        ((a.x as f32 * (c.y as f32 - b.y as f32) +
-          b.x as f32 * (a.y as f32 - c.y as f32) +
-          c.x as f32 * (b.y as f32 - a.y as f32)) / 2.0).abs()
-    //                  ^^^ the subtracion is fipped to account for the y-flip
+        (((b.x - a.x) as f32 * (c.y - a.y) as f32 -
+          (c.x - a.x) as f32 * (b.y - a.y) as f32).abs()) * 0.5
     }
 
     /// If `point` lies within the triangle `trig`.
-    /// Y-flipped version.
     ///
     /// Considers points that lie exactly on an edge as outside.
     // TODO: I am keeping this function around until further testing is done since special handling
