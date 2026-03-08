@@ -63,6 +63,28 @@ impl GlSurface {
 
 }
 
+/// A single instance of a shape. This can be used to render the same
+/// shape many times with different transformations and texture.
+#[derive(Debug, Clone)]
+pub struct Instance {
+    /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
+    pub target: GeometryTarget,
+    /// offsetX, offsetY
+    pub pos: LogicalPoint,
+    /// Scale which is applied to the targeted shape.
+    pub size: LogicalSize,
+    // /// texture coordinates and layer
+    // pub texture: [f32; 3],
+}
+
+#[derive(Debug, Clone)]
+pub struct GeometryTarget {
+    /// Index into the associated list of vertex gemoetries.
+    pub geometry: u16,
+    /// Index into the list of shapes of that geometry.
+    pub shape: u16,
+}
+
 /// Represents multiple instances of shapes together with their vertex information.
 #[derive(Debug)]
 pub struct DrawableGeometry<'a> {
@@ -299,8 +321,8 @@ impl ShapeRenderer {
 
         for instance in geometry.instances {
 
-            let inner = &geometry.source[instance.target[0]];
-            let shape = &inner.shapes[instance.target[1]];
+            let inner = &geometry.source[instance.target.geometry as usize];
+            let shape = &inner.shapes[instance.target.shape as usize];
             let vertices = &inner.vertices[shape.range()];
 
             let ivertices = repeat([0, 1, 2] as [u16; 3]).flatten();

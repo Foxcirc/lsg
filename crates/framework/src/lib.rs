@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod test;
 
-use common::{BroadcastFuture, LogicalSize, SmartMutex};
+use common::{LogicalSize, SmartMutex};
 use desktop::{MouseButton, ScrollAxis, Key};
-use std::{collections::HashMap, convert::{Infallible, identity}, sync::{Arc, Weak}};
+use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
 pub struct Config {
@@ -129,7 +129,7 @@ impl App {
 
 #[derive(Default)]
 struct AppEventHandlers {
-    quit: common::EventBroadcaster<desktop::QuitReason>,
+    quit: EventBroadcaster<desktop::QuitReason>,
 }
 
 pub struct Window {
@@ -217,7 +217,7 @@ impl Window {
 
 #[derive(Default)]
 struct WindowEventHandlers {
-    closed: common::EventBroadcaster<()>,
+    closed: EventBroadcaster<()>,
 }
 
 pub trait Widget {
@@ -272,16 +272,16 @@ struct RenderState {
 
 struct RenderStateGeometries {
     /// Widget-added geometries.
-    inner: Vec<Arc<render::VertexGeometry>>,
-    /// Indexes into `inner`.
-    instances: Vec<common::Instance>,
+    data: Vec<Arc<render::VertexGeometry>>,
+    /// Indexes into `data`.
+    instances: Vec<render::Instance>,
 }
 
 struct RenderStateVertices {
     /// Widget-added vertices.
     data: Arc<render::VertexGeometry>,
     /// Indexes into `data`.
-    instances: Vec<common::Instance>,
+    instances: Vec<render::Instance>,
 }
 
 struct RenderStateCurves {
@@ -289,7 +289,7 @@ struct RenderStateCurves {
     // Will be triangulated later on.
     data: render::CurveGeometry,
     /// Indexes into `data`.
-    instances: Vec<common::Instance>,
+    instances: Vec<render::Instance>,
 
 }
 
@@ -341,7 +341,7 @@ impl<'a> Space<'a> {
     }
 
     pub fn geometry(&mut self, geometry: Arc<render::VertexGeometry>) -> GeometryKey {
-        let items = &mut self.state.geometries.inner;
+        let items = &mut self.state.geometries.data;
         items.push(geometry);
         GeometryKey {
             index: items.len() as u16 - 1
@@ -353,8 +353,8 @@ impl<'a> Space<'a> {
         let pos  = self.apply_transform_pos(instance.pos);
         let size = self.apply_transform_size(instance.size);
 
-        let inner = common::Instance {
-            target: [0, key.index as usize],
+        let inner = render::Instance {
+            target: render::GeometryTarget { geometry: 0, shape: key.index },
             pos: pos.into(),
             size: size.into(),
         };
@@ -370,8 +370,8 @@ impl<'a> Space<'a> {
         let pos  = self.apply_transform_pos(instance.pos);
         let size = self.apply_transform_size(instance.size);
 
-        let inner = common::Instance {
-            target: [key.index as usize, shape as usize],
+        let inner = render::Instance {
+            target: render::GeometryTarget { geometry: key.index, shape },
             pos: pos.into(),
             size: size.into(),
         };
@@ -380,7 +380,7 @@ impl<'a> Space<'a> {
 
     }
 
-    pub fn subdivide<'s>(&'s mut self, offset: Position, size: Size) -> Space<'s> {
+    pub fn child<'s>(&'s mut self, offset: Position, size: Size) -> Space<'s> {
 
         let offset = self.apply_transform_pos(offset);
         let size = self.apply_transform_size(size);
@@ -536,6 +536,237 @@ pub struct Instance {
     pub pos: Position,
     /// Size of the shape in logical pixels.
     pub size: Size,
+}
+
+pub struct EventBroadcaster<T: Clone> {
+    inner: SmartMutex<EventBroadcasterInner<T>>,
+}
+
+impl<T: Clone> Default for EventBroadcaster<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct EventBroadcasterInner<T: Clone> {
+    events: VecDeque<Event<T>>,
+    wakers: Vec<Option<task::Waker>>,
+    listeners: u16, // currently active listeners
+    tick: u16, // incremental counter, used to avoid double-reading an event
+}
+
+#[derive(Clone)]
+struct Event<T: Clone> {
+    value: T,
+    pending: u16, // listeners that have yet to respond
+    tick: u16, // which tick this event belongs to
+}
+
+impl<T: Clone> EventBroadcaster<T> {
+
+    pub const fn new() -> Self {
+        Self {
+            inner: SmartMutex::new(EventBroadcasterInner {
+                events: VecDeque::new(),
+                wakers: Vec::new(),
+                listeners: 0,
+                tick: 0,
+            }),
+        }
+    }
+
+    /// Returns `true` if this channel has any listeners.
+    pub fn active(&self) -> bool {
+        self.inner.with(|it| it.listeners > 0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.with(|it| it.events.len())
+    }
+
+    pub fn send(&self, event: T) {
+
+        // Don't send anything if there are no listeners, as
+        // this would create events which can never be consumed.
+        if !self.active() {
+            return
+        }
+
+        let mut inner = self.inner.lock();
+
+        inner.tick = inner.tick.wrapping_add(1);
+
+        let pending = inner.listeners;
+        let tick = inner.tick;
+        inner.events.push_back(Event {
+            value: event,
+            pending,
+            tick,
+        });
+
+        let alive = inner.wakers.iter()
+            .filter_map(Option::as_ref);
+
+        for waker in alive {
+            waker.wake_by_ref()
+        }
+
+    }
+
+    pub fn listen<'s>(&'s self) -> BroadcastFuture<'s, T> {
+
+        let mut inner = self.inner.lock();
+
+        inner.listeners += 1;
+
+        let slot = inner.wakers.iter().enumerate()
+            .find(|(.., it)| it.is_none())
+            .map(|(idx, ..)| idx)
+            .unwrap_or_else(|| {
+                inner.wakers.push(None);
+                inner.wakers.len() - 1
+            });
+
+        BroadcastFuture {
+            channel: self,
+            slot: slot as u16,
+            tick: inner.tick,
+        }
+
+    }
+
+}
+
+impl EventBroadcaster<()> {
+    /// Convenience method for events with no data.
+    pub fn fire(&self) {
+        self.send(());
+    }
+}
+
+pub struct BroadcastFuture<'a, T: Clone> {
+    channel: &'a EventBroadcaster<T>,
+    slot: u16,
+    tick: u16, // only acknowledge events newer then this tick
+}
+
+impl<'a, T: Clone> Drop for BroadcastFuture<'a, T> {
+    fn drop(&mut self) {
+        let mut inner = self.channel.inner.lock();
+        inner.wakers[self.slot as usize] = None;
+        inner.listeners -= 1;
+    }
+}
+
+impl<'a, T: Clone> BroadcastFuture<'a, T> {
+    pub async fn next(&mut self) -> T {
+        self.await
+    }
+}
+
+impl<'a, T: Clone> Future for &mut BroadcastFuture<'a, T> {
+
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
+
+        let this = self.get_mut();
+        let mut inner = this.channel.inner.lock();
+
+        let maybe = inner.events.iter_mut()
+            .find(|it| it.tick > this.tick);
+
+        // if we found an event, read it now
+
+        if let Some(it) = maybe {
+
+            // this event was now read by us
+            this.tick = it.tick;
+            it.pending -= 1;
+
+            let expired = it.pending == 0;
+
+            let result = it.value.clone();
+
+            if expired {
+                // remove the event if it was consumed by all listeners
+                drop(inner.events.pop_front());
+            }
+
+            task::Poll::Ready(result)
+
+        } else {
+
+            let old = &mut inner.wakers[this.slot as usize];
+            let new = cx.waker();
+
+            let same = old.as_mut()
+                .map(|it| it.will_wake(new))
+                .unwrap_or_default();
+
+            if !same {
+                *old = Some(new.clone());
+            }
+
+            task::Poll::Pending
+
+        }
+
+    }
+
+}
+
+#[test]
+fn channels() {
+
+    use futures_lite::future::block_on;
+
+    // let single = EventChannel::new();
+
+    // single.send(1);
+    // single.send(2);
+    // single.send(3);
+
+    // block_on(async move {
+    //     assert_eq!((&single).await, 1);
+    //     assert_eq!((&single).await, 2);
+    //     assert_eq!((&single).await, 3);
+    // });
+
+    let multi = EventBroadcaster::new();
+
+    multi.send(0);
+
+    let mut listener1 = multi.listen();
+
+    multi.send(1);
+
+    let mut listener2 = multi.listen();
+
+    multi.send(2);
+    multi.send(3);
+
+    block_on(async move {
+
+        // Both should receive only events that
+        // happen after their creation.
+
+        // listener1:
+        assert_eq!((&mut listener1).await, 1);
+        assert_eq!((&mut listener1).await, 2);
+        assert_eq!((&mut listener1).await, 3);
+
+        // listener2:
+        assert_eq!((&mut listener2).await, 2);
+        assert_eq!((&mut listener2).await, 3);
+
+    });
+
+    // the listeners were moved and dropped
+    assert_eq!(multi.active(), false);
+    assert_eq!(multi.len(), 0);
+
+
 }
 
 /*

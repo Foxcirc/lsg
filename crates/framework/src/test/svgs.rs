@@ -23,7 +23,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut surface = render::GlSurface::new(&renderer, &window).unwrap();
 
     let mut geometry = shaper::CurveGeometry::new();
-    let mut instances: Vec<Instance> = Vec::new();
+    let mut instances: Vec<render::Instance> = Vec::new();
     let mut shaper = shaper::GeometryShaper::new();
 
     // Load all the svgs.
@@ -130,8 +130,8 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                                 geometry.points.extend(shape);
                                 let end = geometry.points.len();
                                 geometry.shapes.push(Shape::new(start as u16..end as u16));
-                                instances.push(Instance {
-                                    target: [0, shape_idx],
+                                instances.push(render::Instance {
+                                    target: render::GeometryTarget { geometry: 0, shape: shape_idx as u16 },
                                     pos: LogicalPoint::new(physical_x as i16, physical_y as i16),
                                     size: LogicalSize::new(80, 80),
                                 });

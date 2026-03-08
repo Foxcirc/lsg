@@ -274,57 +274,36 @@ impl Shape {
 
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ShapeKind {
-    Singular,
-    Instanced,
-}
+// #[derive(Clone, Copy, PartialEq, Eq)]
+// pub enum ShapeKind {
+//     Singular,
+//     Instanced,
+// }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum IntersectionRelation {
-    /// Non-Intesecting
-    Outside,
-    /// Intesecting
-    Inside,
-    /// Point lies on an edge
-    OnEdge([[MathPoint; 2]; 1]),
-    /// Point lies on a corner.
-    OnCorner([[MathPoint; 2]; 2]),
-}
+// #[derive(Debug, Clone, Copy, PartialEq)]
+// pub enum IntersectionRelation {
+//     /// Non-Intesecting
+//     Outside,
+//     /// Intesecting
+//     Inside,
+//     /// Point lies on an edge
+//     OnEdge([[MathPoint; 2]; 1]),
+//     /// Point lies on a corner.
+//     OnCorner([[MathPoint; 2]; 2]),
+// }
 
-impl IntersectionRelation {
-    /// All edges this intersection touched.
-    /// OnEdge => 1 edge
-    /// OnCorner => 2 edges
-    pub fn edges(&self) -> &[[MathPoint; 2]] {
-        match self {
-            Self::Outside | Self::Inside => &[],
-            Self::OnEdge(edge) => edge,
-            Self::OnCorner(corner) => corner,
-        }
-    }
-}
-
-/// A single instance of a shape. This can be used to render the same
-/// shape many times in different positions and with a different texture.
-#[derive(Debug, Clone)]
-pub struct Instance {
-    /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
-    pub target: [usize; 2], // TODO: make this a struct with named fields not just a [usize; 2]
-    /// offsetX, offsetY
-    pub pos: LogicalPoint,
-    /// Scale which is applied to the targeted shape.
-    pub size: LogicalSize,
-    // /// texture coordinates and layer
-    // pub texture: [f32; 3],
-}
-
-pub struct InstanceTarget {
-    /// Index into the associated list of vertex gemoetries.
-    pub geometry: u16,
-    /// Index into the list of shapes of that geometry.
-    pub shape: u16,
-}
+// impl IntersectionRelation {
+//     /// All edges this intersection touched.
+//     /// OnEdge => 1 edge
+//     /// OnCorner => 2 edges
+//     pub fn edges(&self) -> &[[MathPoint; 2]] {
+//         match self {
+//             Self::Outside | Self::Inside => &[],
+//             Self::OnEdge(edge) => edge,
+//             Self::OnCorner(corner) => corner,
+//         }
+//     }
+// }
 
 /// A point in normalized device coordinates.
 // #[derive(Debug, Clone, Copy)]
@@ -489,234 +468,3 @@ impl<T> SmartMutex<T> {
 //     }
 
 // }
-
-pub struct EventBroadcaster<T: Clone> {
-    inner: SmartMutex<EventBroadcasterInner<T>>,
-}
-
-impl<T: Clone> Default for EventBroadcaster<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-struct EventBroadcasterInner<T: Clone> {
-    events: VecDeque<Event<T>>,
-    wakers: Vec<Option<task::Waker>>,
-    listeners: u16, // currently active listeners
-    tick: u16, // incremental counter, used to avoid double-reading an event
-}
-
-#[derive(Clone)]
-struct Event<T: Clone> {
-    value: T,
-    pending: u16, // listeners that have yet to respond
-    tick: u16, // which tick this event belongs to
-}
-
-impl<T: Clone> EventBroadcaster<T> {
-
-    pub const fn new() -> Self {
-        Self {
-            inner: SmartMutex::new(EventBroadcasterInner {
-                events: VecDeque::new(),
-                wakers: Vec::new(),
-                listeners: 0,
-                tick: 0,
-            }),
-        }
-    }
-
-    /// Returns `true` if this channel has any listeners.
-    pub fn active(&self) -> bool {
-        self.inner.with(|it| it.listeners > 0)
-    }
-
-    pub fn len(&self) -> usize {
-        self.inner.with(|it| it.events.len())
-    }
-
-    pub fn send(&self, event: T) {
-
-        // Don't send anything if there are no listeners, as
-        // this would create events which can never be consumed.
-        if !self.active() {
-            return
-        }
-
-        let mut inner = self.inner.lock();
-
-        inner.tick = inner.tick.wrapping_add(1);
-
-        let pending = inner.listeners;
-        let tick = inner.tick;
-        inner.events.push_back(Event {
-            value: event,
-            pending,
-            tick,
-        });
-
-        let alive = inner.wakers.iter()
-            .filter_map(Option::as_ref);
-
-        for waker in alive {
-            waker.wake_by_ref()
-        }
-
-    }
-
-    pub fn listen<'s>(&'s self) -> BroadcastFuture<'s, T> {
-
-        let mut inner = self.inner.lock();
-
-        inner.listeners += 1;
-
-        let slot = inner.wakers.iter().enumerate()
-            .find(|(.., it)| it.is_none())
-            .map(|(idx, ..)| idx)
-            .unwrap_or_else(|| {
-                inner.wakers.push(None);
-                inner.wakers.len() - 1
-            });
-
-        BroadcastFuture {
-            channel: self,
-            slot: slot as u16,
-            tick: inner.tick,
-        }
-
-    }
-
-}
-
-impl EventBroadcaster<()> {
-    /// Convenience method for events with no data.
-    pub fn fire(&self) {
-        self.send(());
-    }
-}
-
-pub struct BroadcastFuture<'a, T: Clone> {
-    channel: &'a EventBroadcaster<T>,
-    slot: u16,
-    tick: u16, // only acknowledge events newer then this tick
-}
-
-impl<'a, T: Clone> Drop for BroadcastFuture<'a, T> {
-    fn drop(&mut self) {
-        let mut inner = self.channel.inner.lock();
-        inner.wakers[self.slot as usize] = None;
-        inner.listeners -= 1;
-    }
-}
-
-impl<'a, T: Clone> BroadcastFuture<'a, T> {
-    pub async fn next(&mut self) -> T {
-        self.await
-    }
-}
-
-impl<'a, T: Clone> Future for &mut BroadcastFuture<'a, T> {
-
-    type Output = T;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
-
-        let this = self.get_mut();
-        let mut inner = this.channel.inner.lock();
-
-        let maybe = inner.events.iter_mut()
-            .find(|it| it.tick > this.tick);
-
-        // if we found an event, read it now
-
-        if let Some(it) = maybe {
-
-            // this event was now read by us
-            this.tick = it.tick;
-            it.pending -= 1;
-
-            let expired = it.pending == 0;
-
-            let result = it.value.clone();
-
-            if expired {
-                // remove the event if it was consumed by all listeners
-                drop(inner.events.pop_front());
-            }
-
-            task::Poll::Ready(result)
-
-        } else {
-
-            let old = &mut inner.wakers[this.slot as usize];
-            let new = cx.waker();
-
-            let same = old.as_mut()
-                .map(|it| it.will_wake(new))
-                .unwrap_or_default();
-
-            if !same {
-                *old = Some(new.clone());
-            }
-
-            task::Poll::Pending
-
-        }
-
-    }
-
-}
-
-#[test]
-fn channels() {
-
-    use futures_lite::future::block_on;
-
-    // let single = EventChannel::new();
-
-    // single.send(1);
-    // single.send(2);
-    // single.send(3);
-
-    // block_on(async move {
-    //     assert_eq!((&single).await, 1);
-    //     assert_eq!((&single).await, 2);
-    //     assert_eq!((&single).await, 3);
-    // });
-
-    let multi = EventBroadcaster::new();
-
-    multi.send(0);
-
-    let mut listener1 = multi.listen();
-
-    multi.send(1);
-
-    let mut listener2 = multi.listen();
-
-    multi.send(2);
-    multi.send(3);
-
-    block_on(async move {
-
-        // Both should receive only events that
-        // happen after their creation.
-
-        // listener1:
-        assert_eq!((&mut listener1).await, 1);
-        assert_eq!((&mut listener1).await, 2);
-        assert_eq!((&mut listener1).await, 3);
-
-        // listener2:
-        assert_eq!((&mut listener2).await, 2);
-        assert_eq!((&mut listener2).await, 3);
-
-    });
-
-    // the listeners were moved and dropped
-    assert_eq!(multi.active(), false);
-    assert_eq!(multi.len(), 0);
-
-
-}

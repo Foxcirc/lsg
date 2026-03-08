@@ -25,8 +25,9 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut surface = render::GlSurface::new(&renderer, &window)?;
 
     let mut geometry = shaper::CurveGeometry::new();
-    let mut instances: Vec<Instance> = Vec::new();
     let mut shaper = shaper::GeometryShaper::new();
+
+    let mut instances: Vec<render::Instance> = Vec::new();
 
     geometry.points.push(CurvePoint::new(40, 100, PointKind::Base));
     geometry.points.push(CurvePoint::new(240, 100, PointKind::Ctrl));
@@ -34,10 +35,10 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     geometry.shapes.push(Shape::new(0..3));
 
-    instances.push(Instance {
+    instances.push(render::Instance {
+        target: render::GeometryTarget { geometry: 0, shape: 0 },
         pos: LogicalPoint::new(0, 0),
         size: LogicalSize::MAX,
-        target: [0, 0],
     });
 
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };

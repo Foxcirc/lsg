@@ -152,7 +152,6 @@ impl LoweringPass {
 
             let len = points.len();
 
-            // get the point at idx and the four points "after" it in the polygon
             let section = [
                 points[(idx + 0) % len],
                 points[(idx + 1) % len],
@@ -171,8 +170,9 @@ impl LoweringPass {
 
                 increment = 2;
 
-                let intersected = points.iter().any(|it|
-                    !section.contains(it) && TriangulationPass::triangle_intersects_point([a, b, c], MathPoint::from(*it)) == IntersectionRelation::Inside
+                let intersected = points.iter().enumerate().any(|(pidx, it)|
+                    !(pidx >= idx && pidx <= idx + 3) &&
+                    TriangulationPass::triangle_intersects_point([a, b, c], MathPoint::from(*it))
                 );
 
                 if intersected {
@@ -591,7 +591,7 @@ impl TriangulationPass {
         for (pidx, point) in polygon.iter().enumerate() {
 
             if !indices.contains(&pidx) && // dont include the points that make up the ear
-                Self::triangle_intersects_point(abc, MathPoint::from(*point)) == IntersectionRelation::Inside
+                Self::triangle_intersects_point(abc, MathPoint::from(*point)) // == IntersectionRelation::Inside
             {
                 return false
             }
@@ -686,7 +686,7 @@ impl TriangulationPass {
     // TODO: I am keeping this function around until further testing is done since special handling
     // for cases where the point lies on an EDGE/CORNER may be needed for rare edge cases,
     // but in general I wanna revert it back to returning a simple boolean
-    fn triangle_intersects_point([a, b, c]: [MathPoint; 3], point: MathPoint) -> IntersectionRelation {
+    fn triangle_intersects_point([a, b, c]: [MathPoint; 3], point: MathPoint) -> /* IntersectionRelation */ bool {
 
         let abc = Self::triangle_area([a, b, c]);
 
@@ -699,27 +699,27 @@ impl TriangulationPass {
         // small epsilon, to account for precision errors
         const EPS: f32 = 1e-6;
 
-        if (total - abc).abs() < EPS {
-            match (pab < EPS, pbc < EPS, pca < EPS) {
-                // point is inside
-                (false, false, false) => return IntersectionRelation::Inside,
-                // point lies on one edge
-                (true, false, false) => return IntersectionRelation::OnEdge([[a, b]]),
-                (false, true, false) => return IntersectionRelation::OnEdge([[b, c]]),
-                (false, false, true) => return IntersectionRelation::OnEdge([[c, a]]),
-                // point lies on two edges (= on a corner)
-                (true, true, false) => return IntersectionRelation::OnCorner([[a, b], [b, c]]), // corner B
-                (false, true, true) => return IntersectionRelation::OnCorner([[b, c], [c, a]]), // corner C
-                (true, false, true) => return IntersectionRelation::OnCorner([[c, a], [a, b]]), // corner A
-                // deformed triangle
-                (true, true, true) => return IntersectionRelation::Outside,
-            }
-        } else {
-            IntersectionRelation::Outside
-        }
+        // if (total - abc).abs() < EPS {
+        //     match (pab < EPS, pbc < EPS, pca < EPS) {
+        //         // point is inside
+        //         (false, false, false) => return IntersectionRelation::Inside,
+        //         // point lies on one edge
+        //         (true, false, false) => return IntersectionRelation::OnEdge([[a, b]]),
+        //         (false, true, false) => return IntersectionRelation::OnEdge([[b, c]]),
+        //         (false, false, true) => return IntersectionRelation::OnEdge([[c, a]]),
+        //         // point lies on two edges (= on a corner)
+        //         (true, true, false) => return IntersectionRelation::OnCorner([[a, b], [b, c]]), // corner B
+        //         (false, true, true) => return IntersectionRelation::OnCorner([[b, c], [c, a]]), // corner C
+        //         (true, false, true) => return IntersectionRelation::OnCorner([[c, a], [a, b]]), // corner A
+        //         // deformed triangle
+        //         (true, true, true) => return IntersectionRelation::Outside,
+        //     }
+        // } else {
+        //     IntersectionRelation::Outside
+        // }
 
-        // (total - abc).abs() < EPS // && // general area check
-        // pab > EPS && pbc > EPS && pca > EPS // points on an edge should be considered outside
+        (total - abc).abs() < EPS && // general area check
+        pab > EPS && pbc > EPS && pca > EPS // points on an edge should be considered outside
 
     }
 
