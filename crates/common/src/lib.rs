@@ -358,6 +358,7 @@ pub unsafe trait IsSurface {
     fn size(&self) -> LogicalSize;
 }
 
+#[derive(Default)]
 pub struct SmartMutex<T> {
     inner: Mutex<T>,
 }

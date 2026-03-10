@@ -16,8 +16,9 @@ pub struct Config {
 pub struct App {
     executor: async_executor::LocalExecutor<'static>,
     eventloop: Arc<desktop::EventLoop>,
-    windows: SmartMutex<HashMap<desktop::WindowId, Weak<Window>>>,
     handlers: AppEventHandlers,
+    windows: SmartMutex<HashMap<desktop::WindowId, Weak<Window>>>,
+    renderstate: SmartMutex<AppRenderState>,
 }
 
 impl App {
@@ -32,9 +33,16 @@ impl App {
 
             desktop::EventLoop::run(config2, |eventloop| {
 
+                let renderstate = AppRenderState {
+                    shaper: render::GeometryShaper::new(),
+                    renderer: render::GlRenderer::new(&*eventloop)
+                        .map_err(desktop::EvlError::anyerror)?,
+                };
+
                 let this = Arc::new(Self {
                     executor: async_executor::LocalExecutor::new(),
                     windows: SmartMutex::new(HashMap::new()),
+                    renderstate: SmartMutex::new(renderstate),
                     handlers: AppEventHandlers::default(),
                     eventloop,
                 });
@@ -79,7 +87,8 @@ impl App {
                     // Foreward the event to the window, if it wasn't dropped yet.
                     this.windows.lock().get(&id)
                         .and_then(Weak::upgrade)
-                        .inspect(|it| it.handle(event));
+                        .expect("window removed prematurely")
+                        .handle(event)?
                 },
 
                 _ => (),
@@ -121,10 +130,33 @@ impl App {
         self.handlers.quit.send(desktop::QuitReason::Program)
     }
 
-    pub fn quitted(&self) -> BroadcastFuture<desktop::QuitReason> {
+    pub fn quitted<'s>(&'s self) -> BroadcastFuture<'s, desktop::QuitReason> {
         self.handlers.quit.listen()
     }
 
+}
+
+#[repr(transparent)]
+struct DynamicWidget {
+    pub inner: Arc<dyn Widget>,
+}
+
+impl DynamicWidget {
+    fn new<W: Widget + 'static>(inner: Arc<W>) -> Self {
+        Self { inner }
+    }
+}
+
+impl Default for DynamicWidget {
+    fn default() -> Self {
+        Self { inner: Arc::new(()) }
+    }
+}
+
+impl Widget for DynamicWidget {
+    fn action(&self, action: Action) {
+        self.inner.action(action);
+    }
 }
 
 #[derive(Default)]
@@ -136,7 +168,8 @@ pub struct Window {
     app: Arc<App>,
     inner: desktop::Window,
     handlers: WindowEventHandlers,
-    content: SmartMutex<Arc<dyn Widget>>,
+    content: SmartMutex<DynamicWidget>,
+    renderstate: SmartMutex<WindowRenderState>,
 }
 
 impl Drop for Window {
@@ -150,13 +183,26 @@ impl Drop for Window {
 
 impl Window {
 
-    pub fn new(app: &Arc<App>) -> Arc<Self> {
+    pub fn new(app: &Arc<App>) -> Result<Arc<Self>, desktop::EvlError> {
+
+        let inner = desktop::Window::new(&app.eventloop);
+
+        let renderer = &app.renderstate.lock().renderer;
+
+        let renderstate = SmartMutex::new(WindowRenderState {
+            geometries: Default::default(),
+            vertices: Default::default(),
+            curves: Default::default(),
+            surface: render::GlSurface::new(renderer, &inner)
+                .map_err(desktop::EvlError::anyerror)?,
+        });
 
         let this = Arc::new(Self {
             app: Arc::clone(&app),
-            inner: desktop::Window::new(&app.eventloop),
-            handlers: WindowEventHandlers::default(),
-            content: SmartMutex::new(Arc::new(()))
+            handlers: Default::default(),
+            content: Default::default(),
+            renderstate,
+            inner,
         });
 
         // Insert ourselves into the window list.
@@ -165,34 +211,72 @@ impl Window {
             Arc::downgrade(&this)
         );
 
-        this
+        Ok(this)
 
     }
 
-    fn handle(&self, event: desktop::WindowEvent) {
+    fn handle(&self, event: desktop::WindowEvent) -> Result<(), desktop::EvlError> {
 
         use desktop::WindowEvent;
 
+        let mut windowstate = self.renderstate.lock();
+        let mut appstate = self.app.renderstate.lock();
+
         match event {
+
             // Event handlers.
+
             WindowEvent::ShouldClose => self.handlers.closed.fire(),
-            WindowEvent::Resize { size, fullscreen } => {
-                todo!();
-            },
+
             // Special events.
-            WindowEvent::Redraw => {
-                // Render the top widget with our currently desired size.
-                todo!()
-                // let state = RenderState {
 
-                // }
-                // let space = Space {
-
-                // };
-                // self.content.lock().action(Action::Render { space })
+            WindowEvent::Resize { size, .. } => {
+                windowstate.surface.resize(&appstate.renderer, size)
+                    .map_err(desktop::EvlError::anyerror)?
             },
+
+            WindowEvent::Redraw => {
+
+                // Rendering a widget looks as follors.
+                // 1. Clear old data and create a blank `Space`.
+                // 2. Let the widget tree render into the `Space`.
+                // 3. Read the data and render it onto the window.
+
+                windowstate.clear();
+
+                let space = Space {
+                    state: &mut *windowstate,
+                    size: Size::abs(5000, 5000),
+                    offset: Position::abs(0, 0)
+                };
+
+                // This will render the whole tree.
+
+                self.content.lock()
+                    .action(Action::Render { space });
+
+                // Now we can read back and render the data.
+
+                let AppRenderState { shaper, renderer } = &mut *appstate;
+
+                let curves = &windowstate.curves.data;
+                let vertices = shaper.process(curves);
+
+                let drawable = render::DrawableGeometry {
+                    source: &[vertices],
+                    instances: &windowstate.curves.instances,
+                };
+
+                renderer.draw(&drawable, &windowstate.surface)
+                    .map_err(desktop::EvlError::anyerror)?;
+
+            },
+
             _ => (),
+
         }
+
+        Ok(())
 
         // let action = Action::Event { event };
 
@@ -201,15 +285,15 @@ impl Window {
 
     }
 
-    pub fn show(&self, size: LogicalSize) {
-        // self.inner.
-    }
+    // pub fn show(&self, size: LogicalSize) {
+    //     // self.inner.
+    // }
 
     pub fn content<W: Widget + 'static>(&self, widget: Arc<W>) {
-        self.content.set(widget);
+        self.content.set(DynamicWidget::new(widget));
     }
 
-    pub fn closed(&self) -> BroadcastFuture<()> {
+    pub fn closed<'s>(&'s self) -> BroadcastFuture<'s, ()> {
         self.handlers.closed.listen()
     }
 
@@ -264,12 +348,32 @@ pub enum Action<'a> {
 
 }
 
-struct RenderState {
+struct AppRenderState {
+    shaper: render::GeometryShaper,
+    renderer: render::GlRenderer,
+}
+
+struct WindowRenderState {
+    // Buffers to store render data:
     geometries: RenderStateGeometries,
     vertices: RenderStateVertices,
     curves: RenderStateCurves,
+    // Surface:
+    surface: render::GlSurface,
 }
 
+impl WindowRenderState {
+    pub fn clear(&mut self) {
+        self.geometries.data.clear();
+        self.geometries.instances.clear();
+        self.vertices.data.clear();
+        self.vertices.instances.clear();
+        self.curves.data.clear();
+        self.curves.instances.clear();
+    }
+}
+
+#[derive(Default)]
 struct RenderStateGeometries {
     /// Widget-added geometries.
     data: Vec<Arc<render::VertexGeometry>>,
@@ -277,13 +381,15 @@ struct RenderStateGeometries {
     instances: Vec<render::Instance>,
 }
 
+#[derive(Default)]
 struct RenderStateVertices {
     /// Widget-added vertices.
-    data: Arc<render::VertexGeometry>,
+    data: render::VertexGeometry,
     /// Indexes into `data`.
     instances: Vec<render::Instance>,
 }
 
+#[derive(Default)]
 struct RenderStateCurves {
     // Widget-added curves.
     // Will be triangulated later on.
@@ -294,7 +400,7 @@ struct RenderStateCurves {
 }
 
 pub struct Space<'a> {
-    state: &'a mut RenderState,
+    state: &'a mut WindowRenderState,
     offset: Position,
     size: Size,
 }
@@ -322,8 +428,10 @@ impl<'a> Space<'a> {
 
     pub fn vertices(&mut self, data: &[render::PartialVertex]) -> SpaceKey {
 
-        let geometry = Arc::get_mut(&mut self.state.vertices.data)
-            .expect("exclusive ownership of vertex geometry");
+        // let geometry = Arc::get_mut(&mut self.state.vertices.data)
+        //     .expect("exclusive ownership of vertex geometry");
+
+        let geometry = &mut self.state.vertices.data;
 
         // Insert the curve data.
         let start = geometry.vertices.len() as u16;

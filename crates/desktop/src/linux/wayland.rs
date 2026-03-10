@@ -2787,6 +2787,9 @@ impl EvlError {
     pub fn unsupported(message: String) -> Self {
         Self::new(EvlErrorSeverity::Unsupported, message)
     }
+    pub fn anyerror<T: StdError>(t: T) -> Self {
+        Self::fatal(t.to_string())
+    }
 }
 
 #[derive(Debug)]
@@ -2807,11 +2810,11 @@ impl fmt::Display for EvlError {
 
 impl StdError for EvlError {}
 
-impl<'a> From<&'a str> for EvlError {
-    fn from(value: &'a str) -> Self {
-        Self::fatal(value.into())
-    }
-}
+// impl<'a> From<&'a str> for EvlError {
+//     fn from(value: &'a str) -> Self {
+//         Self::fatal(value.into())
+//     }
+// }
 
 impl From<wayland_client::ConnectError> for EvlError {
     fn from(value: wayland_client::ConnectError) -> Self {

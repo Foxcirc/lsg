@@ -58,6 +58,13 @@ pub struct VertexGeometry {
     pub shapes: Vec<Shape>,
 }
 
+impl VertexGeometry {
+    pub fn clear(&mut self) {
+        self.vertices.clear();
+        self.shapes.clear();
+    }
+}
+
 pub struct SingularData {
     pub vertices: gl::AttribVec,
 }
