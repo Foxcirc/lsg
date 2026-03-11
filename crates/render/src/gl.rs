@@ -331,7 +331,9 @@ impl ShapeRenderer {
 
                 let physical_x = vertex.pos[0] as f64 * (instance.size.w as f64 / 5000.0);
                 let physical_y = vertex.pos[1] as f64 * (instance.size.h as f64 / 5000.0);
-                //      this is the conversion from the 5000x5000 shape space ^^^^^^
+                //                                                              / ^^^^^^
+                //      This is the scaling where 5000 means a 1.0 scale. So for a
+                //      filled rect a scale of 5000 would be a 5000x5000 rect.
 
                 let shifted_x = physical_x + instance.pos.x as f64;
                 let shifted_y = physical_y + instance.pos.y as f64;

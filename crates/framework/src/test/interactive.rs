@@ -73,7 +73,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::MouseMotion { point } => {
                         if let Some(gpoint) = geometry.points.last_mut() {
-                            *gpoint = CurvePoint::new(point.x, point.y, gpoint.kind());
+                            *gpoint = CurvePoint::new(point.x * 10, point.y * 10, gpoint.kind());
                             window.redraw();
                         }
                     },
@@ -89,7 +89,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                         println!("add point {:?}", point);
 
                         geometry.points.push(
-                            CurvePoint::new(point.x, point.y, kind)
+                            CurvePoint::new(point.x * 10, point.y * 10, kind)
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
