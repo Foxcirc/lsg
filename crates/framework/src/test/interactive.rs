@@ -29,16 +29,16 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut instances: Vec<render::Instance> = Vec::new();
 
-    geometry.points.push(CurvePoint::new(40, 100, PointKind::Base));
-    geometry.points.push(CurvePoint::new(240, 100, PointKind::Ctrl));
-    geometry.points.push(CurvePoint::new(240, 300, PointKind::Base));
+    geometry.points.push(CurvePoint::new(1250, 1250, PointKind::Base));
+    geometry.points.push(CurvePoint::new(3750, 1250, PointKind::Ctrl));
+    geometry.points.push(CurvePoint::new(3750, 3750, PointKind::Base));
 
     geometry.shapes.push(Shape::new(0..3));
 
     instances.push(render::Instance {
         target: render::GeometryTarget { geometry: 0, shape: 0 },
         pos: LogicalPoint::new(0, 0),
-        size: LogicalSize::MAX,
+        size: LogicalSize::new(500, 500),
     });
 
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };

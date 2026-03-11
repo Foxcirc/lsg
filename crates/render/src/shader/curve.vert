@@ -3,7 +3,7 @@ precision mediump float;
 
 // For the description of the vertex layout see comments in the gl-renderer.
 layout (location = 0) in uint inFlags;
-layout (location = 1) in uint inXYZ;
+layout (location = 1) in uint inXY;
 layout (location = 2) in uint inUVL;
 
 out vec2 curvePosition;
@@ -13,7 +13,7 @@ out flat uint fillKind;
 
 const vec2 curvePositionTable[9] = vec2[](
     vec2(0.0, 1.0), vec2(0.0, 1.0),  vec2(0.0, 1.0),  // FILLED
-    vec2(0.0, 0.0), vec2(0.5, 0.0), vec2(1.0, 1.0),   // CONVEX
+    vec2(0.0, 0.0), vec2(0.5, 0.0),  vec2(1.0, 1.0),  // CONVEX
     vec2(0.0, 0.0), vec2(-0.5, 0.0), vec2(-1.0, -1.0) // CONCAVE
 );
 
@@ -32,23 +32,21 @@ void main() {
 
     fillKind = inFillKind;
 
-    uvec3 uintXYZ = uvec3(
-        (inXYZ >> 20u) & 4095u, // X, 12 bit
-        (inXYZ >> 8u)  & 4095u, // Y, 12 bit
-        (inXYZ >> 0u)  & 255u   // Z, 8  bit
+    uvec2 uintXY = uvec2(
+        (inXY >> 16u) & 65535u, // X, 16 bit
+        (inXY >> 0u)  & 65535u  // Y, 16 bit
     );
 
     // Convert coordinates to NDC form.
 
-    vec3 xyz = vec3(
-        float(int(uintXYZ.x) - 2048) / 2048.0,
-        float(int(uintXYZ.y) - 2048) / 2048.0,
-        float(uintXYZ.z) / 255.0
+    vec2 xy = vec2(
+        float(int(uintXY.x) - 2048) / 2048.0,
+        float(int(uintXY.y) - 2048) / 2048.0
     );
 
     curvePosition = lookupCurvePosition(fillKind, vertexIndex);
     textureCoords = vec3(1.0);
-    gl_Position = vec4(xyz.x, xyz.y, 0.0, 1.0);
+    gl_Position = vec4(xy, 0.0, 1.0);
 
     bool edgeABisOuter = ((outerEdges >> 2) & 1u) == 1u;
     bool edgeBCisOuter = ((outerEdges >> 1) & 1u) == 1u;

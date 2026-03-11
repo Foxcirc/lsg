@@ -329,20 +329,24 @@ impl ShapeRenderer {
 
             for (vertex, index) in zip(vertices, ivertices) {
 
-                let physical_x = vertex.pos[0] as u32 * instance.size.w as u32 / 5_000;
-                let physical_y = vertex.pos[1] as u32 * instance.size.h as u32 / 5_000;
-                //      this is the conversion from the 5,000x5,000 widget space ^^^^^^
+                let physical_x = vertex.pos[0] as f64 * (instance.size.w as f64 / 5000.0);
+                let physical_y = vertex.pos[1] as f64 * (instance.size.h as f64 / 5000.0);
+                //      this is the conversion from the 5000x5000 shape space ^^^^^^
 
-                let shifted_x = physical_x + instance.pos.x as u32;
-                let shifted_y = physical_y + instance.pos.y as u32;
+                let shifted_x = physical_x + instance.pos.x as f64;
+                let shifted_y = physical_y + instance.pos.y as f64;
 
-                let scaled_x = (shifted_x * 4096) / size.w as u32;
-                let scaled_y = (shifted_y * 4096) / size.h as u32;
+                let scaled_x = (shifted_x * 4096.0) / size.w as f64;
+                let scaled_y = (shifted_y * 4096.0) / size.h as f64;
+
+                // let packed_texcords = 0u32 | // (TODO: ordering may be wrong!)
+                //     ((0b0      & 255)  << 0) | // l
+                //     ((aaaaaaaa & 4095) << 8) | // v
+                //     ((bbbbbbbb & 4095) << 20); // u
 
                 let packed_pos = 0u32 |
-                    ((0b0      & 255)  << 0) | // no Z for now
-                    ((scaled_y & 4095) << 8) |
-                    ((scaled_x & 4095) << 20);
+                    ((scaled_y as u32 & 65535) << 0) | // y
+                    ((scaled_x as u32 & 65535) << 16); // x
 
                 let edges = vertex.edges as u16;
                 let fill = vertex.fill as u16;

@@ -630,6 +630,10 @@ impl AttribVec {
         self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
     }
 
+    pub fn extend_i16<const N: usize>(&mut self, vals: [i16; N]) {
+        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+    }
+
 }
 
 pub fn vertex_attrib_1f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32) {
