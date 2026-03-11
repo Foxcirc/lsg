@@ -40,8 +40,8 @@ void main() {
     // Convert coordinates to NDC form.
 
     vec2 xy = vec2(
-        float(int(uintXY.x) - 2048) / 2048.0,
-        float(int(uintXY.y) - 2048) / 2048.0
+        float(int(uintXY.x) - 2500) / 2500.0,
+        float(int(uintXY.y) - 2500) / 2500.0
     );
 
     curvePosition = lookupCurvePosition(fillKind, vertexIndex);

@@ -335,11 +335,11 @@ impl ShapeRenderer {
                 //      This is the scaling where 5000 means a 1.0 scale. So for a
                 //      filled rect a scale of 5000 would be a 5000x5000 rect.
 
-                let shifted_x = physical_x + instance.pos.x as f64;
-                let shifted_y = physical_y + instance.pos.y as f64;
+                let scaled_x = (physical_x * 5000.0) / size.w as f64;
+                let scaled_y = (physical_y * 5000.0) / size.h as f64;
 
-                let scaled_x = (shifted_x * 4096.0) / size.w as f64;
-                let scaled_y = (shifted_y * 4096.0) / size.h as f64;
+                let shifted_x = scaled_x + instance.pos.x as f64;
+                let shifted_y = scaled_y + instance.pos.y as f64;
 
                 // let packed_texcords = 0u32 | // (TODO: ordering may be wrong!)
                 //     ((0b0      & 255)  << 0) | // l
@@ -347,8 +347,8 @@ impl ShapeRenderer {
                 //     ((bbbbbbbb & 4095) << 20); // u
 
                 let packed_pos = 0u32 |
-                    ((scaled_y as u32 & 65535) << 0) | // y
-                    ((scaled_x as u32 & 65535) << 16); // x
+                    ((shifted_y as u32 & 65535) << 0) | // y
+                    ((shifted_x as u32 & 65535) << 16); // x
 
                 let edges = vertex.edges as u16;
                 let fill = vertex.fill as u16;
