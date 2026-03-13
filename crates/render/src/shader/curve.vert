@@ -3,7 +3,7 @@ precision mediump float;
 
 // For the description of the vertex layout see comments in the gl-renderer.
 layout (location = 0) in uint inFlags;
-layout (location = 1) in uint inXY;
+layout (location = 1) in int inXY;
 layout (location = 2) in uint inUVL;
 
 out vec2 curvePosition;
@@ -32,16 +32,16 @@ void main() {
 
     fillKind = inFillKind;
 
-    uvec2 uintXY = uvec2(
-        (inXY >> 16u) & 65535u, // X, 16 bit
-        (inXY >> 0u)  & 65535u  // Y, 16 bit
+    ivec2 intXY = ivec2(
+        (inXY >> 16) >> 0, // X, 16 bit
+        (inXY << 16) >> 16 // Y, 16 bit
     );
 
     // Convert coordinates to NDC form.
 
     vec2 xy = vec2(
-        float(int(uintXY.x) - 2500) / 2500.0,
-        float(int(uintXY.y) - 2500) / 2500.0
+        float(int(intXY.x) - 2500) / 2500.0,
+        float(int(intXY.y) - 2500) / 2500.0
     );
 
     curvePosition = lookupCurvePosition(fillKind, vertexIndex);

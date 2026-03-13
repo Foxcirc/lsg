@@ -99,6 +99,16 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     },
 
+                    WindowEvent::MouseScroll { axis, value } => {
+                        instances.last_mut().map(|it|
+                            match axis {
+                                ScrollAxis::Horizontal => it.pos.x -= value / 10,
+                                ScrollAxis::Vertical => it.pos.y += value / 10
+                            }
+                        );
+                        window.redraw();
+                    },
+
                     WindowEvent::ShouldClose => evl.quit(),
 
                     other => println!("unhandeled window event '{:?}'", other),

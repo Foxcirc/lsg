@@ -701,7 +701,7 @@ pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<Att
 
     } else {
 
-        // why **the FUCK** is there another function for this and there is no warning
+        // why the FUCK is there another function for this and there is no warning
         // when using the other function with an integer data type
         unsafe { gl::VertexAttribIPointer(
             index,
@@ -1027,6 +1027,8 @@ pub enum DataType {
     I16 = gl::SHORT,
     U8 = gl::UNSIGNED_BYTE,
     I8 = gl::BYTE,
+    // IMPORTANT: When adding a new data type remember that all types except f32
+    //            are using the integer vertex_attrib_ipointer variant right now.
 }
 
 #[derive(Debug, Clone, Copy)]

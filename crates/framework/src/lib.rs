@@ -118,10 +118,9 @@ impl App {
 
             self.spawn(async move {
                 let mut source = listener(&data2);
-                loop { handler((
-                    &app2, &data2,
-                    source.next().await
-                )).await }
+                loop { handler(
+                    (&app2, &data2, source.next().await)
+                ).await }
             });
 
     }

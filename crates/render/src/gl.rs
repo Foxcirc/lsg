@@ -263,7 +263,7 @@ impl ShapeRenderer {
             let vdata = gl::gen_buffer(gl::BufferType::Array);
             let vao = gl::gen_vertex_array();
             gl::vertex_attrib_pointer(&vao, &vdata, 0, 1, gl::DataType::U16, false, 10, 0); // FLAGS
-            gl::vertex_attrib_pointer(&vao, &vdata, 1, 1, gl::DataType::U32, false, 10, 2); // x, y, z
+            gl::vertex_attrib_pointer(&vao, &vdata, 1, 1, gl::DataType::I32, false, 10, 2); // x, y
             gl::vertex_attrib_pointer(&vao, &vdata, 2, 1, gl::DataType::U32, false, 10, 6); // u, v, l (texture coords)
             // gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::F32, false, 9*f, 0*f); // x, y, z TODO: remove Z coordinate as transparency/layering is handeled purely by draw-order
             // gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 9*f, 3*f); // curveX, curveY
@@ -346,9 +346,9 @@ impl ShapeRenderer {
                 //     ((aaaaaaaa & 4095) << 8) | // v
                 //     ((bbbbbbbb & 4095) << 20); // u
 
-                let packed_pos = 0u32 |
-                    ((shifted_y as u32 & 65535) << 0) | // y
-                    ((shifted_x as u32 & 65535) << 16); // x
+                let packed_pos = 0i32 |
+                    ((shifted_y as i32 & 0xFFFF) << 0) | // y
+                    ((shifted_x as i32 & 0xFFFF) << 16); // x
 
                 let edges = vertex.edges as u16;
                 let fill = vertex.fill as u16;
@@ -360,7 +360,7 @@ impl ShapeRenderer {
                     ((fill  & 0b011) << 6);
 
                 self.prepared.singular.vertices.extend_u16([flags]);
-                self.prepared.singular.vertices.extend_u([packed_pos]);
+                self.prepared.singular.vertices.extend_i([packed_pos]);
                 self.prepared.singular.vertices.extend_u([0]); // no u, v, l for now
 
                 /*

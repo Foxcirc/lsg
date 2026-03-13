@@ -39,9 +39,9 @@ impl Widget for RedPill {
         if let Action::Render { mut space } = action {
             let key = space.curves(&[
                 CurvePoint::new(1,    1,    PointKind::Base),
-                CurvePoint::new(499, 1,    PointKind::Base),
-                CurvePoint::new(499, 499, PointKind::Base),
-                CurvePoint::new(1,    499, PointKind::Base),
+                CurvePoint::new(500, 1,    PointKind::Base),
+                CurvePoint::new(500, 500, PointKind::Base),
+                CurvePoint::new(1,    500, PointKind::Base),
             ]);
             space.instance(key, Instance {
                 pos: Position::rel(0, 0),
