@@ -464,6 +464,7 @@ impl<'a> Space<'a> {
             target: render::GeometryTarget { geometry: 0, shape: key.index },
             pos: pos.into(),
             size: size.into(),
+            texture: instance.texture,
         };
 
         match key.kind {
@@ -481,6 +482,7 @@ impl<'a> Space<'a> {
             target: render::GeometryTarget { geometry: key.index, shape },
             pos: pos.into(),
             size: size.into(),
+            texture: instance.texture,
         };
 
         self.state.geometries.instances.push(inner);
@@ -643,6 +645,8 @@ pub struct Instance {
     pub pos: Position,
     /// Size of the shape in logical pixels.
     pub size: Size,
+    // BABABABABA
+    pub texture: render::Texture,
 }
 
 pub struct EventBroadcaster<T: Clone> {

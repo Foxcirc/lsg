@@ -39,15 +39,15 @@ pub enum FillKind {
 pub struct PartialVertex {
     /// x, y
     pub pos: [u16; 2],
-    /// fillKind
-    pub fill: FillKind,
+    /// if this is a curve or filled
+    pub curve: FillKind,
     /// bitflags, which edges are outer edges
     pub edges: u8,
 }
 
 impl PartialVertex {
-    pub const fn new(pos: [u16; 2], fill: FillKind, edges: u8) -> Self {
-        Self { pos, fill, edges }
+    pub const fn new(pos: [u16; 2], curve: FillKind, edges: u8) -> Self {
+        Self { pos, curve, edges }
     }
 }
 

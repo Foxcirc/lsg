@@ -134,6 +134,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                                     target: render::GeometryTarget { geometry: 0, shape: shape_idx as u16 },
                                     pos: LogicalPoint::new(physical_x as i16, physical_y as i16),
                                     size: LogicalSize::new(80, 80),
+                                    texture: render::Texture::Color(80, 30, 120, 255),
                                 });
                             }
 

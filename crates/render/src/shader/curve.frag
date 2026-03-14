@@ -2,7 +2,7 @@
 precision mediump float;
 
 in vec2 curvePosition;
-in vec3 textureCoords;
+in vec4 textureCoords;
 in vec3 barycentric;
 in flat uint fillKind;
 
@@ -28,7 +28,7 @@ void main() {
         multiplier = 1.0;
     }
 
-    float alpha = 1.0;
+    float alpha = textureCoords.a;
     color = vec4(textureCoords.rgb, alpha * multiplier);
 
 }

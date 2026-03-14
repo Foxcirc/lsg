@@ -39,6 +39,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
         target: render::GeometryTarget { geometry: 0, shape: 0 },
         pos: LogicalPoint::new(0, 0),
         size: LogicalSize::new(500, 500),
+        texture: render::Texture::Color(30, 80, 120, 255),
     });
 
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };

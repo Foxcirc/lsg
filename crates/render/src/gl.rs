@@ -64,7 +64,7 @@ impl GlSurface {
 }
 
 /// A single instance of a shape. This can be used to render the same
-/// shape many times with different transformations and texture.
+/// shape many times with different transformations and textures.
 #[derive(Debug, Clone)]
 pub struct Instance {
     /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
@@ -73,8 +73,14 @@ pub struct Instance {
     pub pos: LogicalPoint,
     /// Scale which is applied to the targeted shape.
     pub size: LogicalSize,
-    // /// texture coordinates and layer
-    // pub texture: [f32; 3],
+    /// Texture / Color
+    pub texture: Texture,
+}
+
+#[derive(Debug, Clone)]
+pub enum Texture {
+    /// RGBA
+    Color(u8, u8, u8, u8),
 }
 
 #[derive(Debug, Clone)]
@@ -309,8 +315,8 @@ impl ShapeRenderer {
         // The layout is packed heavily to minimize memory usage.
         //
         // Layout:
-        // FLAGS  | x, y, z | u, v, l
-        // 16 bit | 12 12 8 | 12 12 8
+        // FLAGS  | x, y  | u, v, l
+        // 16 bit | 16 16 | 12 12 8
         // u16      u32       u32     = a total of 10 bytes per vertex
         //
         // Flags Layout:
@@ -341,27 +347,35 @@ impl ShapeRenderer {
                 let shifted_x = scaled_x + instance.pos.x as f64;
                 let shifted_y = scaled_y + instance.pos.y as f64;
 
-                // let packed_texcords = 0u32 | // (TODO: ordering may be wrong!)
-                //     ((0b0      & 255)  << 0) | // l
-                //     ((aaaaaaaa & 4095) << 8) | // v
-                //     ((bbbbbbbb & 4095) << 20); // u
-
                 let packed_pos = 0i32 |
                     ((shifted_y as i32 & 0xFFFF) << 0) | // y
                     ((shifted_x as i32 & 0xFFFF) << 16); // x
 
+                // let packed_texture = 0u32 |
+                //     ((0b0      & 255)  << 0) | // l
+                //     ((aaaaaaaa & 4095) << 8) | // v
+                //     ((bbbbbbbb & 4095) << 20); // u
+
+                let Texture::Color(r, g, b, a) = instance.texture;
+
+                let packed_colors = 0u32 |
+                    ((a as u32 & 0xFF)  << 0)  | // a
+                    ((b as u32 & 0xFF)  << 8)  | // b
+                    ((g as u32 & 0xFF)  << 16) | // g
+                    ((a as u32 & 0xFF)  << 24);  // r
+
                 let edges = vertex.edges as u16;
-                let fill = vertex.fill as u16;
+                let curve = vertex.curve as u16;
 
                 let flags = 0u16 |
                     ((edges & 0b111) << 0) |
                     ((index & 0b011) << 3) |
-                    ((0b0   & 0b001) << 5) | // no instanced drawing for now
-                    ((fill  & 0b011) << 6);
+                    ((0b0   & 0b001) << 5) | // TODO: no instanced drawing for now
+                    ((curve & 0b011) << 6);
 
                 self.prepared.singular.vertices.extend_u16([flags]);
                 self.prepared.singular.vertices.extend_i([packed_pos]);
-                self.prepared.singular.vertices.extend_u([0]); // no u, v, l for now
+                self.prepared.singular.vertices.extend_u([packed_colors]);
 
                 /*
                 self.prepared.singular.vertices.extend_f(pos); // XY

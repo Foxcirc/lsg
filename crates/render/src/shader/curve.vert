@@ -4,10 +4,10 @@ precision mediump float;
 // For the description of the vertex layout see comments in the gl-renderer.
 layout (location = 0) in uint inFlags;
 layout (location = 1) in int inXY;
-layout (location = 2) in uint inUVL;
+layout (location = 2) in uint inTEX;
 
 out vec2 curvePosition;
-out vec3 textureCoords;
+out vec4 textureCoords;
 out vec3 barycentric;
 out flat uint fillKind;
 
@@ -33,8 +33,15 @@ void main() {
     fillKind = inFillKind;
 
     ivec2 intXY = ivec2(
-        (inXY >> 16) >> 0, // X, 16 bit
+        (inXY << 0)  >> 16, // X, 16 bit
         (inXY << 16) >> 16 // Y, 16 bit
+    );
+
+    ivec4 intColor = ivec4(
+        (inTEX >> 0u)  & 0xFFu,
+        (inTEX >> 8u)  & 0xFFu,
+        (inTEX >> 16u) & 0xFFu,
+        (inTEX >> 24u) & 0xFFu
     );
 
     // Convert coordinates to NDC form.
@@ -45,7 +52,7 @@ void main() {
     );
 
     curvePosition = lookupCurvePosition(fillKind, vertexIndex);
-    textureCoords = vec3(1.0);
+    textureCoords = vec4(intColor) / 255.0;
     gl_Position = vec4(xy, 0.0, 1.0);
 
     bool edgeABisOuter = ((outerEdges >> 2) & 1u) == 1u;
