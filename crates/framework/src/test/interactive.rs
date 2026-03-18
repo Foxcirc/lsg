@@ -22,7 +22,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     window.transparency(true);
 
     let mut renderer = render::GlRenderer::new(&*evl)?;
-    let mut surface = render::GlSurface::new(&renderer, &window)?;
+    let mut surface = render::GlSurface::new(&renderer, &window);
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut shaper = shaper::GeometryShaper::new();
@@ -39,7 +39,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
         target: render::GeometryTarget { geometry: 0, shape: 0 },
         pos: LogicalPoint::new(0, 0),
         size: LogicalSize::new(500, 500),
-        texture: render::Texture::Color(30, 80, 120, 255),
+        texture: render::TextureKind::Color(30, 80, 120, 255),
     });
 
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };
@@ -69,7 +69,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     WindowEvent::Resize { size, .. } => {
                         println!("got resize event: new size = {size:?}");
-                        surface.resize(&renderer, size)?
+                        surface.resize(&renderer, size)
                     },
 
                     WindowEvent::MouseMotion { point } => {

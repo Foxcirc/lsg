@@ -46,7 +46,7 @@ impl Widget for RedPill {
             space.instance(key, Instance {
                 pos: Position::rel(0, 0),
                 size: Size::rel(5000, 5000),
-                texture: render::Texture::Color(120, 80, 30, 255),
+                texture: render::TextureKind::Color(120, 80, 30, 255),
             });
             println!("render called.");
         }

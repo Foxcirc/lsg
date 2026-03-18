@@ -1,5 +1,5 @@
 
-use common::{Damage, LogicalSize, Rect};
+use common::{Damage, LogicalSize, PhysicalSize, PhysicalRect};
 use std::{ffi::c_void as void, fmt, mem, sync::Arc, error::Error as StdError};
 
 /*
@@ -105,13 +105,15 @@ pub enum Profile {
     Compat,
 }
 
-pub struct Sizes {
+/// The sizes of the buffers for this context and surfaces
+/// used with it.
+pub struct BufferDesc {
     pub rgba: (usize, usize, usize, usize),
     pub depth: usize,
     pub stencil: usize,
 }
 
-impl Default for Sizes {
+impl Default for BufferDesc {
     fn default() -> Self {
         Self {
             rgba: (8, 8, 8, 8),
@@ -127,7 +129,7 @@ pub struct ConfigBuilder {
     pub profile: Profile,
     pub version: [usize; 2],
     pub debug: bool,
-    pub sizes: Sizes,
+    pub sizes: BufferDesc,
 }
 
 impl ConfigBuilder {
@@ -152,7 +154,7 @@ impl ConfigBuilder {
         self
     }
 
-    pub fn sizes(mut self, value: Sizes) -> Self {
+    pub fn bufferdesc(mut self, value: BufferDesc) -> Self {
         self.sizes = value;
         self
     }
@@ -230,7 +232,7 @@ impl Config {
 pub struct Context {
     instance: Instance,
     inner: egl::Context,
-    damage_rects: Vec<Rect>, // only here to amortize some allocations, used in `resize`
+    damage_rects: Vec<PhysicalRect>, // only here to amortize some allocations, used in `resize`
 }
 
 impl Drop for Context {
@@ -269,23 +271,30 @@ impl Context {
     }
 
     /// Make this context current, and set the target surface.
-    pub fn bind(&self, instance: &Instance, surface: Option<&Surface>) -> Result<(), EglError> {
+    ///
+    /// # Panic
+    /// This may panic if binding fails which could be, for example because
+    /// - The GPU ran out of memory for allocating auxillary buffers
+    /// - Accessed from a different thread then the one creating it
+    /// - Context was lost due to driver crash or hardware failure
+    #[track_caller]
+    pub fn bind(&self, instance: &Instance, surface: Option<&Surface>) {
 
         self.instance.lib.make_current(
             self.instance.display,
             surface.map(|it| it.inner), // NOTE: it is an error to only specify one of the two (read/draw) surfaces
             surface.map(|it| it.inner),
             Some(self.inner)
-        )?;
+        ).unwrap();
 
         if surface.is_some() {
-            // set swap-interval to 0, because we never want to block waiting
-            // for a frame to be vsync-ed
-            // TODO: does doing this potentially every frame represent a significant performance penalty? sadly a context + surface has to be bound for this
-            instance.lib.swap_interval(instance.display, 0)?;
+            // Set swap-interval to 0, because we never want to
+            // block waiting for a frame to be vsync-ed.
+            // TODO: does doing this potentially every frame represent a significant performance penalty?
+            //       sadly a context + surface has to be bound for this
+            instance.lib.swap_interval(instance.display, 0)
+                .unwrap();
         }
-
-        Ok(())
 
     }
 
@@ -302,7 +311,7 @@ impl Context {
     ///
     /// `surface` must be the same surface that was specifified in `bind`.
     /// If `damage` is an empty slice, everything will be redrawn.
-    pub fn swap(&mut self, surface: &Surface, damage: Damage) -> Result<(), EglError> {
+    pub fn swap(&mut self, surface: &Surface, damage: Damage) {
 
         // recalculate the origin of the rects to be in the top left
         self.damage_rects.clear();
@@ -313,13 +322,17 @@ impl Context {
 
         if let Some(func) = self.instance.swap_buffers_with_damage {
             // swap with damage, if the fn could be found
-            (func)(self.instance.display.as_ptr(), surface.inner.as_ptr(), self.damage_rects.as_ptr().cast(), damage.rects.len() as i32);
+            (func)(
+                self.instance.display.as_ptr(),
+                surface.inner.as_ptr(),
+                self.damage_rects.as_ptr().cast(),
+                damage.rects.len() as i32
+            );
         } else {
             // normal swap (if the extension is unsupported)
-            self.instance.lib.swap_buffers(self.instance.display, surface.inner)?;
+            self.instance.lib.swap_buffers(self.instance.display, surface.inner)
+                .unwrap();
         }
-
-        Ok(())
 
     }
 
@@ -328,14 +341,14 @@ impl Context {
 /// A double-buffered window surface.
 pub struct Surface {
     inner: egl::Surface,
-    size: LogicalSize,
+    size: PhysicalSize,
     #[cfg(unix)]
     wl_egl_surface: wayland_egl::WlEglSurface,
 }
 
 impl Surface {
 
-    pub fn new<I: common::IsSurface>(instance: &Instance, config: &Config, inner: &I, size: LogicalSize) -> Result<Self, EglError> {
+    pub fn new<I: common::IsSurface>(instance: &Instance, config: &Config, inner: &I, size: PhysicalSize) -> Result<Self, EglError> {
 
         #[cfg(unix)] // unix means wayland, as far as we are concerned
         let wl_egl_surface = unsafe {
@@ -370,13 +383,13 @@ impl Surface {
 
     }
 
-    pub fn resize(&mut self, size: LogicalSize) {
+    pub fn resize(&mut self, size: PhysicalSize) {
         self.size = size;
         let (w, h) = (size.w as i32, size.h as i32);
         self.wl_egl_surface.resize(w, h, 0, 0);
     }
 
-    pub fn size(&self) -> LogicalSize {
+    pub fn size(&self) -> PhysicalSize {
         self.size
     }
 

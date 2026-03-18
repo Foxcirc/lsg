@@ -32,7 +32,7 @@ pub enum WindowEvent {
     ShouldClose,
     /// You must always redraw if asked to.
     Redraw,
-    Resize { size: LogicalSize, fullscreen: bool },
+    Resize { size: PhysicalSize, fullscreen: bool },
     Rescale { scale: f64 },
     Decorations { active: bool },
     Enter,

@@ -4,18 +4,18 @@ use std::{collections::VecDeque, convert::identity, ffi::c_void as void, fmt, fu
 /// A rectangular region on a surface.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Rect {
-    pub pos: LogicalPoint,
-    pub size: LogicalSize,
+pub struct PhysicalRect {
+    pub pos: PhysicalPoint,
+    pub size: PhysicalSize,
 }
 
-impl Rect {
-    pub const INFINITE: Self = Self::new(LogicalPoint::ZERO, LogicalSize::INFINITE);
-    pub const fn new(pos: LogicalPoint, size: LogicalSize) -> Self {
+impl PhysicalRect {
+    pub const INFINITE: Self = Self::new(PhysicalPoint::ZERO, PhysicalSize::INFINITE);
+    pub const fn new(pos: PhysicalPoint, size: PhysicalSize) -> Self {
         Self { pos, size }
     }
     pub const fn new2(x: i16, y: i16, w: u16, h: u16) -> Self {
-        Self { pos: LogicalPoint::new(x, y), size: LogicalSize::new(w, h) }
+        Self { pos: PhysicalPoint::new(x, y), size: PhysicalSize::new(w, h) }
     }
 }
 
@@ -30,18 +30,17 @@ pub struct LogicalSize {
 
 impl LogicalSize {
     pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
-    pub const MAX: Self = Self::new(5000, 5000);
+    pub const FULL: Self = Self::new(5000, 5000);
+    pub const ZERO: Self = Self::new(0, 0);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
-    pub const fn physical(&self, scale: f32) -> PhysicalSize {
-
+    pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
+    pub const fn scale(&self, scale: f32) -> PhysicalSize {
         // With a scaling factor of 1.0, 1920 pixels should be 5000 units.
         const FACTOR: f32 = 5000.0 / 1920.0;
-
         PhysicalSize {
             w: (self.w as f32 * FACTOR * scale).round() as u16,
             h: (self.h as f32 * FACTOR * scale).round() as u16,
         }
-
     }
 }
 
@@ -53,6 +52,13 @@ pub struct PhysicalSize {
     pub h: u16
 }
 
+impl PhysicalSize {
+    pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
+    pub const ZERO: Self = Self::new(0, 0);
+    pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
+    pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
+}
+
 /// A point, specified in logical coordinates.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LogicalPoint {
@@ -62,7 +68,7 @@ pub struct LogicalPoint {
 
 impl LogicalPoint {
     pub const ZERO: Self = Self::new(0, 0);
-    pub const MAX: Self = Self::new(10000, 10000);
+    pub const FULL: Self = Self::new(10000, 10000);
     pub const INFINITE: Self = Self::new(i16::MAX, i16::MAX);
     pub const fn new(x: i16, y: i16) -> Self {
         Self { x, y }
@@ -82,7 +88,22 @@ impl From<CurvePoint> for LogicalPoint {
     }
 }
 
-// TODO: I believe we should work with integer points that have high coordinate values (eg. i32::MAX / 2 being the right side of the screen) instead of using f32 generally
+/// A point, specified in logical coordinates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalPoint {
+    pub x: i16,
+    pub y: i16,
+}
+
+impl PhysicalPoint {
+    pub const ZERO: Self = Self::new(0, 0);
+    pub const INFINITE: Self = Self::new(i16::MAX, i16::MAX);
+    pub const fn new(x: i16, y: i16) -> Self {
+        Self { x, y }
+    }
+}
+
+// TODO: I believe we should work with integer points that have high coordinate values instead of using f32 generally
 /// A mathematical point.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct MathPoint {
@@ -132,7 +153,7 @@ impl ops::Add<MathPoint> for MathPoint {
 /// Area of a window that has to be redrawn.
 pub struct Damage<'s> {
     /// Empty means full damage.
-    pub rects: &'s [Rect],
+    pub rects: &'s [PhysicalRect],
 }
 
 impl<'s> Damage<'s> {
@@ -143,7 +164,7 @@ impl<'s> Damage<'s> {
     /// Only the marked rects should be redrawn.
     /// This is only an optimization and the system may choose
     /// to redraw more parts of the window.
-    pub fn partial(rects: &'s [Rect]) -> Self {
+    pub fn partial(rects: &'s [PhysicalRect]) -> Self {
         Self { rects }
     }
 }
@@ -355,7 +376,7 @@ pub unsafe trait IsSurface {
     fn ptr(&self) -> *mut void;
     /// Get the current size of the surface.
     /// Must not be `0` in any dimension.
-    fn size(&self) -> LogicalSize;
+    fn size(&self) -> PhysicalSize;
 }
 
 #[derive(Default)]

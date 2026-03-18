@@ -20,7 +20,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     window.transparency(true);
 
     let mut renderer = render::GlRenderer::new(&*evl).unwrap();
-    let mut surface = render::GlSurface::new(&renderer, &window).unwrap();
+    let mut surface = render::GlSurface::new(&renderer, &window);
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut instances: Vec<render::Instance> = Vec::new();
@@ -134,7 +134,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                                     target: render::GeometryTarget { geometry: 0, shape: shape_idx as u16 },
                                     pos: LogicalPoint::new(physical_x as i16, physical_y as i16),
                                     size: LogicalSize::new(80, 80),
-                                    texture: render::Texture::Color(80, 30, 120, 255),
+                                    texture: render::TextureKind::Color(80, 30, 120, 255),
                                 });
                             }
 
@@ -151,7 +151,7 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     WindowEvent::MouseMotion { .. } => (),
-                    WindowEvent::Resize { size, .. } => surface.resize(&renderer, size).unwrap(),
+                    WindowEvent::Resize { size, .. } => surface.resize(&renderer, size),
                     WindowEvent::ShouldClose => evl.quit(),
 
                     other => println!("unhandeled window event '{:?}'", other),

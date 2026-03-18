@@ -520,7 +520,7 @@ pub struct WindowState {
     xdg_decoration: Option<ZxdgToplevelDecorationV1>,
     frac_scale_data: Option<FracScaleData>,
     scaling_factor: f64, // Used to convert LogicalSize to PhysicalSize
-    size: LogicalSize, // set by the xdg-toplevel configure event
+    size: PhysicalSize, // set by the xdg-toplevel configure event
     fullscreen: bool,
     hidden: bool,
     redraw: WindowRedrawStateV2,
@@ -604,7 +604,7 @@ impl Window {
             xdg_decoration,
             frac_scale_data,
             scaling_factor: 1.0,
-            size: LogicalSize::new(500, 500), // default size of 500x500
+            size: PhysicalSize::new(500, 500), // default size of 500x500
             fullscreen: false,
             hidden: false,
             redraw: WindowRedrawStateV2::default(),
@@ -800,7 +800,7 @@ unsafe impl common::IsSurface for Window {
         let state = evb.windows.get(self.id);
         state.wl_surface.id().as_ptr().cast()
     }
-    fn size(&self) -> LogicalSize {
+    fn size(&self) -> PhysicalSize {
         let evb = &mut self.evl.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
         state.size
@@ -2180,7 +2180,7 @@ impl wayland_client::Dispatch<XdgSurface, WindowId> for ConnectionState {
 
             // foreward the final configuration state to the user
             evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Resize {
-                size: LogicalSize { w: size.w as u16, h: size.h as u16 },
+                size: PhysicalSize { w: size.w as u16, h: size.h as u16 },
                 fullscreen: window.fullscreen,
             } });
 
@@ -2211,7 +2211,7 @@ impl wayland_client::Dispatch<XdgToplevel, WindowId> for ConnectionState {
 
             if !zerosized {
                 // overwrite the values, since the compositor has given us a size hint
-                window.size = LogicalSize::new(width as u16, height as u16);
+                window.size = PhysicalSize::new(width as u16, height as u16);
             }
 
             let flags = ConfigureFlags::parse(states);

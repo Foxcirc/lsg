@@ -1,5 +1,5 @@
 
-use std::{fmt, iter::{repeat, zip}, error::Error as StdError};
+use std::{error::Error as StdError, fmt, iter::{self, once, repeat, zip}, sync::Arc};
 
 use common::*;
 use crate::VertexGeometry;
@@ -12,35 +12,35 @@ pub struct GlSurface {
 
 impl GlSurface {
 
-    pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Result<Self, RenderError> {
+    pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Self {
 
         let surface = egl::Surface::new(
             &gl.instance, &gl.config, window, window.size(),
-        )?;
+        ).expect("cannot create egl surface");
 
         // Bind a context for initialization.
-        gl.ctx.bind(&gl.instance, Some(&surface))?;
+        gl.ctx.bind(&gl.instance, Some(&surface));
 
         let fbo = gl::gen_frame_buffer();
         let rbo = gl::gen_render_buffer();
 
         // IMPORTANT: call `render_buffer_storage` before `frame_buffer_render_buffer` (i hate opengl)
-        gl::render_buffer_storage(&rbo, gl::PreciseColorFormat::Rgba8, window.size());
+        gl::render_buffer_storage(&rbo, gl::GpuColorFormat::Rgba8, window.size());
         gl::frame_buffer_render_buffer(&fbo, gl::AttachmentPoint::Color0, &rbo);
 
-        Ok(Self {
+        Self {
             inner: surface,
             fbo,
             rbo
-        })
+        }
 
     }
 
-    pub fn resize(&mut self, gl: &GlRenderer, size: LogicalSize) -> Result<(), RenderError> {
+    pub fn resize(&mut self, gl: &GlRenderer, size: PhysicalSize) {
 
-        gl.ctx.bind(&gl.instance, Some(&self.inner))?;
+        gl.ctx.bind(&gl.instance, Some(&self.inner));
 
-        gl::render_buffer_storage(&self.rbo, gl::PreciseColorFormat::Rgba8, size);
+        gl::render_buffer_storage(&self.rbo, gl::GpuColorFormat::Rgba8, size);
 
         /*
 
@@ -57,9 +57,222 @@ impl GlSurface {
 
         self.inner.resize(size);
 
-        Ok(())
+    }
+
+}
+
+/// Auxilarry struct used to manage textures.
+/// Before using a texture with the renderer you have to upload it
+/// through this interface.
+pub struct GlTextureAtlas {
+    /// A 2D texture storing the images.
+    texture: gl::Texture,
+    /// The current size of the texture.
+    size: PhysicalSize,
+    /// Which size we can't exceed.
+    maxsize: PhysicalSize,
+    /// Which images we are currently storing.
+    entries: Vec<TextureEntry>,
+    /// This associates a `TextureIndex` with an actual
+    /// position inside `entries`. We use a mapping since
+    /// `entries` is reordered when upsizing the atlas.
+    mapping: Vec<u16>,
+}
+
+impl GlTextureAtlas {
+
+    pub fn new(renderer: &GlRenderer) -> Self {
+
+        renderer.ctx.bind(&renderer.instance, None);
+
+        let maxsize = gl::get_integer_v(gl::Property::MaxTextureSize) as u16;
+        let texture = gl::gen_texture(gl::TextureType::Basic2D);
+
+        Self {
+            texture,
+            size: PhysicalSize::ZERO,
+            maxsize: PhysicalSize::quad(maxsize),
+            entries: Vec::new(),
+            mapping: Vec::new()
+        }
 
     }
+
+    /// This will make an image available to the GPU.
+    ///
+    /// There is no concept of releasing a single image inside an atlas,
+    /// so if you want to release memory you have to drop the whole atlas.
+    ///
+    /// # Panic
+    /// Panics if data length and `size` don't match up.
+    pub fn upload(&mut self, renderer: &GlRenderer, data: &[u8], size: PhysicalSize) -> TextureIndex  {
+
+        renderer.ctx.bind(&renderer.instance, None);
+
+        // Find a slot.
+
+        let slot = loop {
+            let maybe = self.nextslot(size);
+            if let Some(slot) = maybe {
+                // We found a slot!
+                break slot;
+            } else if self.size.w * 2 < self.maxsize.w {
+                // Upsize the texture, after checking
+                // that the new size would be valid.
+                self.upsize();
+            } else {
+                // If we ran out of space, we return
+                // an errornous rect.
+                return TextureIndex::ERR
+            }
+        };
+
+        // Copy the image to the slot.
+
+        let rect = PhysicalRect { pos: slot, size };
+        gl::tex_sub_image_2d(&self.texture, rect, gl::ColorFormat::Rgba, gl::DataType::U8, data);
+
+        // Add the slot to our state and return it.
+
+        let mapping = self.mapping.len() as u16;
+        let ientry = self.entries.len() as u16;
+
+        self.entries.push(TextureEntry { rect, mapping });
+        self.mapping.push(ientry);
+
+        return TextureIndex { inner: mapping as u16 }
+
+    }
+
+    pub(crate) fn access(&self, index: TextureIndex) -> PhysicalRect {
+        self.entries[self.mapping[index.inner as usize] as usize].rect
+    }
+
+    fn nextslot(&mut self, slotsize: PhysicalSize) -> Option<PhysicalPoint> {
+
+        // We use the layout algorithm to check if and where an
+        // additional slot would fit in a layout.
+
+        let mut probe = TextureEntry {
+            mapping: 0, // not relevant
+            rect: PhysicalRect::new(
+                PhysicalPoint::ZERO, // not relevant
+                slotsize
+            ),
+        };
+
+        let iter = self.entries.iter_mut()
+            .chain(once(&mut probe));
+
+        let (.., slot) = Self::layout(iter, self.size).last()?; // only `None` if empty
+        //  ^^^^ this contains the position BEFORE the slot we want,
+        //       but only if it is a valid slot
+
+        if slot.x == i16::MAX {
+            None // This means we don't have space.
+        } else {
+            Some(slot)
+        }
+
+    }
+
+    fn upsize(&mut self) {
+
+        // Create a new, bigger texture.
+
+        let newsize = self.size.w + 256;
+
+        let new = gl::gen_texture(gl::TextureType::Basic2D);
+
+        gl::tex_image_2d(
+            &new,
+            PhysicalSize::quad(newsize),
+            gl::GpuColorFormat::Rgba8,
+            gl::ColorFormat::Rgba,
+            gl::DataType::U8,
+            None
+        );
+
+        // We use this chance to sort them aswell, for a more
+        // efficient spacial layout.
+
+        self.entries.sort_unstable_by(|lhs, rhs| {
+            let ls = lhs.rect.size.w as usize * lhs.rect.size.h as usize;
+            let rs = rhs.rect.size.w as usize * rhs.rect.size.h as usize;
+            ls.cmp(&rs)
+        });
+
+        // We need to update the mapping.
+
+        for (idx, entry) in self.entries.iter().enumerate() {
+            self.mapping[entry.mapping as usize] = idx as u16;
+        }
+
+        // Copy over the old images to the new texture.
+
+        let srcbuf = gl::gen_frame_buffer();
+
+        gl::frame_buffer_texture_2d(&srcbuf, gl::AttachmentPoint::Color0, &self.texture);
+
+        for (entry, newpos) in Self::layout(self.entries.iter_mut(), self.size) {
+            // Copy from the original rect, still stored in the rect
+            //  to the new position `newpos`.
+            gl::copy_tex_sub_image_2d((&srcbuf, entry.rect.pos), (&new, newpos), entry.rect.size);
+            // Make sure to update the size and position of the entry accordingly.
+            entry.rect.pos = newpos;
+        }
+
+        // After this the atlas is fully present in the new texture.
+        // So we exchange it with the old one.
+
+        self.texture = new;
+
+    }
+
+    /// Calculates slot positions inside an atlas based on their sizes and order.
+    fn layout<'d>(mut iter: impl Iterator<Item = &'d mut TextureEntry>, size: PhysicalSize) -> impl Iterator<Item = (&'d mut TextureEntry, PhysicalPoint)> {
+
+        let mut rowheight = 0i16;
+        let mut oldpos = PhysicalPoint::ZERO;
+        let mut nextpos = PhysicalPoint::ZERO;
+
+        iter::from_fn(move || {
+
+            let entry = iter.next()?;
+
+            // Save our current position.
+            oldpos = nextpos;
+
+            // We advance in the row.
+            nextpos.x = nextpos.x + entry.rect.size.w as i16;
+            rowheight = rowheight
+                .max(entry.rect.size.h as i16);
+
+            // Check > width
+            if nextpos.x > size.w as i16 {
+                // We enter the next row, upwards.
+                nextpos.x = 0;
+                nextpos.y += rowheight;
+                rowheight = 0;
+            }
+
+            // Check > height
+            if nextpos.y > size.h as i16 {
+                // we need don't have any next slots
+                // which fit on our texture
+                Some((entry, PhysicalPoint::INFINITE))
+            } else {
+                Some((entry, oldpos))
+            }
+
+        })
+
+    }
+
+    // /// Overwrite the same texture with a new image of the same size.
+    // pub fn update(self: &Arc<Self>, renderer: &GlRenderer, texture: TextureCoords) {
+
+    // }
 
 }
 
@@ -74,13 +287,33 @@ pub struct Instance {
     /// Scale which is applied to the targeted shape.
     pub size: LogicalSize,
     /// Texture / Color
-    pub texture: Texture,
+    pub texture: TextureKind,
 }
 
 #[derive(Debug, Clone)]
-pub enum Texture {
+struct TextureEntry {
+    /// The position inside the atlas texture.
+    pub rect: PhysicalRect,
+    /// Index into `mapping`. Used to update the mapping
+    /// accordingly after sorting the entries.
+    pub mapping: u16,
+}
+
+#[derive(Debug, Clone)]
+pub enum TextureKind {
     /// RGBA
     Color(u8, u8, u8, u8),
+    /// Texture
+    Coords(PhysicalRect),
+}
+
+#[derive(Debug, Clone)]
+pub struct TextureIndex {
+    inner: u16,
+}
+
+impl TextureIndex {
+    pub const ERR: Self = Self { inner: u16::MAX };
 }
 
 #[derive(Debug, Clone)]
@@ -123,7 +356,7 @@ impl GlRenderer {
         let ctx = egl::Context::new(&instance, &config)?;
 
         // bind for initialization
-        ctx.bind(&instance, None)?;
+        ctx.bind(&instance, None);
 
         gl::debug_message_callback(gl::debug_message_default_handler);
         gl::debug_message_control(Some(gl::DebugSeverity::Notification), None, None, true);
@@ -143,7 +376,7 @@ impl GlRenderer {
 
     pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, surface: &GlSurface) -> Result<(), RenderError> {
 
-        self.ctx.bind(&self.instance, Some(&surface.inner))?;
+        self.ctx.bind(&self.instance, Some(&surface.inner));
 
         let size = surface.inner.size();
         gl::resize_viewport(size);
@@ -154,7 +387,7 @@ impl GlRenderer {
         self.shape.draw(geometry, &surface.fbo, size); // draw the new geometry ontop of the old one
         self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass
 
-        self.ctx.swap(&surface.inner, Damage::all())?; // finally swap the buffers
+        self.ctx.swap(&surface.inner, Damage::all()); // finally swap the buffers
 
         Ok(())
 
@@ -221,9 +454,9 @@ impl CompositeRenderer {
 
     }
 
-    pub fn draw(&mut self, source: &gl::FrameBuffer, target: &gl::FrameBuffer, size: LogicalSize) {
+    pub fn draw(&mut self, source: &gl::FrameBuffer, target: &gl::FrameBuffer, size: PhysicalSize) {
 
-        let rect = Rect::new(LogicalPoint::ZERO, size);
+        let rect = PhysicalRect::new(PhysicalPoint::ZERO, size);
         gl::blit_frame_buffer((target, rect), (source, rect), gl::FilterValue::Nearest);
 
     }
@@ -310,7 +543,7 @@ impl ShapeRenderer {
     }
 
     /// Convert geometry into internal representation.
-    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: LogicalSize) {
+    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: PhysicalSize) {
 
         // The layout is packed heavily to minimize memory usage.
         //
@@ -356,13 +589,13 @@ impl ShapeRenderer {
                 //     ((aaaaaaaa & 4095) << 8) | // v
                 //     ((bbbbbbbb & 4095) << 20); // u
 
-                let Texture::Color(r, g, b, a) = instance.texture;
+                let TextureKind::Color(r, g, b, a) = instance.texture else { panic!() };
 
                 let packed_colors = 0u32 |
                     ((a as u32 & 0xFF)  << 0)  | // a
                     ((b as u32 & 0xFF)  << 8)  | // b
                     ((g as u32 & 0xFF)  << 16) | // g
-                    ((a as u32 & 0xFF)  << 24);  // r
+                    ((r as u32 & 0xFF)  << 24);  // r
 
                 let edges = vertex.edges as u16;
                 let curve = vertex.curve as u16;
@@ -391,7 +624,7 @@ impl ShapeRenderer {
 
     }
 
-    pub fn draw(&mut self, geometry: &DrawableGeometry, target: &gl::FrameBuffer, size: LogicalSize) {
+    pub fn draw(&mut self, geometry: &DrawableGeometry, target: &gl::FrameBuffer, size: PhysicalSize) {
 
         self.prepare(geometry, size);
 

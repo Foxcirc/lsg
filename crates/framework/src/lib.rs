@@ -192,8 +192,7 @@ impl Window {
             geometries: Default::default(),
             vertices: Default::default(),
             curves: Default::default(),
-            surface: render::GlSurface::new(renderer, &inner)
-                .map_err(desktop::EvlError::anyerror)?,
+            surface: render::GlSurface::new(renderer, &inner),
         });
 
         let this = Arc::new(Self {
@@ -230,8 +229,7 @@ impl Window {
             // Special events.
 
             WindowEvent::Resize { size, .. } => {
-                windowstate.surface.resize(&appstate.renderer, size)
-                    .map_err(desktop::EvlError::anyerror)?
+                windowstate.surface.resize(&appstate.renderer, size);
             },
 
             WindowEvent::Redraw => {
@@ -646,7 +644,7 @@ pub struct Instance {
     /// Size of the shape in logical pixels.
     pub size: Size,
     // BABABABABA
-    pub texture: render::Texture,
+    pub texture: render::TextureKind,
 }
 
 pub struct EventBroadcaster<T: Clone> {

@@ -32,7 +32,7 @@
 /// but adding more is really easy and often a matter of minutes.
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
-use common::{LogicalSize, Rect};
+use common::{PhysicalPoint, PhysicalRect, PhysicalSize};
 
 #[derive(Debug)]
 pub struct FnsUnknown;
@@ -215,12 +215,15 @@ impl DebugSource {
     }
 }
 
-pub fn get_integer_v(property: Property) -> Result<usize, PropertyUnknown> {
+/// # Panic
+/// Panics if the property is invalid.
+#[track_caller]
+pub fn get_integer_v(property: impl IsProperty) -> usize {
     let mut out = -1;
-    unsafe { gl::GetIntegerv(property as u32, &mut out) };
+    unsafe { gl::GetIntegerv(property.id(), &mut out) };
     match out {
-        -1 => Err(PropertyUnknown),
-        val => Ok(val as usize),
+        -1 => panic!("property unknown"),
+        val => val as usize,
     }
 }
 
@@ -235,18 +238,24 @@ pub struct Version {
 pub fn get_version() -> Version {
     let minor = get_integer_v(Property::MinorVersion);
     let major = get_integer_v(Property::MajorVersion);
-    minor.and_then(move |minor| Ok(Version { minor, major: major? } ))
-        .expect("cannot get version")
+    Version { major, minor }
 }
-
-#[derive(Debug)]
-pub struct PropertyUnknown;
 
 #[repr(u32)]
 pub enum Property {
 
     MajorVersion = gl::MAJOR_VERSION,
     MinorVersion = gl::MINOR_VERSION,
+
+    MaxTextureSize        = gl::MAX_TEXTURE_SIZE,
+    MaxArrayTextureLayers = gl::MAX_ARRAY_TEXTURE_LAYERS,
+
+}
+
+/// Prefer using XXX::current() for
+/// obtaining currently bound objects.
+#[repr(u32)]
+pub enum BindingProperty {
 
     FrameBufferBinding         = gl::FRAMEBUFFER_BINDING,
     ReadFramebufferBinding     = gl::READ_FRAMEBUFFER_BINDING,
@@ -271,6 +280,22 @@ pub enum Property {
     DrawIndirectBufferBinding  = gl::DRAW_INDIRECT_BUFFER_BINDING,
     QueryBufferBinding         = gl::QUERY_BUFFER_BINDING,
 
+}
+
+pub trait IsProperty {
+    fn id(self) -> u32;
+}
+
+impl IsProperty for Property {
+    fn id(self) -> u32 {
+        self as u32
+    }
+}
+
+impl IsProperty for BindingProperty {
+    fn id(self) -> u32 {
+        self as u32
+    }
 }
 
 #[derive(Debug)]
@@ -476,7 +501,7 @@ impl Drop for LinkedProgram {
 impl LinkedProgram {
     pub const fn invalid() -> Self { Self { id: 0 } }
     pub fn current() -> Self {
-        Self { id: get_integer_v(Property::CurrentProgram).unwrap_or(0) as u32 }
+        Self { id: get_integer_v(BindingProperty::CurrentProgram) as u32 }
     }
 }
 
@@ -531,7 +556,7 @@ impl Drop for VertexArray {
 impl VertexArray {
     pub const fn invalid() -> Self { Self { id: 0 } }
     pub fn current() -> Self {
-        Self { id: get_integer_v(Property::VertexArrayBinding).unwrap_or(0) as u32 }
+        Self { id: get_integer_v(BindingProperty::VertexArrayBinding) as u32 }
     }
 }
 
@@ -589,9 +614,9 @@ impl Buffer {
     pub const fn invalid() -> Self { Self { id: 0, kind: BufferType::Array } }
     pub fn current(kind: BufferType) -> Self {
         match kind {
-            BufferType::Array        => Self { id: get_integer_v(Property::ArrayBufferBinding).unwrap_or(0) as u32, kind },
-            BufferType::Element      => Self { id: get_integer_v(Property::ElementBufferBinding).unwrap_or(0) as u32, kind },
-            BufferType::DrawIndirect => Self { id: get_integer_v(Property::DrawIndirectBufferBinding).unwrap_or(0) as u32, kind },
+            BufferType::Array        => Self { id: get_integer_v(BindingProperty::ArrayBufferBinding) as u32, kind },
+            BufferType::Element      => Self { id: get_integer_v(BindingProperty::ElementBufferBinding) as u32, kind },
+            BufferType::DrawIndirect => Self { id: get_integer_v(BindingProperty::DrawIndirectBufferBinding) as u32, kind },
         }
     }
 }
@@ -681,10 +706,10 @@ pub struct VertexAttribs {
 #[track_caller]
 pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<AttribLocation>, count: usize, kind: DataType, normalize: bool, stride: usize, start: usize) {
 
-    assert_eq!(vbo.kind, BufferType::Array);
-
     bind_vertex_array(vao);
     bind_buffer(vbo);
+
+    assert!(vbo.kind == BufferType::Array);
 
     let index = loc.into().index;
 
@@ -759,7 +784,7 @@ impl Drop for FrameBuffer {
 
 impl FrameBuffer {
     pub fn current() -> Self {
-        Self { id: get_integer_v(Property::FrameBufferBinding).unwrap_or(0) as u32 }
+        Self { id: get_integer_v(BindingProperty::FrameBufferBinding) as u32 }
     }
     /// Returns the default FrameBuffer, which is the bound surface in bost cases.
     pub const fn default() -> Self {
@@ -798,14 +823,14 @@ pub enum AttachmentPoint {
     Color1 = gl::COLOR_ATTACHMENT1,
 }
 
-pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, texture: &Texture, lod: usize) {
+pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, texture: &Texture) {
     bind_frame_buffer(fbo);
     unsafe { gl::FramebufferTexture2D(
         gl::FRAMEBUFFER,
         attachment as u32,
         texture.kind as u32,
         texture.id as u32,
-        lod as i32
+        0i32, // no lods
     ) }
 }
 
@@ -838,9 +863,12 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
     unsafe { gl::ClearBufferfv(param1, param2, safe.as_ptr()) }
 }
 
-/// Copy a region from `source` to `target`. Currently only copies the **color buffer**.
-/// You don't need to bind anything yourself!
-pub fn blit_frame_buffer(target: (&FrameBuffer, Rect), source: (&FrameBuffer, Rect), filter: FilterValue) {
+/// Copy a region from `source` (fbo) to `target` (fbo).
+///
+/// - Currently only copies the **color buffer**.
+/// - Rescales the region if the sizes don't match.
+/// - You don't need to bind anything yourself!
+pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBuffer, PhysicalRect), filter: FilterValue) {
     bind_draw_frame_buffer(target.0);
     bind_read_frame_buffer(source.0);
     unsafe { gl::BlitFramebuffer(
@@ -848,7 +876,23 @@ pub fn blit_frame_buffer(target: (&FrameBuffer, Rect), source: (&FrameBuffer, Re
         target.1.pos.x as i32, target.1.pos.y as i32, target.1.size.w as i32, target.1.size.h as i32, // target rect
         gl::COLOR_BUFFER_BIT,
         filter as u32,
-    ); }
+    ) };
+}
+
+/// Copy a region from `source` (fbo) to `target` (texture).
+///
+/// - You don't need to bind anything yourself!
+pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPoint), target: (&Texture, PhysicalPoint), size: PhysicalSize) {
+    bind_read_frame_buffer(&source.0);
+    bind_texture(&target.0);
+    assert!(target.0.kind == TextureType::Basic2D);
+    unsafe { gl::CopyTexSubImage2D(
+        gl::TEXTURE_2D,
+        0, // no mipmapping
+        source.1.x as i32, source.1.y as i32, // source offset
+        target.1.x as i32, target.1.y as i32, // target offset
+        size.w as i32, size.h as i32, // size
+    ) };
 }
 
 #[derive(Debug)]
@@ -867,7 +911,7 @@ impl Drop for RenderBuffer {
 impl RenderBuffer {
     pub const fn invalid() -> Self { Self { id: 0 } }
     pub fn current() -> Self { // TODO: Make all the Option<Self> and remove unwrap_or(0), rn silently failing is pretty bad design
-        Self { id: get_integer_v(Property::RenderBufferBinding).unwrap_or(0) as u32 }
+        Self { id: get_integer_v(BindingProperty::RenderBufferBinding) as u32 }
     }
 }
 
@@ -881,19 +925,19 @@ pub fn bind_render_buffer(this: &RenderBuffer) {
     unsafe { gl::BindRenderbuffer(gl::RENDERBUFFER, this.id) }
 }
 
-pub fn render_buffer_storage(this: &RenderBuffer, format: PreciseColorFormat, size: LogicalSize) {
+pub fn render_buffer_storage(this: &RenderBuffer, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorage(gl::RENDERBUFFER, format as u32, size.w as i32, size.h as i32); }
 }
 
-pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: PreciseColorFormat, size: LogicalSize) {
+pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.w as i32, size.h as i32); }
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum PreciseColorFormat {
+pub enum GpuColorFormat {
     R8      = gl::R8,
     Rgba8   = gl::RGBA8,
     Rgba16F = gl::RGBA16F,
@@ -901,12 +945,22 @@ pub enum PreciseColorFormat {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum BaseColorFormat { // why the fuck does this even exist...
+pub enum ColorFormat {
     Rgba = gl::RGBA,
     Red  = gl::RED,
 }
 
-#[derive(Debug, Clone, Copy)]
+impl ColorFormat {
+    // Number of components per pixel.
+    pub fn components(&self) -> usize {
+        match self {
+            Self::Rgba=> 3,
+            Self::Red => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum TextureType {
     Basic1D             = gl::TEXTURE_1D,
@@ -933,19 +987,22 @@ impl Drop for Texture {
 }
 
 impl Texture {
+
     pub const fn invalid() -> Self { Self { id: 0, kind: TextureType::Basic1D } }
+
     /// Returns the texture which is currently bound to that type.
     pub fn current(kind: TextureType) -> Self {
         match kind {
-            TextureType::Basic1D => Self { id: get_integer_v(Property::Texture1DBinding).unwrap_or(0) as u32, kind },
-            TextureType::Basic2D => Self { id: get_integer_v(Property::Texture2DBinding).unwrap_or(0) as u32, kind },
-            TextureType::Basic3D => Self { id: get_integer_v(Property::Texture3DBinding).unwrap_or(0) as u32, kind },
-            TextureType::Array1D => Self { id: get_integer_v(Property::Texture1DArrayBinding).unwrap_or(0) as u32, kind },
-            TextureType::Array2D => Self { id: get_integer_v(Property::Texture2DArrayBinding).unwrap_or(0) as u32, kind },
-            TextureType::Multisample2D      => Self { id: get_integer_v(Property::Texture2DMultisampleBinding).unwrap_or(0) as u32, kind },
-            TextureType::MultisampleArray2D => Self { id: get_integer_v(Property::Texture2DMultisampleArrayBinding).unwrap_or(0) as u32, kind },
+            TextureType::Basic1D => Self { id: get_integer_v(BindingProperty::Texture1DBinding) as u32, kind },
+            TextureType::Basic2D => Self { id: get_integer_v(BindingProperty::Texture2DBinding) as u32, kind },
+            TextureType::Basic3D => Self { id: get_integer_v(BindingProperty::Texture3DBinding) as u32, kind },
+            TextureType::Array1D => Self { id: get_integer_v(BindingProperty::Texture1DArrayBinding) as u32, kind },
+            TextureType::Array2D => Self { id: get_integer_v(BindingProperty::Texture2DArrayBinding) as u32, kind },
+            TextureType::Multisample2D      => Self { id: get_integer_v(BindingProperty::Texture2DMultisampleBinding) as u32, kind },
+            TextureType::MultisampleArray2D => Self { id: get_integer_v(BindingProperty::Texture2DMultisampleArrayBinding) as u32, kind },
         }
     }
+
 }
 
 pub fn gen_texture(kind: TextureType) -> Texture {
@@ -958,22 +1015,42 @@ pub fn bind_texture(texture: &Texture) {
     unsafe { gl::BindTexture(texture.kind as u32, texture.id) };
 }
 
-pub fn tex_image_2d(texture: &Texture, lod: usize, fcolor: PreciseColorFormat, size: LogicalSize, fpixel: BaseColorFormat, kind: DataType) {
+#[track_caller]
+pub fn tex_image_2d<'d>(
+    texture: &Texture,
+    size: PhysicalSize,
+    fgpu: GpuColorFormat,
+    fpixel: ColorFormat,
+    fdata: DataType,
+    data: impl Into<Option<&'d [u8]>>)
+{
+
     bind_texture(texture);
+
+    let needed = (size.w * size.h) as usize *
+        fpixel.components() *
+        fdata.size();
+
+    let ptr = data.into()
+        .inspect(|it| assert!(it.len() == needed))
+        .map(|it| it.as_ptr())
+        .unwrap_or(null());
+
     unsafe { gl::TexImage2D(
         texture.kind as u32,
-        lod as i32,
-        fcolor as i32,
+        0i32, // no mipmapping
+        fgpu as i32,
         size.w as i32, size.h as i32,
-        0, // "must always be 0"
+        0i32, // "must always be 0"
         fpixel as u32,
-        kind as u32,
-        null()
+        fdata as u32,
+        ptr.cast()
     ) }
+
 }
 
 /// Not available in ES versions.
-pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: PreciseColorFormat, size: LogicalSize) {
+pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: GpuColorFormat, size: PhysicalSize) {
     bind_texture(texture);
     unsafe { gl::TexImage2DMultisample(
         texture.kind as u32,
@@ -983,6 +1060,41 @@ pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: Preci
         size.h as i32,
         1,
     ); }
+}
+
+pub fn tex_storage_3d(texture: &Texture, size: PhysicalSize, depth: u16, fcolor: GpuColorFormat) {
+    bind_texture(texture);
+    unsafe { gl::TexStorage3D(
+        texture.id as u32,
+        0i32, // no mipmapping
+        fcolor as u32,
+        size.w as i32,
+        size.h as i32,
+        depth as i32,
+    ) }
+}
+
+pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorFormat, fdata: DataType, data: &[u8]) {
+
+    let needed = (rect.size.w * rect.size.h) as usize
+        * fpixel.components()
+        * fdata.size();
+
+    assert!(data.len() == needed);
+
+    bind_texture(texture);
+    unsafe { gl::TexSubImage2D(
+        texture.kind as u32,
+        0i32,
+        rect.pos.x as i32,
+        rect.pos.y as i32,
+        rect.size.w as i32,
+        rect.size.h as i32,
+        fpixel as u32,
+        fdata as u32,
+        data.as_ptr().cast()
+    ); }
+
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1029,6 +1141,21 @@ pub enum DataType {
     I8 = gl::BYTE,
     // IMPORTANT: When adding a new data type remember that all types except f32
     //            are using the integer vertex_attrib_ipointer variant right now.
+}
+
+impl DataType {
+    /// The size of this type in bytes.
+    pub fn size(&self) -> usize {
+        match self {
+            Self::F32 => 4,
+            Self::U32 => 4,
+            Self::I32 => 4,
+            Self::U16 => 2,
+            Self::I16 => 2,
+            Self::U8  => 1,
+            Self::I8  => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1141,7 +1268,7 @@ pub fn depth_mask(enabled: bool) {
     unsafe { gl::DepthMask(enabled as u8) }
 }
 
-pub fn resize_viewport(size: LogicalSize) {
+pub fn resize_viewport(size: PhysicalSize) {
     unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
 }
 
@@ -1190,11 +1317,11 @@ impl DrawArraysIndirectCommand {
 
 #[track_caller]
 pub fn draw_arrays_indirect(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray, commands: &Buffer, primitive: Primitive, start: usize) {
-    assert_eq!(commands.kind, BufferType::DrawIndirect);
     bind_frame_buffer(fbo);
     bind_program(program);
     bind_vertex_array(vao);
     bind_buffer(commands);
+    assert!(commands.kind == BufferType::DrawIndirect);
     unsafe { gl::DrawArraysIndirect(primitive as u32, start as *const void) }
 }
 
