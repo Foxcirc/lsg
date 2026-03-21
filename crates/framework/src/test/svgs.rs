@@ -1,4 +1,4 @@
-
+/*
 use std::{fs, panic::catch_unwind, sync::Arc};
 
 use futures_lite::future::block_on;
@@ -174,3 +174,4 @@ fn app(mut evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 
 }
+*/

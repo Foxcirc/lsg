@@ -11,7 +11,10 @@ use render::{DrawableGeometry, shaper};
 
 #[test]
 fn interactive() -> Result<(), Box<dyn std::error::Error>> {
-    EventLoop::run(EventLoopConfig { appid: file!().into() }, app)?
+    desktop::EventLoop::run(desktop::EventLoopConfig {
+        appid: file!().into(),
+        intercept: false,
+    }, app)?
 }
 
 fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
@@ -22,7 +25,9 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     window.transparency(true);
 
     let mut renderer = render::GlRenderer::new(&*evl)?;
+    let mut storage = render::GlRenderStorage::new(&renderer, window.size());
     let mut surface = render::GlSurface::new(&renderer, &window);
+    let mut atlas = render::GlTextureAtlas::new(&renderer);
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut shaper = shaper::GeometryShaper::new();
@@ -63,13 +68,17 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         window.present();
-                        renderer.draw(&drawable, &surface)?;
+                        renderer.draw(&drawable, &atlas, &storage);
+
+                        renderer.blit(&surface, &storage);
+                        renderer.swap(&surface);
 
                     },
 
                     WindowEvent::Resize { size, .. } => {
                         println!("got resize event: new size = {size:?}");
-                        surface.resize(&renderer, size)
+                        storage.resize(&renderer, size);
+                        surface.resize(&renderer, size);
                     },
 
                     WindowEvent::MouseMotion { point } => {

@@ -9,13 +9,26 @@ pub mod signals;
 use crate::shared::*;
 use common::SmartMutex;
 
-use std::{ffi::c_void as void, future, sync::{Arc, MutexGuard}, task};
+use std::{ffi::{CStr, CString, c_void as void}, future, sync::{Arc, MutexGuard}, task, time::Instant};
 
 // TODO: add better and more unit-tests
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct EventLoopConfig {
     pub appid: String,
+    /// If `true` relevant signals will be intercepted and
+    /// turned into `Quit` events. Otherwise signals
+    /// will never be intercepted.
+    pub intercept: bool,
+}
+
+impl Default for EventLoopConfig {
+    fn default() -> Self {
+        Self {
+            appid: format!("lsg-{:?}", Instant::now()),
+            intercept: true,
+        }
+    }
 }
 
 pub struct EventLoop {
@@ -34,17 +47,30 @@ struct EventLoopState {
 
 impl EventLoop {
 
+    #[track_caller]
     fn new(config: EventLoopConfig) -> Result<Arc<Self>, EvlError> {
+
+        // We do some setup here, which should be nice
+        // for the user, since this is a framework after all.
+
+        let name = CString::new(config.appid.clone())
+            .expect("appid cannot contain NUL byte");
+
+        // Set the process' name to the appid.
+        nix::sys::prctl::set_name(&name)?;
+
         Ok(Arc::new(Self {
             state: SmartMutex::new(EventLoopState {
                 wayland: wayland::Connection::new(&config.appid)?,
-                signals: signals::SignalListener::new()?,
+                signals: signals::SignalListener::new(config.intercept)?,
                 injected: Vec::with_capacity(1),
                 config,
             }),
         }))
+
     }
 
+    #[track_caller]
     pub fn run<R, H>(config: EventLoopConfig, handler: H) -> Result<R, EvlError>
         where H: FnOnce(Arc<Self>) -> R {
 

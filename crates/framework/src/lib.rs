@@ -4,13 +4,17 @@
 #[cfg(test)]
 mod test;
 
-use common::{LogicalSize, SmartMutex};
+use common::{IsSurface, LogicalSize, SmartMutex};
 use desktop::{MouseButton, ScrollAxis, Key};
 use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
 pub struct Config {
     pub appid: String,
+    /// If `true` relevant signals will be intercepted and
+    /// turned into `Quit` events. Otherwise signals
+    /// will never be intercepted.
+    pub intercept: bool,
 }
 
 pub struct App {
@@ -29,14 +33,18 @@ impl App {
 
             let config2 = desktop::EventLoopConfig {
                 appid: config.appid.clone(),
+                intercept: config.intercept,
             };
 
             desktop::EventLoop::run(config2, |eventloop| {
 
+                let renderer = render::GlRenderer::new(&*eventloop)
+                    .map_err(desktop::EvlError::anyerror)?;
+
                 let renderstate = AppRenderState {
                     shaper: render::GeometryShaper::new(),
-                    renderer: render::GlRenderer::new(&*eventloop)
-                        .map_err(desktop::EvlError::anyerror)?,
+                    atlas: render::GlTextureAtlas::new(&renderer),
+                    renderer,
                 };
 
                 let this = Arc::new(Self {
@@ -192,6 +200,7 @@ impl Window {
             geometries: Default::default(),
             vertices: Default::default(),
             curves: Default::default(),
+            storage: render::GlRenderStorage::new(renderer, inner.size()),
             surface: render::GlSurface::new(renderer, &inner),
         });
 
@@ -254,7 +263,7 @@ impl Window {
 
                 // Now we can read back and render the data.
 
-                let AppRenderState { shaper, renderer } = &mut *appstate;
+                let AppRenderState { shaper, renderer, atlas } = &mut *appstate;
 
                 let curves = &windowstate.curves.data;
                 let vertices = shaper.process(curves);
@@ -264,8 +273,10 @@ impl Window {
                     instances: &windowstate.curves.instances,
                 };
 
-                renderer.draw(&drawable, &windowstate.surface)
-                    .map_err(desktop::EvlError::anyerror)?;
+                renderer.draw(&drawable, &atlas, &windowstate.storage);
+
+                renderer.blit(&windowstate.surface, &windowstate.storage);
+                renderer.swap(&windowstate.surface);
 
             },
 
@@ -348,14 +359,16 @@ pub enum Action<'a> {
 struct AppRenderState {
     shaper: render::GeometryShaper,
     renderer: render::GlRenderer,
+    atlas: render::GlTextureAtlas,
 }
 
 struct WindowRenderState {
-    // Buffers to store render data:
+    // Buffers:
     geometries: RenderStateGeometries,
     vertices: RenderStateVertices,
     curves: RenderStateCurves,
-    // Surface:
+    // Surface/Storage:
+    storage: render::GlRenderStorage,
     surface: render::GlSurface,
 }
 

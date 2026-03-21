@@ -4,43 +4,118 @@ use std::{error::Error as StdError, fmt, iter::{self, once, repeat, zip}, sync::
 use common::*;
 use crate::VertexGeometry;
 
-pub struct GlSurface {
-    inner: egl::Surface,
-    fbo: gl::FrameBuffer,
-    rbo: gl::RenderBuffer,
+/// A render storage backed by a texture,
+/// which can be rendered to.
+pub struct GlRenderStorage {
+    size: PhysicalSize,
+    framebuffer: gl::FrameBuffer,
+    texture: gl::Texture,
 }
 
-impl GlSurface {
+impl GlRenderStorage {
 
-    pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Self {
+    pub fn new(gl: &GlRenderer, size: PhysicalSize) -> Self {
 
-        let surface = egl::Surface::new(
-            &gl.instance, &gl.config, window, window.size(),
-        ).expect("cannot create egl surface");
+        gl.ctx.bind(&gl.instance, None);
 
-        // Bind a context for initialization.
-        gl.ctx.bind(&gl.instance, Some(&surface));
+        let framebuffer = gl::gen_frame_buffer();
+        let texture = gl::gen_texture(gl::TextureType::Basic2D);
 
-        let fbo = gl::gen_frame_buffer();
-        let rbo = gl::gen_render_buffer();
+        gl::tex_image_2d(
+            &texture, size,
+            gl::GpuColorFormat::Rgba8,
+            gl::ColorFormat::Rgba,
+            gl::DataType::U8,
+            None
+        );
 
-        // IMPORTANT: call `render_buffer_storage` before `frame_buffer_render_buffer` (i hate opengl)
-        gl::render_buffer_storage(&rbo, gl::GpuColorFormat::Rgba8, window.size());
-        gl::frame_buffer_render_buffer(&fbo, gl::AttachmentPoint::Color0, &rbo);
+        gl::tex_parameter_defaults(&texture); // important, so it can be sampeled
+        gl::frame_buffer_texture_2d(&framebuffer, gl::AttachmentPoint::Color0, &texture);
 
         Self {
-            inner: surface,
-            fbo,
-            rbo
+            size,
+            framebuffer,
+            texture
         }
 
     }
 
     pub fn resize(&mut self, gl: &GlRenderer, size: PhysicalSize) {
 
-        gl.ctx.bind(&gl.instance, Some(&self.inner));
+        gl.ctx.bind(&gl.instance, None);
 
-        gl::render_buffer_storage(&self.rbo, gl::GpuColorFormat::Rgba8, size);
+        self.size = size;
+
+        gl::tex_image_2d(
+            &self.texture, self.size,
+            gl::GpuColorFormat::Rgba8,
+            gl::ColorFormat::Rgba,
+            gl::DataType::U8,
+            None
+        );
+
+    }
+
+    /// Copy the data from the GPU over to the CPU.
+    ///
+    /// The color format is RGBA-8.
+    pub fn download(&self) -> Vec<u8> {
+
+        unsafe { gl::read_pixels(
+            &self.framebuffer,
+            PhysicalRect::new(PhysicalPoint::ZERO, self.size),
+            gl::ColorFormat::Rgba, gl::DataType::U8
+        ) }
+
+    }
+
+}
+
+/// A "physcial" surface, backed by an actual
+/// region which could be on screen, like a window.
+///
+/// You can copy pixels from a [`GlRenderStorage`]
+/// directly into a surface to update it.
+pub struct GlSurface {
+    inner: egl::Surface,
+    // fbo: gl::FrameBuffer,
+    // rbo: gl::RenderBuffer,
+}
+
+impl GlSurface {
+
+    pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Self {
+
+        let inner = egl::Surface::new(
+            &gl.instance, &gl.config, window, window.size(),
+        ).expect("cannot create egl surface");
+
+        // // Bind a context for initialization.
+        // gl.ctx.bind(&gl.instance, Some(&surface));
+
+        // let fbo = gl::gen_frame_buffer();
+        // let rbo = gl::gen_render_buffer();
+
+        // // IMPORTANT: call `render_buffer_storage` before `frame_buffer_render_buffer` (i hate opengl)
+        // gl::render_buffer_storage(&rbo, gl::GpuColorFormat::Rgba8, window.size());
+        // gl::frame_buffer_render_buffer(&fbo, gl::AttachmentPoint::Color0, &rbo);
+
+        Self {
+            inner,
+            // fbo,
+            // rbo
+        }
+
+    }
+
+    pub fn resize(&mut self, _gl: &GlRenderer, size: PhysicalSize) {
+        //                   ^^^ we keep this for consistency with the `resize` methods
+
+        self.inner.resize(size);
+
+        // gl.ctx.bind(&gl.instance, Some(&self.inner));
+
+        // gl::render_buffer_storage(&self.rbo, gl::GpuColorFormat::Rgba8, size);
 
         /*
 
@@ -54,8 +129,6 @@ impl GlSurface {
         gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &texture, 0);
 
         */
-
-        self.inner.resize(size);
 
     }
 
@@ -88,9 +161,12 @@ impl GlTextureAtlas {
         let maxsize = gl::get_integer_v(gl::Property::MaxTextureSize) as u16;
         let texture = gl::gen_texture(gl::TextureType::Basic2D);
 
+        // important, so it can be sampeled
+        gl::tex_parameter_defaults(&texture);
+
         Self {
             texture,
-            size: PhysicalSize::ZERO,
+            size: PhysicalSize::MIN,
             maxsize: PhysicalSize::quad(maxsize),
             entries: Vec::new(),
             mapping: Vec::new()
@@ -144,7 +220,7 @@ impl GlTextureAtlas {
 
     }
 
-    pub(crate) fn access(&self, index: TextureIndex) -> PhysicalRect {
+    pub(crate) fn get(&self, index: TextureIndex) -> PhysicalRect {
         self.entries[self.mapping[index.inner as usize] as usize].rect
     }
 
@@ -193,6 +269,8 @@ impl GlTextureAtlas {
             None
         );
 
+        gl::clear_tex_image(&new, &[0.0f32; 4]);
+
         // We use this chance to sort them aswell, for a more
         // efficient spacial layout.
 
@@ -233,36 +311,31 @@ impl GlTextureAtlas {
     fn layout<'d>(mut iter: impl Iterator<Item = &'d mut TextureEntry>, size: PhysicalSize) -> impl Iterator<Item = (&'d mut TextureEntry, PhysicalPoint)> {
 
         let mut rowheight = 0i16;
-        let mut oldpos = PhysicalPoint::ZERO;
         let mut nextpos = PhysicalPoint::ZERO;
 
         iter::from_fn(move || {
 
             let entry = iter.next()?;
 
-            // Save our current position.
-            oldpos = nextpos;
+            let w = entry.rect.size.w as i16;
+            let h = entry.rect.size.h as i16;
 
-            // We advance in the row.
-            nextpos.x = nextpos.x + entry.rect.size.w as i16;
-            rowheight = rowheight
-                .max(entry.rect.size.h as i16);
-
-            // Check > width
-            if nextpos.x > size.w as i16 {
-                // We enter the next row, upwards.
-                nextpos.x = 0;
+            // wrap row if needed
+            if nextpos.x + w > size.w as i16 {
                 nextpos.y += rowheight;
                 rowheight = 0;
+                nextpos.x = 0;
             }
 
-            // Check > height
+            let pos = nextpos;
+
+            nextpos.x += w;
+            rowheight = rowheight.max(h);
+
             if nextpos.y > size.h as i16 {
-                // we need don't have any next slots
-                // which fit on our texture
-                Some((entry, PhysicalPoint::INFINITE))
+                Some((entry, PhysicalPoint::MAX))
             } else {
-                Some((entry, oldpos))
+                Some((entry, pos))
             }
 
         })
@@ -299,15 +372,15 @@ struct TextureEntry {
     pub mapping: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TextureKind {
     /// RGBA
     Color(u8, u8, u8, u8),
-    /// Texture
-    Coords(PhysicalRect),
+    /// Image from TextureAtlas
+    Atlas(TextureIndex),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct TextureIndex {
     inner: u16,
 }
@@ -336,7 +409,6 @@ pub struct GlRenderer {
     ctx: egl::Context,
     config: egl::Config,
     shape: ShapeRenderer,
-    composite: CompositeRenderer,
 }
 
 impl GlRenderer {
@@ -362,34 +434,44 @@ impl GlRenderer {
         gl::debug_message_control(Some(gl::DebugSeverity::Notification), None, None, true);
 
         let shape = ShapeRenderer::new()?;
-        let composite = CompositeRenderer::new()?;
 
         Ok(Self {
             instance,
             config,
             ctx,
             shape,
-            composite,
         })
 
     }
 
-    pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, surface: &GlSurface) -> Result<(), RenderError> {
+    pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, atlas: &GlTextureAtlas, storage: &GlRenderStorage) {
+
+        self.ctx.bind(&self.instance, None);
+
+        gl::active_texture(0, &atlas.texture);
+        gl::resize_viewport(storage.size);
+        self.shape.draw(geometry, &storage.framebuffer, storage.size); // draw the new geometry ontop of the old one
+
+    }
+
+    /// Blit all contents from the render storage onto the surface.
+    ///
+    /// The content will be scaled if sized don't match.
+    pub fn blit(&mut self, surface: &GlSurface, source: &GlRenderStorage) {
 
         self.ctx.bind(&self.instance, Some(&surface.inner));
 
-        let size = surface.inner.size();
-        gl::resize_viewport(size);
+        let target = (&gl::FrameBuffer::default(), PhysicalRect::MAX);
+        let source = (&source.framebuffer, PhysicalRect::MAX);
 
-        gl::clear(&gl::FrameBuffer::default(), 0.0, 0.0, 0.0, 1.0);
-        gl::clear(&surface.fbo, 0.0, 0.0, 0.0, 0.8); // TODO: this should be changed later since we dont want to clear the fbo but instead want to draw ontop of it
+        gl::blit_frame_buffer(target, source, gl::TexValue::Linear);
 
-        self.shape.draw(geometry, &surface.fbo, size); // draw the new geometry ontop of the old one
-        self.composite.draw(&surface.fbo, &gl::FrameBuffer::default(), size); // final full-screen composition pass
+    }
 
-        self.ctx.swap(&surface.inner, Damage::all()); // finally swap the buffers
+    /// Actually make all changes visible to the user.
+    pub fn swap(&mut self, surface: &GlSurface) {
 
-        Ok(())
+        self.ctx.swap(&surface.inner, Damage::all());
 
     }
 
@@ -457,7 +539,7 @@ impl CompositeRenderer {
     pub fn draw(&mut self, source: &gl::FrameBuffer, target: &gl::FrameBuffer, size: PhysicalSize) {
 
         let rect = PhysicalRect::new(PhysicalPoint::ZERO, size);
-        gl::blit_frame_buffer((target, rect), (source, rect), gl::FilterValue::Nearest);
+        gl::blit_frame_buffer((target, rect), (source, rect), gl::TexValue::Nearest);
 
     }
 

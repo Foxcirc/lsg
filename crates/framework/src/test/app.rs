@@ -6,7 +6,10 @@ use crate::*;
 
 #[test]
 fn app() -> Result<(), desktop::EvlError> {
-    App::run(handler, Config { appid: file!().into() })?
+    App::run(handler, Config {
+        appid: file!().into(),
+        intercept: false,
+    })?
 }
 
 async fn handler(app: Arc<App>) -> Result<(), desktop::EvlError> {

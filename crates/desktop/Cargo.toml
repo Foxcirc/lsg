@@ -18,7 +18,7 @@ wayland-protocols-wlr = { version = "0.2.0", features = ["client", "wayland-clie
 xkbcommon = { version = "0.7.0", features = ["wayland"]}
 
 # other
-nix = { version = "0.28.0", features = ["mman", "fs"] }
+nix = { version = "0.28.0", features = ["mman", "fs", "process"] }
 bitflags = { version = "2.5.0", features = ["std"] }
 bv = "0.11.1" # bitvecs
 

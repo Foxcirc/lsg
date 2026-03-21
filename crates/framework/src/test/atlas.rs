@@ -1,43 +1,84 @@
 
-use common::{LogicalPoint, LogicalSize, PhysicalSize, Shape};
+use common::{IsSurface, LogicalPoint, LogicalSize, PhysicalSize, Shape};
+use desktop::{Event, WindowEvent};
+use futures_lite::future::block_on;
 use render::PartialVertex;
+
+use std::sync::Arc;
 
 #[test]
 pub fn atlas() -> Result<(), Box<dyn std::error::Error>> {
-    EventLoop::run(EventLoopConfig { appid: file!().into() }, app)?
+    desktop::EventLoop::run(desktop::EventLoopConfig {
+        appid: file!().into(),
+        intercept: false,
+    }, app)?
 }
 
-fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
+fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
-    let renderer = render::GlRenderer::new(&*evl)?;
-    let atlas = render::GlTextureAtlas::new(&renderer);
+    let mut renderer = render::GlRenderer::new(&*evl)?;
+    let mut atlas = render::GlTextureAtlas::new(&renderer);
 
-    let pixbuf = GlPixelBuffer::new();
-    pixbuf.resize(&renderer, PhysicalSize::new(1000, 1000));
+    let window = desktop::Window::new(&evl);
+    window.sizehint(PhysicalSize::quad(12));
 
-    let geometry = render::DrawableGeometry {
-        source: &[&render::VertexGeometry {
-            vertices: Vec::from([
-                PartialVertex::new([0,    0],    render::FillKind::Filled, 0),
-                PartialVertex::new([0,    1000], render::FillKind::Filled, 0),
-                PartialVertex::new([1000, 1000], render::FillKind::Filled, 0),
-                PartialVertex::new([1000, 0],    render::FillKind::Filled, 0),
-            ]),
-            shapes: Vec::from([Shape::new(0u16..4u16)]),
-        }],
-        instances: &[
-            render::Instance {
-                target: render::GeometryTarget { geometry: 0, shape: 0 },
-                pos: LogicalPoint::ZERO,
-                size: LogicalSize::FULL,
-                texture: render::TextureKind::Color(255, 0, 0, 1),
-            }
-        ]
-    };
+    let mut surface = render::GlSurface::new(&renderer, &window);
+    let mut storage = render::GlRenderStorage::new(&renderer, window.size());
 
-    renderer.draw(&geometry, &pixbuf);
+    println!("UPLOAD!");
+    let index = atlas.upload(&renderer, &[255; 12*12*4], PhysicalSize::quad(12));
 
-    // pixbuf.data;
+    loop {
+        match block_on(evl.next())? {
+            Event::Window { event: WindowEvent::Redraw, .. } => {
+
+                let geometry = render::DrawableGeometry {
+                    source: &[&render::VertexGeometry {
+                        vertices: Vec::from([
+                            // Triangle 1
+                            PartialVertex::new([0,  0],    render::FillKind::Filled, 0),
+                            PartialVertex::new([5000,  0], render::FillKind::Filled, 0),
+                            PartialVertex::new([5000, 5000], render::FillKind::Filled, 0),
+                            // Triangle 2
+                            PartialVertex::new([0, 0],    render::FillKind::Filled, 0),
+                            PartialVertex::new([0, 5000],    render::FillKind::Filled, 0),
+                            PartialVertex::new([5000, 5000],    render::FillKind::Filled, 0),
+                        ]),
+                        shapes: Vec::from([Shape::new(0u16..6u16)]),
+                    }],
+                    instances: &[
+                        render::Instance {
+                            target: render::GeometryTarget { geometry: 0, shape: 0 },
+                            pos: LogicalPoint::ZERO,
+                            size: LogicalSize::from(window.size()),
+                            texture: render::TextureKind::Atlas(index)
+                        }
+                    ]
+                };
+
+                println!("DRAW");
+                window.present();
+                renderer.draw(&geometry, &atlas, &storage);
+                renderer.blit(&surface, &storage);
+                renderer.swap(&surface);
+            },
+            Event::Window { event: WindowEvent::Resize { size, .. }, .. } => {
+                println!("RESIZE: {size:?}");
+                surface.resize(&renderer, size);
+                storage.resize(&renderer, size);
+            },
+            Event::Window { event: WindowEvent::ShouldClose, .. } => {
+                break
+            },
+            _ => (),
+        }
+    }
+
+    println!("DOWNLOAD!");
+    let data = storage.download();
+
+    println!("data = {:?}", data);
+    println!("data.len = {:?}", data.len());
 
     Ok(())
 

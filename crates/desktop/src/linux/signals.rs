@@ -17,12 +17,15 @@ pub(crate) struct SignalListener {
 
 impl SignalListener {
 
-    pub fn new() -> io::Result<Self> {
+    pub fn new(active: bool) -> io::Result<Self> {
 
-        let signals = async_signals::Signals::new([
-            SIGTERM,
-            SIGINT
-        ]).map_err(io::Error::from)?;
+        use async_signals::Signals;
+
+        let signals = if active {
+            Signals::new([SIGTERM, SIGINT])
+        } else {
+            Signals::new([])
+        }.map_err(io::Error::from)?;
 
         Ok(Self {
             signals: SmartMutex::new(signals)

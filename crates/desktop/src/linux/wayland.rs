@@ -741,6 +741,21 @@ impl Window {
 
     }
 
+    /// If this is called before the window is first shown, the provided
+    /// size will be used if the system doesn't provide another.
+    #[track_caller]
+    pub fn sizehint(&self, size: PhysicalSize) {
+
+        // TODO: make sure this is asserted/handeled/documented in all places:
+        assert!(size.w > 0 && size.h > 0);
+
+        let evb = &mut self.evl.state.lock().wayland.state;
+        let state = evb.windows.get(self.id);
+
+        state.size = size;
+
+    }
+
     pub fn minsize(&self, size: Option<LogicalSize>) {
 
         let evb = &mut self.evl.state.lock().wayland.state;

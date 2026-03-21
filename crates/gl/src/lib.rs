@@ -132,7 +132,7 @@ pub fn debug_message_insert(severity: DebugSeverity, source: DebugSource, id: u3
 }
 
 pub fn debug_message_default_handler(source: DebugSource, _kind: DebugType, severity: DebugSeverity, _id: u32, msg: &str) {
-    println!("OpenGL ({:?}, {:?}): {}", severity, source, msg.trim_end_matches("\n"));
+    eprintln!("OpenGL ({:?}, {:?}): {}", severity, source, msg.trim_end_matches("\n"));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,7 +300,7 @@ impl IsProperty for BindingProperty {
 
 #[derive(Debug)]
 pub struct Shader {
-    id: u32
+    pub id: u32
 }
 
 impl Drop for Shader {
@@ -396,7 +396,7 @@ pub enum ShaderType {
 
 #[derive(Debug)]
 pub struct Program {
-    id: u32,
+    pub id: u32,
     shaders: Vec<Shader>,
     keepalive: bool,
 }
@@ -542,7 +542,7 @@ pub struct AttribUnknown;
 
 #[derive(Debug)]
 pub struct VertexArray {
-    id: u32
+    pub id: u32
 }
 
 impl Drop for VertexArray {
@@ -598,7 +598,7 @@ pub fn bind_buffer(this: &Buffer) {
 
 #[derive(Debug)]
 pub struct Buffer {
-    id: u32,
+    pub id: u32,
     kind: BufferType,
 }
 
@@ -771,7 +771,7 @@ pub fn vertex_attrib_divisor(vao: &VertexArray, location: u32, divisor: Divisor)
 
 #[derive(Debug)]
 pub struct FrameBuffer {
-    id: u32,
+    pub id: u32,
 }
 
 impl Drop for FrameBuffer {
@@ -858,7 +858,7 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
         AttachmentPoint::Color0 => (gl::COLOR, 0),
         AttachmentPoint::Color1 => (gl::COLOR, 1),
     };
-    let mut safe = [0.0; 4];
+    let mut safe = [0.0f32; 4];
     safe[..value.len()].copy_from_slice(value);
     unsafe { gl::ClearBufferfv(param1, param2, safe.as_ptr()) }
 }
@@ -868,7 +868,7 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
 /// - Currently only copies the **color buffer**.
 /// - Rescales the region if the sizes don't match.
 /// - You don't need to bind anything yourself!
-pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBuffer, PhysicalRect), filter: FilterValue) {
+pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBuffer, PhysicalRect), filter: TexValue) {
     bind_draw_frame_buffer(target.0);
     bind_read_frame_buffer(source.0);
     unsafe { gl::BlitFramebuffer(
@@ -877,6 +877,44 @@ pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBu
         gl::COLOR_BUFFER_BIT,
         filter as u32,
     ) };
+}
+
+/// Read pixels from a frame buffer.
+///
+/// # Caveat
+/// This function is very caveat-ey right now. The "rect" has to be the exact size or larger
+/// of the amount of pixels you are reading. We always allocate enough space for `rect` pixels!
+///
+/// Also only RGBA8-U8 is supported.
+///
+/// # Safety
+///
+/// The size of rect must be large enough to contain the pixels.
+pub unsafe fn read_pixels(fbo: &FrameBuffer, rect: PhysicalRect, fpixel: ColorFormat, fdata: DataType) -> Vec<u8> {
+
+    if fpixel != ColorFormat::Rgba && fdata != DataType::U8 {
+        todo!("need to change the design of this if we wan't to support other types
+            which need to be correctly aligned in memory...");
+    }
+
+    let cap = fpixel.components() * fdata.size() *
+        rect.size.w as usize * rect.size.h as usize;
+
+    let mut buf = Vec::new();
+    buf.resize(cap, 0);
+
+    bind_read_frame_buffer(&fbo);
+
+    unsafe { gl::ReadPixels(
+        rect.pos.x as i32, rect.pos.y as i32,
+        rect.size.w as i32, rect.size.h as i32,
+        fpixel as u32,
+        fdata as u32,
+        buf.as_mut_ptr().cast(),
+    ) };
+
+    buf
+
 }
 
 /// Copy a region from `source` (fbo) to `target` (texture).
@@ -895,9 +933,26 @@ pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPoint), target: (&Te
     ) };
 }
 
+/// Color value is in RGBA-f32 format.
+/// # Caveat
+/// Only available on versions 4.x.
+pub fn clear_tex_image(texture: &Texture, value: &[f32]) {
+
+    let mut safe = [0.0f32; 4];
+    safe[..value.len()].copy_from_slice(value);
+
+    unsafe { gl::ClearTexImage(
+        texture.kind as u32,
+        0, // no mipmapping
+        gl::RGBA, gl::FLOAT,
+        safe.as_ptr().cast(),
+    ) };
+
+}
+
 #[derive(Debug)]
 pub struct RenderBuffer {
-    id: u32,
+    pub id: u32,
 }
 
 impl Drop for RenderBuffer {
@@ -935,7 +990,7 @@ pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, fo
     unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.w as i32, size.h as i32); }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum GpuColorFormat {
     R8      = gl::R8,
@@ -943,7 +998,7 @@ pub enum GpuColorFormat {
     Rgba16F = gl::RGBA16F,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ColorFormat {
     Rgba = gl::RGBA,
@@ -954,7 +1009,7 @@ impl ColorFormat {
     // Number of components per pixel.
     pub fn components(&self) -> usize {
         match self {
-            Self::Rgba=> 3,
+            Self::Rgba=> 4,
             Self::Red => 2,
         }
     }
@@ -974,7 +1029,7 @@ pub enum TextureType {
 
 #[derive(Debug)]
 pub struct Texture {
-    id: u32,
+    pub id: u32,
     kind: TextureType,
 }
 
@@ -1027,7 +1082,7 @@ pub fn tex_image_2d<'d>(
 
     bind_texture(texture);
 
-    let needed = (size.w * size.h) as usize *
+    let needed = (size.w as usize * size.h as usize) *
         fpixel.components() *
         fdata.size();
 
@@ -1074,6 +1129,7 @@ pub fn tex_storage_3d(texture: &Texture, size: PhysicalSize, depth: u16, fcolor:
     ) }
 }
 
+#[track_caller]
 pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorFormat, fdata: DataType, data: &[u8]) {
 
     let needed = (rect.size.w * rect.size.h) as usize
@@ -1099,19 +1155,22 @@ pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorForm
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum FilterKind {
+pub enum TexParam {
     MagFilter = gl::TEXTURE_MAG_FILTER,
     MinFilter = gl::TEXTURE_MIN_FILTER,
+    WrapS = gl::TEXTURE_WRAP_S,
+    WrapT = gl::TEXTURE_WRAP_T,
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
-pub enum FilterValue {
+pub enum TexValue {
     Linear = gl::LINEAR,
     Nearest = gl::NEAREST,
+    ClampToEdge = gl::CLAMP_TO_EDGE,
 }
 
-pub fn tex_parameter_i(texture: &Texture, property: FilterKind, value: FilterValue) {
+pub fn tex_parameter_i(texture: &Texture, property: TexParam, value: TexValue) {
     bind_texture(texture);
     unsafe { gl::TexParameteri(
         texture.kind as u32,
@@ -1120,9 +1179,18 @@ pub fn tex_parameter_i(texture: &Texture, property: FilterKind, value: FilterVal
     ) }
 }
 
+pub fn tex_parameter_defaults(texture: &Texture) {
+    tex_parameter_i(&texture, TexParam::MagFilter, TexValue::Linear);
+    tex_parameter_i(&texture, TexParam::MinFilter, TexValue::Linear);
+    tex_parameter_i(&texture, TexParam::WrapS, TexValue::ClampToEdge);
+    tex_parameter_i(&texture, TexParam::WrapT, TexValue::ClampToEdge);
+}
+
 /// Will also bind the texture!
 /// A location of `0` corresponds to `TEXTURE0`.
+#[track_caller]
 pub fn active_texture(location: usize, texture: &Texture) {
+    debug_assert!(location < 32, "should not bind more then 32 textures");
     let param = gl::TEXTURE0 + location as u32;
     unsafe { gl::ActiveTexture(param) };
     bind_texture(texture);

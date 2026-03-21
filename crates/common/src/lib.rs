@@ -10,7 +10,7 @@ pub struct PhysicalRect {
 }
 
 impl PhysicalRect {
-    pub const INFINITE: Self = Self::new(PhysicalPoint::ZERO, PhysicalSize::INFINITE);
+    pub const MAX: Self = Self::new(PhysicalPoint::MIN, PhysicalSize::MAX);
     pub const fn new(pos: PhysicalPoint, size: PhysicalSize) -> Self {
         Self { pos, size }
     }
@@ -44,6 +44,12 @@ impl LogicalSize {
     }
 }
 
+impl From<PhysicalSize> for LogicalSize {
+    fn from(value: PhysicalSize) -> Self {
+        Self::new(value.w, value.h)
+    }
+}
+
 // #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 // /// A non-negative size, specified in physical coordinates.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -53,10 +59,16 @@ pub struct PhysicalSize {
 }
 
 impl PhysicalSize {
-    pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
-    pub const ZERO: Self = Self::new(0, 0);
+    pub const MAX: Self = Self::new(u16::MAX, u16::MAX);
+    pub const MIN: Self = Self::new(0, 0);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
     pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
+}
+
+impl From<LogicalSize> for PhysicalSize {
+    fn from(value: LogicalSize) -> Self {
+        Self::new(value.w, value.h)
+    }
 }
 
 /// A point, specified in logical coordinates.
@@ -69,7 +81,8 @@ pub struct LogicalPoint {
 impl LogicalPoint {
     pub const ZERO: Self = Self::new(0, 0);
     pub const FULL: Self = Self::new(10000, 10000);
-    pub const INFINITE: Self = Self::new(i16::MAX, i16::MAX);
+    pub const MAX: Self = Self::new(i16::MAX, i16::MAX);
+    pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
     pub const fn new(x: i16, y: i16) -> Self {
         Self { x, y }
     }
@@ -97,7 +110,8 @@ pub struct PhysicalPoint {
 
 impl PhysicalPoint {
     pub const ZERO: Self = Self::new(0, 0);
-    pub const INFINITE: Self = Self::new(i16::MAX, i16::MAX);
+    pub const MAX: Self = Self::new(i16::MAX, i16::MAX);
+    pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
     pub const fn new(x: i16, y: i16) -> Self {
         Self { x, y }
     }
