@@ -6,10 +6,10 @@ layout (location = 0) in uint inFlags;
 layout (location = 1) in int inXY;
 layout (location = 2) in uint inTEX;
 
+out vec2 textureCoords;
 out vec2 curvePosition;
-out vec4 textureCoords;
 out vec3 barycentric;
-out flat uint fillKind;
+out flat uint fillKind; // TODO: rename to smth. like triangleKind everywhere, since this is confusing with color vs. texture filling
 
 const vec2 curvePositionTable[9] = vec2[](
     vec2(0.0, 1.0), vec2(0.0, 1.0),  vec2(0.0, 1.0),  // FILLED
@@ -37,23 +37,34 @@ void main() {
         (inXY << 16) >> 16 // Y, 16 bit
     );
 
-    ivec4 intColor = ivec4(
+    // ivec4 intColor = ivec4(
+    //     (inTEX >> 0u)  & 0xFFu, // r
+    //     (inTEX >> 8u)  & 0xFFu, // g
+    //     (inTEX >> 16u) & 0xFFu, // b
+    //     (inTEX >> 24u) & 0xFFu  // a
+    // );
+
+    uvec2 intTEX = uvec2(
         (inTEX >> 0u)  & 0xFFu,
-        (inTEX >> 8u)  & 0xFFu,
-        (inTEX >> 16u) & 0xFFu,
-        (inTEX >> 24u) & 0xFFu
+        (inTEX >> 16u) & 0xFFu
     );
 
     // Convert coordinates to NDC form.
 
-    vec2 xy = vec2(
-        float(int(intXY.x) - 2500) / 2500.0,
-        float(int(intXY.y) - 2500) / 2500.0
+    curvePosition = lookupCurvePosition(fillKind, vertexIndex);
+
+    textureCoords = vec2(
+        float(int(intTEX.x) - 2500) / 2500.0,
+        float(int(intTEX.y) - 2500) / 2500.0
     );
 
-    curvePosition = lookupCurvePosition(fillKind, vertexIndex);
-    textureCoords = vec4(intColor) / 255.0;
-    gl_Position = vec4(xy, 0.0, 1.0);
+    gl_Position = vec4(
+        float(int(intXY.x) - 2500) / 2500.0,
+        float(int(intXY.y) - 2500) / 2500.0,
+        0.0, 1.0 // unused coords
+    );
+
+    // Handle information for anti-aliasing.
 
     bool edgeABisOuter = ((outerEdges >> 2) & 1u) == 1u;
     bool edgeBCisOuter = ((outerEdges >> 1) & 1u) == 1u;

@@ -1,5 +1,5 @@
 
-use std::{error::Error as StdError, fmt, iter::{self, once, repeat, zip}, sync::Arc};
+use std::{error::Error as StdError, fmt, iter::{self, once, repeat, zip}, ops::Range, sync::Arc};
 
 use common::*;
 use crate::VertexGeometry;
@@ -59,7 +59,7 @@ impl GlRenderStorage {
     /// Copy the data from the GPU over to the CPU.
     ///
     /// The color format is RGBA-8.
-    pub fn download(&self) -> Vec<u8> {
+    pub fn inspect(&self) -> Vec<u8> {
 
         unsafe { gl::read_pixels(
             &self.framebuffer,
@@ -256,20 +256,21 @@ impl GlTextureAtlas {
 
         // Create a new, bigger texture.
 
-        let newsize = self.size.w + 256;
+        self.size.w += 12;
+        self.size.h += 12;
 
         let new = gl::gen_texture(gl::TextureType::Basic2D);
 
         gl::tex_image_2d(
             &new,
-            PhysicalSize::quad(newsize),
+            self.size,
             gl::GpuColorFormat::Rgba8,
             gl::ColorFormat::Rgba,
             gl::DataType::U8,
             None
         );
 
-        gl::clear_tex_image(&new, &[0.0f32; 4]);
+        // gl::clear_tex_image(&new, &[0.0f32; 4]);
 
         // We use this chance to sort them aswell, for a more
         // efficient spacial layout.
@@ -332,7 +333,9 @@ impl GlTextureAtlas {
             nextpos.x += w;
             rowheight = rowheight.max(h);
 
-            if nextpos.y > size.h as i16 {
+            if size.w == 0 || size.h == 0 {
+                Some((entry, PhysicalPoint::MAX))
+            } else if nextpos.y > size.h as i16 {
                 Some((entry, PhysicalPoint::MAX))
             } else {
                 Some((entry, pos))
@@ -346,7 +349,22 @@ impl GlTextureAtlas {
     // pub fn update(self: &Arc<Self>, renderer: &GlRenderer, texture: TextureCoords) {
 
     // }
+    //
 
+    /// Copy the atlas' texture from the GPU over to the CPU.
+    ///
+    /// The color format is RGBA-8.
+    pub fn inspect(&self) -> Vec<u8> {
+
+        let fbo = gl::gen_frame_buffer();
+        gl::frame_buffer_texture_2d(&fbo, gl::AttachmentPoint::Color0, &self.texture);
+
+        unsafe { gl::read_pixels(
+            &fbo, PhysicalRect::new(PhysicalPoint::ZERO, self.size),
+            gl::ColorFormat::Rgba, gl::DataType::U8
+        ) }
+
+    }
 }
 
 /// A single instance of a shape. This can be used to render the same
@@ -376,8 +394,8 @@ struct TextureEntry {
 pub enum TextureKind {
     /// RGBA
     Color(u8, u8, u8, u8),
-    /// Image from TextureAtlas
-    Atlas(TextureIndex),
+    /// Index into TextureAtlas + Offset
+    Atlas(TextureIndex, PhysicalPoint),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -420,8 +438,8 @@ impl GlRenderer {
 
         let config = egl::Config::build()
             .api(egl::Api::OpenGl)
-            .version(4, 3)
-            .debug(cfg!(test))
+            .version(4, 5)
+            .debug(true) // TODO: remove
             .profile(egl::Profile::Core)
             .finish(&instance)?;
 
@@ -450,7 +468,7 @@ impl GlRenderer {
 
         gl::active_texture(0, &atlas.texture);
         gl::resize_viewport(storage.size);
-        self.shape.draw(geometry, &storage.framebuffer, storage.size); // draw the new geometry ontop of the old one
+        self.shape.draw(&storage.framebuffer, geometry, atlas, storage.size);
 
     }
 
@@ -559,9 +577,10 @@ struct InstancedData {
 
 /// The builtin curve renderer.
 struct ShapeRenderer {
+    prepared: PreparedGeometry,
     singular: SingularData,
     instanced: InstancedData,
-    prepared: PreparedGeometry,
+    sampler: gl::UniformLocation,
     program: gl::LinkedProgram,
 }
 
@@ -586,10 +605,6 @@ impl ShapeRenderer {
             gl::vertex_attrib_pointer(&vao, &vdata, 0, 1, gl::DataType::U16, false, 10, 0); // FLAGS
             gl::vertex_attrib_pointer(&vao, &vdata, 1, 1, gl::DataType::I32, false, 10, 2); // x, y
             gl::vertex_attrib_pointer(&vao, &vdata, 2, 1, gl::DataType::U32, false, 10, 6); // u, v, l (texture coords)
-            // gl::vertex_attrib_pointer(&vao, &vdata, 0, 3, gl::DataType::F32, false, 9*f, 0*f); // x, y, z TODO: remove Z coordinate as transparency/layering is handeled purely by draw-order
-            // gl::vertex_attrib_pointer(&vao, &vdata, 1, 2, gl::DataType::F32, false, 9*f, 3*f); // curveX, curveY
-            // gl::vertex_attrib_pointer(&vao, &vdata, 2, 3, gl::DataType::F32, false, 9*f, 5*f); // textureX, textureY, textureLayer
-            // gl::vertex_attrib_pointer(&vao, &vdata, 3, 1, gl::DataType::U32, false, 9*f, 8*f); // flags TODO: document, make this loc 2 (swap with above)
             SingularData { vao, vdata }
         };
 
@@ -615,17 +630,21 @@ impl ShapeRenderer {
             InstancedData { vao, vdata, idata, commands }
         };
 
+        let sampler = gl::uniform_location(&program, "atlas")
+            .expect("cannot find `atlas` uniform");
+
         Ok(Self {
+            prepared: PreparedGeometry::default(),
             singular,
             instanced,
-            prepared: PreparedGeometry::default(),
+            sampler,
             program,
         })
 
     }
 
     /// Convert geometry into internal representation.
-    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, size: PhysicalSize) {
+    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, atlas: &GlTextureAtlas, size: PhysicalSize) {
 
         // The layout is packed heavily to minimize memory usage.
         //
@@ -650,8 +669,11 @@ impl ShapeRenderer {
 
             for (vertex, index) in zip(vertices, ivertices) {
 
-                let physical_x = vertex.pos[0] as f64 * (instance.size.w as f64 / 5000.0);
-                let physical_y = vertex.pos[1] as f64 * (instance.size.h as f64 / 5000.0);
+                let virtual_x = vertex.pos[0];
+                let virtual_y = vertex.pos[1];
+
+                let physical_x = virtual_x as f64 * (instance.size.w as f64 / 5000.0);
+                let physical_y = virtual_y as f64 * (instance.size.h as f64 / 5000.0);
                 //                                                              / ^^^^^^
                 //      This is the scaling where 5000 means a 1.0 scale. So for a
                 //      filled rect a scale of 5000 would be a 5000x5000 rect.
@@ -666,18 +688,45 @@ impl ShapeRenderer {
                     ((shifted_y as i32 & 0xFFFF) << 0) | // y
                     ((shifted_x as i32 & 0xFFFF) << 16); // x
 
-                // let packed_texture = 0u32 |
-                //     ((0b0      & 255)  << 0) | // l
-                //     ((aaaaaaaa & 4095) << 8) | // v
-                //     ((bbbbbbbb & 4095) << 20); // u
+                let packed_texture: u32;
+                let isatlas: bool;
 
-                let TextureKind::Color(r, g, b, a) = instance.texture else { panic!() };
+                match instance.texture {
 
-                let packed_colors = 0u32 |
-                    ((a as u32 & 0xFF)  << 0)  | // a
-                    ((b as u32 & 0xFF)  << 8)  | // b
-                    ((g as u32 & 0xFF)  << 16) | // g
-                    ((r as u32 & 0xFF)  << 24);  // r
+                    TextureKind::Color(r, g, b, a) => {
+
+                        isatlas = false;
+                        packed_texture =
+                            ((a as u32 & 0xFF)  << 0)  | // a
+                            ((b as u32 & 0xFF)  << 8)  | // b
+                            ((g as u32 & 0xFF)  << 16) | // g
+                            ((r as u32 & 0xFF)  << 24);  // r
+
+                    },
+
+                    TextureKind::Atlas(index, offset) => {
+
+                        let coords = atlas.get(index);
+
+                        let x_low  = coords.pos.x as f64;
+                        let x_high = coords.size.w as f64 + x_low;
+                        let y_low  = coords.pos.y as f64;
+                        let y_high = coords.size.h as f64 + y_low;
+
+                        let x = affine_transform(virtual_x as f64, 0f64..5000f64, x_low..x_high);
+                        let y = affine_transform(virtual_y as f64, 0f64..5000f64, y_low..y_high);
+
+                        let offset_x = x as i16 + offset.x;
+                        let offset_y = y as i16 + offset.y;
+
+                        isatlas = true;
+                        packed_texture =
+                            ((offset_y as u32 & 0xFFFF) << 0) | // y
+                            ((offset_x as u32 & 0xFFFF) << 16); // x
+
+                    }
+
+                };
 
                 let edges = vertex.edges as u16;
                 let curve = vertex.curve as u16;
@@ -686,11 +735,12 @@ impl ShapeRenderer {
                     ((edges & 0b111) << 0) |
                     ((index & 0b011) << 3) |
                     ((0b0   & 0b001) << 5) | // TODO: no instanced drawing for now
-                    ((curve & 0b011) << 6);
+                    ((curve & 0b011) << 6) |
+                    ((isatlas as u16 & 0b001) << 8);
 
                 self.prepared.singular.vertices.extend_u16([flags]);
                 self.prepared.singular.vertices.extend_i([packed_pos]);
-                self.prepared.singular.vertices.extend_u([packed_colors]);
+                self.prepared.singular.vertices.extend_u([packed_texture]);
 
                 /*
                 self.prepared.singular.vertices.extend_f(pos); // XY
@@ -706,14 +756,19 @@ impl ShapeRenderer {
 
     }
 
-    pub fn draw(&mut self, geometry: &DrawableGeometry, target: &gl::FrameBuffer, size: PhysicalSize) {
+    pub fn draw(&mut self, target: &gl::FrameBuffer, geometry: &DrawableGeometry, atlas: &GlTextureAtlas, size: PhysicalSize) {
 
-        self.prepare(geometry, size);
+        self.prepare(geometry, atlas, size);
 
+        // Setup blending.
         gl::enable(gl::Capability::Blend);
         gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
 
-        // render all non-instanced shapes
+        // Make atlas texture accessible.
+        gl::active_texture(0, &atlas.texture);
+        gl::uniform_1i(&self.program, self.sampler, 0);
+
+        // Render all non-instanced shapes.
         let r = &self.prepared.singular;
         let len = r.vertices.inner.len();
         if len > 0 {
@@ -732,6 +787,10 @@ impl ShapeRenderer {
 
     }
 
+}
+
+fn affine_transform(v: f64, lhs: Range<f64>, rhs: Range<f64>) -> f64 {
+    rhs.start + ((v - lhs.start) * (rhs.end - rhs.start)) / (lhs.end - lhs.start)
 }
 
 /*

@@ -1,5 +1,5 @@
 
-use common::{IsSurface, LogicalPoint, LogicalSize, PhysicalSize, Shape};
+use common::{IsSurface, LogicalPoint, LogicalSize, PhysicalPoint, PhysicalSize, Shape};
 use desktop::{Event, WindowEvent};
 use futures_lite::future::block_on;
 use render::PartialVertex;
@@ -51,7 +51,7 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             target: render::GeometryTarget { geometry: 0, shape: 0 },
                             pos: LogicalPoint::ZERO,
                             size: LogicalSize::from(window.size()),
-                            texture: render::TextureKind::Atlas(index)
+                            texture: render::TextureKind::Atlas(index, PhysicalPoint::ZERO),
                         }
                     ]
                 };
@@ -75,7 +75,7 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("DOWNLOAD!");
-    let data = storage.download();
+    let data = atlas.inspect();
 
     println!("data = {:?}", data);
     println!("data.len = {:?}", data.len());

@@ -2,9 +2,11 @@
 precision mediump float;
 
 in vec2 curvePosition;
-in vec4 textureCoords;
+in vec2 textureCoords;
 in vec3 barycentric;
 in flat uint fillKind;
+
+uniform sampler2D atlas;
 
 out vec4 color;
 
@@ -28,7 +30,11 @@ void main() {
         multiplier = 1.0;
     }
 
-    float alpha = textureCoords.a;
-    color = vec4(textureCoords.rgb, alpha * multiplier);
+    vec4 pixel = texture(atlas, textureCoords);
+
+    color = vec4(
+        pixel.rgb,
+        pixel.a * multiplier
+    );
 
 }
