@@ -1060,6 +1060,8 @@ impl Texture {
 
 }
 
+/// Also make sure to call [`tex_sensible_defaults`]. Especially if you want
+/// to sample from it, some parameters have to be set, or sampling will give black.
 pub fn gen_texture(kind: TextureType) -> Texture {
     let mut id = 0;
     unsafe { gl::GenTextures(1, &mut id) };
@@ -1160,6 +1162,7 @@ pub enum TexParam {
     MinFilter = gl::TEXTURE_MIN_FILTER,
     WrapS = gl::TEXTURE_WRAP_S,
     WrapT = gl::TEXTURE_WRAP_T,
+    UnpackAlignment = gl::UNPACK_ALIGNMENT,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1179,21 +1182,28 @@ pub fn tex_parameter_i(texture: &Texture, property: TexParam, value: TexValue) {
     ) }
 }
 
-pub fn tex_parameter_defaults(texture: &Texture) {
-    tex_parameter_i(&texture, TexParam::MagFilter, TexValue::Linear);
-    tex_parameter_i(&texture, TexParam::MinFilter, TexValue::Linear);
+/// Used to set some texture properties that really
+/// should be set by default.
+pub fn tex_sensible_defaults(texture: &Texture) {
+    tex_parameter_i(&texture, TexParam::MagFilter, TexValue::Nearest);
+    tex_parameter_i(&texture, TexParam::MinFilter, TexValue::Nearest);
     tex_parameter_i(&texture, TexParam::WrapS, TexValue::ClampToEdge);
     tex_parameter_i(&texture, TexParam::WrapT, TexValue::ClampToEdge);
+    pixel_store_i(&texture, TexParam::UnpackAlignment, 1);
+}
+
+pub fn pixel_store_i(texture: &Texture, param: TexParam, value: i32) {
+    bind_texture(texture);
+    unsafe { gl::PixelStorei(param as u32, value) };
 }
 
 /// Will also bind the texture!
 /// A location of `0` corresponds to `TEXTURE0`.
 #[track_caller]
-pub fn active_texture(location: usize, texture: &Texture) {
+pub fn active_texture(location: usize) {
     debug_assert!(location < 32, "should not bind more then 32 textures");
     let param = gl::TEXTURE0 + location as u32;
     unsafe { gl::ActiveTexture(param) };
-    bind_texture(texture);
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

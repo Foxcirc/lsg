@@ -45,8 +45,8 @@ void main() {
     // );
 
     uvec2 intTEX = uvec2(
-        (inTEX >> 0u)  & 0xFFu,
-        (inTEX >> 16u) & 0xFFu
+        (inTEX >> 16u) & 0xFFFFu,
+        (inTEX >> 0u)  & 0xFFFFu
     );
 
     // Convert coordinates to NDC form.
@@ -54,8 +54,8 @@ void main() {
     curvePosition = lookupCurvePosition(fillKind, vertexIndex);
 
     textureCoords = vec2(
-        float(int(intTEX.x) - 2500) / 2500.0,
-        float(int(intTEX.y) - 2500) / 2500.0
+        float(intTEX.x) / 5000.0,
+        float(intTEX.y) / 5000.0
     );
 
     gl_Position = vec4(

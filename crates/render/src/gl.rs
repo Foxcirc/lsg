@@ -29,7 +29,7 @@ impl GlRenderStorage {
             None
         );
 
-        gl::tex_parameter_defaults(&texture); // important, so it can be sampeled
+        gl::tex_sensible_defaults(&texture); // important, so it can be sampeled
         gl::frame_buffer_texture_2d(&framebuffer, gl::AttachmentPoint::Color0, &texture);
 
         Self {
@@ -134,14 +134,160 @@ impl GlSurface {
 
 }
 
-/// Auxilarry struct used to manage textures.
+/// Contains the layouting algorithm for the texture atlas,
+/// so it can be seperate from the actual GPU calls.
+struct AtlasLayout {
+    /// The current size of the atlas.
+    size: PhysicalSize,
+    /// The height of the current row.
+    rh: u16,
+    /// The position after the current slot.
+    cursor: PhysicalPoint,
+}
+
+impl AtlasLayout {
+
+    pub fn new(size: PhysicalSize) -> Self {
+        Self {
+            size,
+            rh: 0,
+            cursor: PhysicalPoint::ZERO,
+        }
+    }
+
+    /// Find the point before the next slot of `size`. If the current
+    /// layout is not big enough it will return `None`.
+    ///
+    /// # Errors
+    /// If the slot doesn't fit, returns the overshoot. It is not specified
+    /// wether the overshoot occured sideways or upwards.
+    pub fn advance(&mut self, size: PhysicalSize) -> Result<PhysicalPoint, u16> {
+
+        let PhysicalSize { w, h } = size;
+
+        if self.cursor.x as u16 + w > self.size.w {
+
+            // If we overshoot sideways, we need to grow upwards.
+
+            let incr = self.rh as i16;
+
+            // Move the cursor one row up.
+            self.cursor.y += incr;
+            self.cursor.x = 0;
+            self.rh = 0;
+
+            if self.cursor.x as u16 + w > self.size.w {
+                // If we overshoot sideways again, the object is to large.
+                Err(self.cursor.x as u16 + w - self.size.w)
+            } else if self.cursor.y as u16 + h > self.size.h {
+                // If we go out of bounds upwards, there is no space left.
+                Err(self.cursor.y as u16 + h - self.size.h)
+            } else {
+
+                // We made space.
+
+                let result = self.cursor;
+
+                self.cursor.x += w as i16;
+                self.rh = self.rh.max(h);
+
+                Ok(result)
+
+            }
+
+        } else if self.cursor.y as u16 + h > self.size.h {
+            // If we overshoot upwards immediatly, the object is to large.
+            Err(self.cursor.y as u16 + h - self.size.h)
+        } else {
+
+            // This is the simple case, where we actually have space.
+
+            let result = self.cursor;
+
+            self.cursor.x += w as i16;
+            self.rh = self.rh.max(h);
+
+            Ok(result)
+
+        }
+
+    }
+
+}
+
+#[test]
+fn atlas_layout() {
+
+    let mut layout = AtlasLayout::new(PhysicalSize::new(100, 100));
+
+    // 1. 10x10 squares, all at y=0
+
+    for idx in 0..10 {
+
+        let pt = layout.advance(PhysicalSize::quad(10))
+            .expect("must have enough space");
+
+        assert_eq!(pt.y, 0, "y level must be 0");
+        assert_eq!(pt.x, idx as i16 * 10, "x must increase in steps of 10");
+
+    }
+
+    // 2. large bar, 80x10, above the sqaures at y=10
+
+    let pt2 = layout.advance(PhysicalSize::new(80, 10))
+        .expect("must have enough space (2)");
+
+    assert_eq!(pt2.y, 10, "large bar should be above the squares");
+    assert_eq!(pt2.x, 0, "large bar should be at the start of the row");
+
+    // 3. misc squares, above the bar at y=20
+
+    let pt3 = layout.advance(PhysicalSize::quad(30)).unwrap();
+    assert_eq!(pt3.y, 20);
+    assert_eq!(pt3.x, 0);
+
+    let pt4 = layout.advance(PhysicalSize::quad(50)).unwrap();
+    assert_eq!(pt4.y, 20);
+    assert_eq!(pt4.x, 30);
+
+    let pt5 = layout.advance(PhysicalSize::quad(20)).unwrap();
+    assert_eq!(pt5.y, 20);
+    assert_eq!(pt5.x, 80);
+
+    // 3. large bar, above the squares at y=70 (20+50)
+
+    println!("KEK1\n");
+    let pt6 = layout.advance(PhysicalSize::new(100, 20)).unwrap();
+    assert_eq!(pt6.y, 70);
+    assert_eq!(pt6.x, 0);
+
+    // 4. something that shouldn't fit :b
+
+    println!("KEKW\n");
+    let inv7 = layout.advance(PhysicalSize::new(55, 15));
+    assert_eq!(inv7, Err(5), "large object should not fit");
+
+    let mut layout2 = AtlasLayout::new(PhysicalSize::new(100, 100));
+    let pt21 = layout2.advance(PhysicalSize::quad(100))
+        .expect("100x100 should fit on a 100x100 layout");
+    assert_eq!(pt21.y, 0);
+    assert_eq!(pt21.x, 0);
+
+    let mut layout3 = AtlasLayout::new(PhysicalSize::new(100, 100));
+    let inv31 = layout3.advance(PhysicalSize::quad(101));
+    assert_eq!(inv31, Err(1), "101x101 should not fit on a 100x100 layout");
+
+}
+
+/// Used to manage textures.
+///
 /// Before using a texture with the renderer you have to upload it
 /// through this interface.
 pub struct GlTextureAtlas {
     /// A 2D texture storing the images.
     texture: gl::Texture,
-    /// The current size of the texture.
-    size: PhysicalSize,
+    /// The current layout, used to place new slots.
+    layout: AtlasLayout,
     /// Which size we can't exceed.
     maxsize: PhysicalSize,
     /// Which images we are currently storing.
@@ -154,22 +300,22 @@ pub struct GlTextureAtlas {
 
 impl GlTextureAtlas {
 
+    const MININCR: u16 = 12;
+
     pub fn new(renderer: &GlRenderer) -> Self {
 
         renderer.ctx.bind(&renderer.instance, None);
 
-        let maxsize = gl::get_integer_v(gl::Property::MaxTextureSize) as u16;
-        let texture = gl::gen_texture(gl::TextureType::Basic2D);
-
-        // important, so it can be sampeled
-        gl::tex_parameter_defaults(&texture);
+        let maxsize = gl::get_integer_v(
+            gl::Property::MaxTextureSize
+        ) as u16;
 
         Self {
-            texture,
-            size: PhysicalSize::MIN,
+            texture: gl::Texture::invalid(),
+            layout: AtlasLayout::new(PhysicalSize::MIN),
             maxsize: PhysicalSize::quad(maxsize),
             entries: Vec::new(),
-            mapping: Vec::new()
+            mapping: Vec::new(),
         }
 
     }
@@ -185,21 +331,20 @@ impl GlTextureAtlas {
 
         renderer.ctx.bind(&renderer.instance, None);
 
-        // Find a slot.
+        // Find a slot or return an error.
 
         let slot = loop {
-            let maybe = self.nextslot(size);
-            if let Some(slot) = maybe {
-                // We found a slot!
-                break slot;
-            } else if self.size.w * 2 < self.maxsize.w {
-                // Upsize the texture, after checking
-                // that the new size would be valid.
-                self.upsize();
-            } else {
-                // If we ran out of space, we return
-                // an errornous rect.
-                return TextureIndex::ERR
+            match self.layout.advance(size) {
+                Ok(slot) => break dbg!(slot),
+                Err(overshoot) => {
+                    let incr = overshoot.max(Self::MININCR);
+                    if self.layout.size.w + incr > self.maxsize.w &&
+                       self.layout.size.h + incr > self.maxsize.h {
+                        return TextureIndex::ERR
+                   } else {
+                       self.upsize(incr);
+                   }
+                }
             }
         };
 
@@ -220,68 +365,61 @@ impl GlTextureAtlas {
 
     }
 
+    /// Get the texture coordinates for a specific index relative
+    /// to the atlas texture. These coordinates are in a range from
+    /// 0..5000 which map to OpenGL's 0.0 .. 1.0 texture cordinates.
+    ///
+    /// (Short rant: Why the FUCK are clipspace and texture coordinates
+    /// using two different coordinate systems. THIS IS NOT OK WHY IS OPENGL
+    /// LIKE THIS WHY WHY WHY WHY WHY LIKE HOW MANY HOURS OF MY LIFE-)
     pub(crate) fn get(&self, index: TextureIndex) -> PhysicalRect {
-        self.entries[self.mapping[index.inner as usize] as usize].rect
-    }
 
-    fn nextslot(&mut self, slotsize: PhysicalSize) -> Option<PhysicalPoint> {
+        let orig = self.entries[self.mapping[index.inner as usize] as usize].rect;
 
-        // We use the layout algorithm to check if and where an
-        // additional slot would fit in a layout.
+        let x_range = 0f64 .. self.layout.size.w as f64;
+        let y_range = 0f64 .. self.layout.size.w as f64;
+        let target_range = 0f64 .. 5000f64;
 
-        let mut probe = TextureEntry {
-            mapping: 0, // not relevant
-            rect: PhysicalRect::new(
-                PhysicalPoint::ZERO, // not relevant
-                slotsize
-            ),
-        };
-
-        let iter = self.entries.iter_mut()
-            .chain(once(&mut probe));
-
-        let (.., slot) = Self::layout(iter, self.size).last()?; // only `None` if empty
-        //  ^^^^ this contains the position BEFORE the slot we want,
-        //       but only if it is a valid slot
-
-        if slot.x == i16::MAX {
-            None // This means we don't have space.
-        } else {
-            Some(slot)
-        }
+        PhysicalRect::new2(
+            maprange(orig.pos.x  as f64, x_range.clone(), target_range.clone()) as i16,
+            maprange(orig.pos.y  as f64, y_range.clone(), target_range.clone()) as i16,
+            maprange(orig.size.w as f64, x_range.clone(), target_range.clone()) as u16,
+            maprange(orig.size.h as f64, y_range.clone(), target_range.clone()) as u16
+        )
 
     }
 
-    fn upsize(&mut self) {
+    fn upsize(&mut self, incr: u16) {
 
         // Create a new, bigger texture.
 
-        self.size.w += 12;
-        self.size.h += 12;
+        let mut layout = AtlasLayout::new(PhysicalSize::new(
+            self.layout.size.w + incr,
+            self.layout.size.h + incr,
+        ));
 
         let new = gl::gen_texture(gl::TextureType::Basic2D);
 
+        // important, so it can be sampeled
+        gl::tex_sensible_defaults(&new);
+
         gl::tex_image_2d(
             &new,
-            self.size,
+            layout.size,
             gl::GpuColorFormat::Rgba8,
             gl::ColorFormat::Rgba,
             gl::DataType::U8,
             None
         );
 
-        // gl::clear_tex_image(&new, &[0.0f32; 4]);
-
-        // We use this chance to sort them aswell, for a more
-        // efficient spacial layout.
+        // We use this chance to sort the entries, for a more
+        // efficient spacial layout. We also need to update the mapping.
 
         self.entries.sort_unstable_by(|lhs, rhs| {
             let ls = lhs.rect.size.w as usize * lhs.rect.size.h as usize;
             let rs = rhs.rect.size.w as usize * rhs.rect.size.h as usize;
             ls.cmp(&rs)
         });
-
-        // We need to update the mapping.
 
         for (idx, entry) in self.entries.iter().enumerate() {
             self.mapping[entry.mapping as usize] = idx as u16;
@@ -293,55 +431,22 @@ impl GlTextureAtlas {
 
         gl::frame_buffer_texture_2d(&srcbuf, gl::AttachmentPoint::Color0, &self.texture);
 
-        for (entry, newpos) in Self::layout(self.entries.iter_mut(), self.size) {
+        for entry in self.entries.iter_mut() {
+            let newpos = layout.advance(entry.rect.size)
+                .expect("layout must be valid, since the new entry was not added yet");
             // Copy from the original rect, still stored in the rect
             //  to the new position `newpos`.
             gl::copy_tex_sub_image_2d((&srcbuf, entry.rect.pos), (&new, newpos), entry.rect.size);
-            // Make sure to update the size and position of the entry accordingly.
+            // Make sure to update the position of the entry accordingly.
             entry.rect.pos = newpos;
         }
 
-        // After this the atlas is fully present in the new texture.
-        // So we exchange it with the old one.
+        // After this the atlas is fully present in the
+        // new texture, so we exchange it with the old one.
+        // Also we need to update the layout.
 
         self.texture = new;
-
-    }
-
-    /// Calculates slot positions inside an atlas based on their sizes and order.
-    fn layout<'d>(mut iter: impl Iterator<Item = &'d mut TextureEntry>, size: PhysicalSize) -> impl Iterator<Item = (&'d mut TextureEntry, PhysicalPoint)> {
-
-        let mut rowheight = 0i16;
-        let mut nextpos = PhysicalPoint::ZERO;
-
-        iter::from_fn(move || {
-
-            let entry = iter.next()?;
-
-            let w = entry.rect.size.w as i16;
-            let h = entry.rect.size.h as i16;
-
-            // wrap row if needed
-            if nextpos.x + w > size.w as i16 {
-                nextpos.y += rowheight;
-                rowheight = 0;
-                nextpos.x = 0;
-            }
-
-            let pos = nextpos;
-
-            nextpos.x += w;
-            rowheight = rowheight.max(h);
-
-            if size.w == 0 || size.h == 0 {
-                Some((entry, PhysicalPoint::MAX))
-            } else if nextpos.y > size.h as i16 {
-                Some((entry, PhysicalPoint::MAX))
-            } else {
-                Some((entry, pos))
-            }
-
-        })
+        self.layout = layout;
 
     }
 
@@ -360,7 +465,7 @@ impl GlTextureAtlas {
         gl::frame_buffer_texture_2d(&fbo, gl::AttachmentPoint::Color0, &self.texture);
 
         unsafe { gl::read_pixels(
-            &fbo, PhysicalRect::new(PhysicalPoint::ZERO, self.size),
+            &fbo, PhysicalRect::new(PhysicalPoint::ZERO, self.layout.size),
             gl::ColorFormat::Rgba, gl::DataType::U8
         ) }
 
@@ -466,8 +571,8 @@ impl GlRenderer {
 
         self.ctx.bind(&self.instance, None);
 
-        gl::active_texture(0, &atlas.texture);
         gl::resize_viewport(storage.size);
+
         self.shape.draw(&storage.framebuffer, geometry, atlas, storage.size);
 
     }
@@ -669,11 +774,11 @@ impl ShapeRenderer {
 
             for (vertex, index) in zip(vertices, ivertices) {
 
-                let virtual_x = vertex.pos[0];
-                let virtual_y = vertex.pos[1];
+                let vertex_x = vertex.pos[0];
+                let vertex_y = vertex.pos[1];
 
-                let physical_x = virtual_x as f64 * (instance.size.w as f64 / 5000.0);
-                let physical_y = virtual_y as f64 * (instance.size.h as f64 / 5000.0);
+                let physical_x = vertex_x as f64 * (instance.size.w as f64 / 5000.0);
+                let physical_y = vertex_y as f64 * (instance.size.h as f64 / 5000.0);
                 //                                                              / ^^^^^^
                 //      This is the scaling where 5000 means a 1.0 scale. So for a
                 //      filled rect a scale of 5000 would be a 5000x5000 rect.
@@ -713,11 +818,19 @@ impl ShapeRenderer {
                         let y_low  = coords.pos.y as f64;
                         let y_high = coords.size.h as f64 + y_low;
 
-                        let x = affine_transform(virtual_x as f64, 0f64..5000f64, x_low..x_high);
-                        let y = affine_transform(virtual_y as f64, 0f64..5000f64, y_low..y_high);
+                        // let x = maprange(vertex_x as f64, 0f64..5000f64, x_low..x_high);
+                        // let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);
+
+                        let x = vertex_x;
+                        let y = vertex_y;
 
                         let offset_x = x as i16 + offset.x;
                         let offset_y = y as i16 + offset.y;
+
+                        eprintln!("final coords: {}, {}", offset_x, offset_y);
+
+                        // TODO: should negative offsets that make coords be < 0 be allowed,
+                        // hard error or a soft error like right now
 
                         isatlas = true;
                         packed_texture =
@@ -765,8 +878,9 @@ impl ShapeRenderer {
         gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
 
         // Make atlas texture accessible.
-        gl::active_texture(0, &atlas.texture);
+        gl::active_texture(0);
         gl::uniform_1i(&self.program, self.sampler, 0);
+        gl::bind_texture(&atlas.texture);
 
         // Render all non-instanced shapes.
         let r = &self.prepared.singular;
@@ -789,7 +903,8 @@ impl ShapeRenderer {
 
 }
 
-fn affine_transform(v: f64, lhs: Range<f64>, rhs: Range<f64>) -> f64 {
+/// Also called "affine transform" which sounds very cool.
+fn maprange(v: f64, lhs: Range<f64>, rhs: Range<f64>) -> f64 {
     rhs.start + ((v - lhs.start) * (rhs.end - rhs.start)) / (lhs.end - lhs.start)
 }
 

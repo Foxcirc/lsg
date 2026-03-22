@@ -20,13 +20,16 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut atlas = render::GlTextureAtlas::new(&renderer);
 
     let window = desktop::Window::new(&evl);
-    window.sizehint(PhysicalSize::quad(12));
+    window.sizehint(PhysicalSize::quad(250));
 
     let mut surface = render::GlSurface::new(&renderer, &window);
     let mut storage = render::GlRenderStorage::new(&renderer, window.size());
 
     println!("UPLOAD!");
     let index = atlas.upload(&renderer, &[255; 12*12*4], PhysicalSize::quad(12));
+    let index = atlas.upload(&renderer, &[200; 12*12*4], PhysicalSize::quad(12));
+    let index = atlas.upload(&renderer, &[150; 12*12*4], PhysicalSize::quad(12));
+    let index = atlas.upload(&renderer, &[100; 12*12*4], PhysicalSize::quad(12));
 
     loop {
         match block_on(evl.next())? {
@@ -77,7 +80,7 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     println!("DOWNLOAD!");
     let data = atlas.inspect();
 
-    println!("data = {:?}", data);
+    // println!("data = {:?}", data);
     println!("data.len = {:?}", data.len());
 
     Ok(())
