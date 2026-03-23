@@ -623,6 +623,8 @@ impl Window {
     /// This function is mandatory and you must call it, otherwise the window will behave weirdly.
     pub fn present(&self) {
 
+        // TODO: with the current logic I think we could call this from withing the event loop
+        // everytime a redraw event is received! TRY  THAT SHIT
         let evb = &mut self.evl.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
 

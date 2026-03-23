@@ -2,7 +2,7 @@
 use common::{IsSurface, LogicalPoint, LogicalSize, PhysicalPoint, PhysicalSize, Shape};
 use desktop::{Event, WindowEvent};
 use futures_lite::future::block_on;
-use render::PartialVertex;
+use render::{PartialVertex, TextureIndex};
 
 use std::sync::Arc;
 
@@ -25,11 +25,10 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut surface = render::GlSurface::new(&renderer, &window);
     let mut storage = render::GlRenderStorage::new(&renderer, window.size());
 
-    println!("UPLOAD!");
-    let index = atlas.upload(&renderer, &[255; 12*12*4], PhysicalSize::quad(12));
-    let index = atlas.upload(&renderer, &[200; 12*12*4], PhysicalSize::quad(12));
-    let index = atlas.upload(&renderer, &[150; 12*12*4], PhysicalSize::quad(12));
-    let index = atlas.upload(&renderer, &[100; 12*12*4], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[255; 12*12*4], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[200; 12*12*4], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[150; 12*12*4], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[100; 12*12*4], PhysicalSize::quad(12));
 
     loop {
         match block_on(evl.next())? {
@@ -54,19 +53,18 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             target: render::GeometryTarget { geometry: 0, shape: 0 },
                             pos: LogicalPoint::ZERO,
                             size: LogicalSize::from(window.size()),
-                            texture: render::TextureKind::Atlas(index, PhysicalPoint::ZERO),
+                            texture: render::TextureKind::Atlas(TextureIndex::INSPECT, PhysicalPoint::ZERO),
                         }
                     ]
                 };
 
-                println!("DRAW");
                 window.present();
                 renderer.draw(&geometry, &atlas, &storage);
                 renderer.blit(&surface, &storage);
                 renderer.swap(&surface);
+
             },
             Event::Window { event: WindowEvent::Resize { size, .. }, .. } => {
-                println!("RESIZE: {size:?}");
                 surface.resize(&renderer, size);
                 storage.resize(&renderer, size);
             },
@@ -77,7 +75,6 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("DOWNLOAD!");
     let data = atlas.inspect();
 
     // println!("data = {:?}", data);

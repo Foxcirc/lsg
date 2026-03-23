@@ -335,7 +335,7 @@ impl GlTextureAtlas {
 
         let slot = loop {
             match self.layout.advance(size) {
-                Ok(slot) => break dbg!(slot),
+                Ok(slot) => break slot,
                 Err(overshoot) => {
                     let incr = overshoot.max(Self::MININCR);
                     if self.layout.size.w + incr > self.maxsize.w &&
@@ -373,6 +373,12 @@ impl GlTextureAtlas {
     /// using two different coordinate systems. THIS IS NOT OK WHY IS OPENGL
     /// LIKE THIS WHY WHY WHY WHY WHY LIKE HOW MANY HOURS OF MY LIFE-)
     pub(crate) fn get(&self, index: TextureIndex) -> PhysicalRect {
+
+        if index == TextureIndex::ERR {
+            return PhysicalRect::ZERO
+        } else if index == TextureIndex::INSPECT {
+            return PhysicalRect::new2(0, 0, 5000, 5000)
+        }
 
         let orig = self.entries[self.mapping[index.inner as usize] as usize].rect;
 
@@ -503,13 +509,14 @@ pub enum TextureKind {
     Atlas(TextureIndex, PhysicalPoint),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureIndex {
     inner: u16,
 }
 
 impl TextureIndex {
-    pub const ERR: Self = Self { inner: u16::MAX };
+    pub const ERR:     Self = Self { inner: u16::MAX };
+    pub const INSPECT: Self = Self { inner: u16::MAX - 1 };
 }
 
 #[derive(Debug, Clone)]
@@ -818,16 +825,11 @@ impl ShapeRenderer {
                         let y_low  = coords.pos.y as f64;
                         let y_high = coords.size.h as f64 + y_low;
 
-                        // let x = maprange(vertex_x as f64, 0f64..5000f64, x_low..x_high);
-                        // let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);
-
-                        let x = vertex_x;
-                        let y = vertex_y;
+                        let x = maprange(vertex_x as f64, 0f64..5000f64, x_low..x_high);
+                        let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);
 
                         let offset_x = x as i16 + offset.x;
                         let offset_y = y as i16 + offset.y;
-
-                        eprintln!("final coords: {}, {}", offset_x, offset_y);
 
                         // TODO: should negative offsets that make coords be < 0 be allowed,
                         // hard error or a soft error like right now

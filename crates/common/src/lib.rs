@@ -11,6 +11,7 @@ pub struct PhysicalRect {
 
 impl PhysicalRect {
     pub const MAX: Self = Self::new(PhysicalPoint::MIN, PhysicalSize::MAX);
+    pub const ZERO: Self = Self::new(PhysicalPoint::ZERO, PhysicalSize::MIN);
     pub const fn new(pos: PhysicalPoint, size: PhysicalSize) -> Self {
         Self { pos, size }
     }
