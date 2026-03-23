@@ -548,20 +548,22 @@ impl GlRenderer {
         let instance = egl::Instance::new(display)?;
         gl::load_with(|name| instance.get_proc_address(name))?;
 
+        #[cfg(debug_assertions)]
         let config = egl::Config::build()
-            .api(egl::Api::OpenGl)
-            .version(4, 5)
-            .debug(true) // TODO: remove
-            .profile(egl::Profile::Core)
+            .api(egl::Api::Es3)
+            .version(3, 3)
+            .finish(&instance)?;
+
+        #[cfg(not(debug_assertions))]
+        let config = egl::Config::build()
+            .api(egl::Api::Es3)
+            .version(3, 0)
             .finish(&instance)?;
 
         let ctx = egl::Context::new(&instance, &config)?;
 
         // bind for initialization
         ctx.bind(&instance, None);
-
-        gl::debug_message_callback(gl::debug_message_default_handler);
-        gl::debug_message_control(Some(gl::DebugSeverity::Notification), None, None, true);
 
         let shape = ShapeRenderer::new()?;
 

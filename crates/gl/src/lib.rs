@@ -53,6 +53,58 @@ pub fn load_with<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: 
 
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlError {
+    /// An invalid enumerated parameter was specified.
+    InvalidEnum,
+    /// Numeric argument was out of range.
+    InvalidValue,
+    /// The operation is not allowed in the current state.
+    InvalidOperation,
+    /// The framebuffer was incomplete.
+    IncompleteFramebuffer,
+    /// There was not enoough memory. This could be CPU or GPU memory.
+    /// After this error the context is in an unspecified state.
+    OutofMemory,
+
+}
+
+impl fmt::Display for GlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl StdError for GlError {}
+
+pub fn get_error() -> Result<(), GlError> {
+    let result = unsafe { gl::GetError() };
+    match result {
+        gl::NO_ERROR     => Ok(()),
+        gl::INVALID_ENUM          => Err(GlError::InvalidEnum),
+        gl::INVALID_VALUE         => Err(GlError::InvalidValue),
+        gl::INVALID_OPERATION     => Err(GlError::InvalidOperation),
+        gl::INVALID_FRAMEBUFFER_OPERATION => Err(GlError::IncompleteFramebuffer),
+        gl::OUT_OF_MEMORY                 => Err(GlError::OutofMemory),
+        _ => unreachable!()
+    }
+}
+
+#[cfg(debug_assertions)]
+#[track_caller]
+fn check_error() {
+    // We treat all errors as fatal.
+    match get_error() {
+        Ok(()) => (),
+        Err(err) => panic!("OpenGL Hard-Error: {:?}", err),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn check_error() {
+    // We don't check.
+}
+
 pub trait DebugCallback: Fn(DebugSource, DebugType, DebugSeverity, u32, &str) {}
 impl<F: Fn(DebugSource, DebugType, DebugSeverity, u32, &str)> DebugCallback for F {}
 
@@ -97,8 +149,11 @@ pub fn debug_message_callback<F: DebugCallback + Send + 'static>(f: F) {
 
     unsafe { gl::DebugMessageCallback(Some(debug_callback), null_mut()) };
 
+    check_error();
+
 }
 
+#[track_caller]
 pub fn debug_message_control(severity: Option<DebugSeverity>, source: Option<DebugSource>, kind: Option<DebugType>, enabled: bool) {
     unsafe { gl::DebugMessageControl(
         source   .map(|val| val as u32).unwrap_or(gl::DONT_CARE),
@@ -108,6 +163,7 @@ pub fn debug_message_control(severity: Option<DebugSeverity>, source: Option<Deb
         null(), // ids (array)
         enabled as u8
     ) }
+    check_error();
 }
 
 /// # Panics
@@ -128,6 +184,8 @@ pub fn debug_message_insert(severity: DebugSeverity, source: DebugSource, id: u3
         msg.len() as i32,
         msg.as_ptr() as *const i8,
     ) }
+
+    check_error();
 
 }
 
@@ -221,6 +279,7 @@ impl DebugSource {
 pub fn get_integer_v(property: impl IsProperty) -> usize {
     let mut out = -1;
     unsafe { gl::GetIntegerv(property.id(), &mut out) };
+    check_error();
     match out {
         -1 => panic!("property unknown"),
         val => val as usize,
@@ -307,6 +366,7 @@ impl Drop for Shader {
     fn drop(&mut self) {
         if self.id != 0 {
             unsafe { gl::DeleteShader(self.id) }
+            check_error();
         }
     }
 }
@@ -326,6 +386,10 @@ pub fn create_shader(kind: ShaderType, source: &str) -> Result<Shader, ShaderErr
     unsafe { gl::ShaderSource(id, 1, &source_ptr, (&source_len as *const usize).cast()) };
     unsafe { gl::CompileShader(id) };
 
+    check_error();
+    check_error();
+    check_error();
+
     if !shader_compile_status(id) {
 
         let len = shader_info_log_length(id);
@@ -340,6 +404,7 @@ pub fn create_shader(kind: ShaderType, source: &str) -> Result<Shader, ShaderErr
 
         let mut written = 0; // not actually used
         unsafe { gl::GetShaderInfoLog(id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
+        check_error();
 
         let msg = CString::from_vec_with_nul(buf).unwrap();
         Err(ShaderError { msg, kind })
@@ -353,12 +418,14 @@ pub fn create_shader(kind: ShaderType, source: &str) -> Result<Shader, ShaderErr
 fn shader_compile_status(shader: u32) -> bool {
     let mut out = 0;
     unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut out) };
+    check_error();
     out as u8 == gl::TRUE
 }
 
 fn shader_info_log_length(shader: u32) -> usize {
     let mut out = 0;
     unsafe { gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut out) };
+    check_error();
     out as usize
 }
 
@@ -405,6 +472,7 @@ impl Drop for Program {
     fn drop(&mut self) {
         if self.id != 0 && !self.keepalive {
             unsafe { gl::DeleteProgram(self.id) }
+            check_error();
         }
     }
 }
@@ -416,8 +484,10 @@ impl Program {
 }
 
 pub fn create_program() -> Program {
+    let id = unsafe { gl::CreateProgram() };
+    check_error();
     Program {
-        id: unsafe { gl::CreateProgram() },
+        id,
         shaders: Vec::with_capacity(2),
         keepalive: false,
     }
@@ -425,12 +495,14 @@ pub fn create_program() -> Program {
 
 pub fn attach_shader(program: &mut Program, shader: Shader) {
     unsafe { gl::AttachShader(program.id, shader.id) }
+    check_error();
     program.shaders.push(shader);
 }
 
 pub fn link_program(mut program: Program) -> Result<LinkedProgram, LinkError> {
 
     unsafe { gl::LinkProgram(program.id) }
+    check_error();
 
     if !program_compile_status(program.id) {
 
@@ -440,6 +512,7 @@ pub fn link_program(mut program: Program) -> Result<LinkedProgram, LinkError> {
         buf.resize(len, 0);
 
         unsafe { gl::GetProgramInfoLog(program.id, len as i32, &mut written, buf.as_mut_ptr().cast()) };
+        check_error();
 
         let msg = CString::from_vec_with_nul(buf).unwrap();
 
@@ -455,12 +528,14 @@ pub fn link_program(mut program: Program) -> Result<LinkedProgram, LinkError> {
 fn program_compile_status(program: u32) -> bool {
     let mut out = 0;
     unsafe { gl::GetProgramiv(program, gl::LINK_STATUS, &mut out) };
+    check_error();
     out as u8 == gl::TRUE
 }
 
 fn program_info_log_length(program: u32) -> usize {
     let mut out = 0;
     unsafe { gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut out) };
+    check_error();
     out as usize
 }
 
@@ -494,6 +569,7 @@ impl Drop for LinkedProgram {
     fn drop(&mut self) {
         if self.id != 0 {
             unsafe { gl::DeleteProgram(self.id) }
+            check_error();
         }
     }
 }
@@ -507,12 +583,14 @@ impl LinkedProgram {
 
 pub fn bind_program(program: &LinkedProgram) {
     unsafe { gl::UseProgram(program.id) }
+    check_error();
 }
 
 pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<AttribLocation, AttribUnknown> {
     let mut buf = [0; 1024];
     let cname = to_small_cstr(&mut buf, name);
     let result = unsafe { gl::GetAttribLocation(program.id, cname.as_ptr()) };
+    check_error();
     if result == -1 {
         Err(AttribUnknown)
     } else {
@@ -549,6 +627,7 @@ impl Drop for VertexArray {
     fn drop(&mut self) {
         if self.id != 0 {
             unsafe { gl::DeleteVertexArrays(1, &self.id); }
+            check_error();
         }
     }
 }
@@ -563,16 +642,19 @@ impl VertexArray {
 pub fn gen_vertex_array() -> VertexArray {
     let mut id = 0;
     unsafe { gl::GenVertexArrays(1, &mut id) };
+    check_error();
     VertexArray { id }
 }
 
 pub fn bind_vertex_array(this: &VertexArray) {
     unsafe { gl::BindVertexArray(this.id) }
+    check_error();
 }
 
 pub fn gen_buffer(kind: BufferType) -> Buffer {
     let mut id = 0;
     unsafe { gl::GenBuffers(1, &mut id) };
+    check_error();
     Buffer { id, kind }
 }
 
@@ -590,10 +672,13 @@ pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
         usage as u32
     ) }
 
+    check_error();
+
 }
 
 pub fn bind_buffer(this: &Buffer) {
     unsafe { gl::BindBuffer(this.kind as u32, this.id) }
+    check_error();
 }
 
 #[derive(Debug)]
@@ -606,6 +691,7 @@ impl Drop for Buffer {
     fn drop(&mut self) {
         if self.id != 0 {
             unsafe { gl::DeleteBuffers(1, &self.id); }
+            check_error();
         }
     }
 }
@@ -664,26 +750,31 @@ impl AttribVec {
 pub fn vertex_attrib_1f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib1f(loc.into().index, x) };
+    check_error();
 }
 
 pub fn vertex_attrib_2f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32, y: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib2f(loc.into().index, x, y) };
+    check_error();
 }
 
 pub fn vertex_attrib_3f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32, y: f32, z: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib3f(loc.into().index, x, y, z) };
+    check_error();
 }
 
 pub fn vertex_attrib_1i(vao: &VertexArray, loc: impl Into<AttribLocation>, x: i32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttribI1i(loc.into().index, x) };
+    check_error();
 }
 
 pub fn vertex_attrib_1u(vao: &VertexArray, loc: impl Into<AttribLocation>, x: u32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttribI1ui(loc.into().index, x) };
+    check_error();
 }
 
 #[derive(Debug, Default)]
@@ -724,6 +815,8 @@ pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<Att
             start as *const _,
         ) };
 
+        check_error();
+
     } else {
 
         // why the FUCK is there another function for this and there is no warning
@@ -736,9 +829,13 @@ pub fn vertex_attrib_pointer(vao: &VertexArray, vbo: &Buffer, loc: impl Into<Att
             start as *const _,
         ) };
 
+        check_error();
+
     };
 
+
     unsafe { gl::EnableVertexAttribArray(index) };
+    check_error();
 
 }
 
@@ -767,6 +864,7 @@ pub fn vertex_attrib_divisor(vao: &VertexArray, location: u32, divisor: Divisor)
         Divisor::PerInstances(n) => n,
     };
     unsafe { gl::VertexAttribDivisor(location, value) };
+    check_error();
 }
 
 #[derive(Debug)]
@@ -778,6 +876,7 @@ impl Drop for FrameBuffer {
     fn drop(&mut self) {
         if self.id != 0 {
             unsafe { gl::DeleteFramebuffers(1, &self.id) }
+            check_error();
         }
     }
 }
@@ -795,25 +894,31 @@ impl FrameBuffer {
 pub fn gen_frame_buffer() -> FrameBuffer {
     let mut id = 0;
     unsafe { gl::GenFramebuffers(1, &mut id) };
+    check_error();
     FrameBuffer { id }
 }
 
 pub fn bind_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, fbo.id) };
+    check_error();
 }
 
 pub fn bind_read_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::READ_FRAMEBUFFER, fbo.id) };
+    check_error();
 }
 
 pub fn bind_draw_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, fbo.id) };
+    check_error();
 }
 
 // "36053" means OK
 pub fn check_frame_buffer_status(fbo: &FrameBuffer) -> u32 {
     bind_frame_buffer(fbo);
-    unsafe { gl::CheckFramebufferStatus(gl::FRAMEBUFFER) }
+    let result = unsafe { gl::CheckFramebufferStatus(gl::FRAMEBUFFER) };
+    check_error();
+    result
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -832,6 +937,7 @@ pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, t
         texture.id as u32,
         0i32, // no lods
     ) }
+    check_error();
 }
 
 pub fn frame_buffer_render_buffer(fbo: &FrameBuffer, attachment: AttachmentPoint, rbo: &RenderBuffer) {
@@ -842,11 +948,13 @@ pub fn frame_buffer_render_buffer(fbo: &FrameBuffer, attachment: AttachmentPoint
         gl::RENDERBUFFER,
         rbo.id,
     ) }
+    check_error();
 }
 
 pub fn draw_buffers(fbo: &FrameBuffer, buffers: &[AttachmentPoint]) {
     bind_frame_buffer(fbo);
     unsafe { gl::DrawBuffers(buffers.len() as i32, buffers.as_ptr().cast()) }
+    check_error();
 }
 
 #[track_caller]
@@ -861,6 +969,7 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
     let mut safe = [0.0f32; 4];
     safe[..value.len()].copy_from_slice(value);
     unsafe { gl::ClearBufferfv(param1, param2, safe.as_ptr()) }
+    check_error();
 }
 
 /// Copy a region from `source` (fbo) to `target` (fbo).
@@ -877,6 +986,7 @@ pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBu
         gl::COLOR_BUFFER_BIT,
         filter as u32,
     ) };
+    check_error();
 }
 
 /// Read pixels from a frame buffer.
@@ -912,6 +1022,7 @@ pub unsafe fn read_pixels(fbo: &FrameBuffer, rect: PhysicalRect, fpixel: ColorFo
         fdata as u32,
         buf.as_mut_ptr().cast(),
     ) };
+    check_error();
 
     buf
 
@@ -931,6 +1042,7 @@ pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPoint), target: (&Te
         target.1.x as i32, target.1.y as i32, // target offset
         size.w as i32, size.h as i32, // size
     ) };
+    check_error();
 }
 
 /// Color value is in RGBA-f32 format.
@@ -947,6 +1059,7 @@ pub fn clear_tex_image(texture: &Texture, value: &[f32]) {
         gl::RGBA, gl::FLOAT,
         safe.as_ptr().cast(),
     ) };
+    check_error();
 
 }
 
@@ -959,6 +1072,7 @@ impl Drop for RenderBuffer {
     fn drop(&mut self) {
         if self.id != 0 {
             unsafe { gl::DeleteRenderbuffers(1, &self.id) }
+            check_error();
         }
     }
 }
@@ -973,21 +1087,25 @@ impl RenderBuffer {
 pub fn gen_render_buffer() -> RenderBuffer {
     let mut id = 0;
     unsafe { gl::GenRenderbuffers(1, &mut id) };
+    check_error();
     RenderBuffer { id }
 }
 
 pub fn bind_render_buffer(this: &RenderBuffer) {
     unsafe { gl::BindRenderbuffer(gl::RENDERBUFFER, this.id) }
+    check_error();
 }
 
 pub fn render_buffer_storage(this: &RenderBuffer, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorage(gl::RENDERBUFFER, format as u32, size.w as i32, size.h as i32); }
+    check_error();
 }
 
 pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.w as i32, size.h as i32); }
+    check_error();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1037,6 +1155,7 @@ impl Drop for Texture {
     fn drop(&mut self) {
         if self.id != 0 {
             unsafe { gl::DeleteTextures(1, &self.id) }
+            check_error();
         }
     }
 }
@@ -1065,11 +1184,13 @@ impl Texture {
 pub fn gen_texture(kind: TextureType) -> Texture {
     let mut id = 0;
     unsafe { gl::GenTextures(1, &mut id) };
+    check_error();
     Texture { id, kind }
 }
 
 pub fn bind_texture(texture: &Texture) {
     unsafe { gl::BindTexture(texture.kind as u32, texture.id) };
+    check_error();
 }
 
 #[track_caller]
@@ -1104,6 +1225,8 @@ pub fn tex_image_2d<'d>(
         ptr.cast()
     ) }
 
+    check_error();
+
 }
 
 /// Not available in ES versions.
@@ -1117,6 +1240,7 @@ pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: GpuCo
         size.h as i32,
         1,
     ); }
+    check_error();
 }
 
 pub fn tex_storage_3d(texture: &Texture, size: PhysicalSize, depth: u16, fcolor: GpuColorFormat) {
@@ -1128,7 +1252,8 @@ pub fn tex_storage_3d(texture: &Texture, size: PhysicalSize, depth: u16, fcolor:
         size.w as i32,
         size.h as i32,
         depth as i32,
-    ) }
+    ) };
+    check_error();
 }
 
 #[track_caller]
@@ -1152,6 +1277,7 @@ pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorForm
         fdata as u32,
         data.as_ptr().cast()
     ); }
+    check_error();
 
 }
 
@@ -1180,6 +1306,7 @@ pub fn tex_parameter_i(texture: &Texture, property: TexParam, value: TexValue) {
         property as u32,
         value as i32
     ) }
+    check_error();
 }
 
 /// Used to set some texture properties that really
@@ -1195,6 +1322,7 @@ pub fn tex_sensible_defaults(texture: &Texture) {
 pub fn pixel_store_i(texture: &Texture, param: TexParam, value: i32) {
     bind_texture(texture);
     unsafe { gl::PixelStorei(param as u32, value) };
+    check_error();
 }
 
 /// Will also bind the texture!
@@ -1204,6 +1332,7 @@ pub fn active_texture(location: usize) {
     debug_assert!(location < 32, "should not bind more then 32 textures");
     let param = gl::TEXTURE0 + location as u32;
     unsafe { gl::ActiveTexture(param) };
+    check_error();
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1257,6 +1386,7 @@ pub fn uniform_location(program: &LinkedProgram, name: &str) -> Result<UniformLo
     let mut buf = [0; 1024];
     let cname = to_small_cstr(&mut buf, name);
     let index = unsafe { gl::GetUniformLocation(program.id, cname.as_ptr()) };
+    check_error();
     if index == -1 {
         Err(UniformUnknown)
     } else {
@@ -1287,21 +1417,25 @@ pub struct UniformUnknown;
 pub fn uniform_1i(program: &LinkedProgram, uniform: UniformLocation, val: i32) {
     bind_program(program);
     unsafe { gl::Uniform1i(uniform.index as i32, val) };
+    check_error();
 }
 
 pub fn uniform_1ui(program: &LinkedProgram, uniform: UniformLocation, val: u32) {
     bind_program(program);
     unsafe { gl::Uniform1ui(uniform.index as i32, val) };
+    check_error();
 }
 
 pub fn uniform_3f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32) {
     bind_program(program);
     unsafe { gl::Uniform3f(uniform.index as i32, x, y, z) };
+    check_error();
 }
 
 pub fn uniform_4f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32, w: f32) {
     bind_program(program);
     unsafe { gl::Uniform4f(uniform.index as i32, x, y, z, w) };
+    check_error();
 }
 
 #[repr(u32)]
@@ -1312,10 +1446,12 @@ pub enum Capability {
 
 pub fn enable(capability: Capability) {
     unsafe { gl::Enable(capability as u32) }
+    check_error();
 }
 
 pub fn disable(capability: Capability) {
     unsafe { gl::Disable(capability as u32) }
+    check_error();
 }
 
 #[repr(u32)]
@@ -1328,6 +1464,7 @@ pub enum BlendFunc {
 
 pub fn blend_func(src: BlendFunc, dst: BlendFunc) {
     unsafe { gl::BlendFunc(src as u32, dst as u32) }
+    check_error();
 }
 
 pub fn blend_func_i(attachment: AttachmentPoint, func1: BlendFunc, func2: BlendFunc) {
@@ -1336,22 +1473,27 @@ pub fn blend_func_i(attachment: AttachmentPoint, func1: BlendFunc, func2: BlendF
         AttachmentPoint::Color1 => 1,
     };
     unsafe { gl::BlendFunci(idx, func1 as u32, func2 as u32) }
+    check_error();
 }
 
 pub fn blend_func_seperate(src1: BlendFunc, dst1: BlendFunc, src2: BlendFunc, dst2: BlendFunc) {
     unsafe { gl::BlendFuncSeparate(src1 as u32, dst1 as u32, src2 as u32, dst2 as u32) }
+    check_error();
 }
 
 pub fn depth_mask(enabled: bool) {
     unsafe { gl::DepthMask(enabled as u8) }
+    check_error();
 }
 
 pub fn resize_viewport(size: PhysicalSize) {
     unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
+    check_error();
 }
 
 pub fn point_size(diameter: f32) {
     unsafe { gl::PointSize(diameter); }
+    check_error();
 }
 
 /// `count` is the number of vertices (not primitives).
@@ -1360,6 +1502,7 @@ pub fn draw_arrays(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawArrays(primitive as u32, start as i32, count as i32) }
+    check_error();
 }
 
 /// Expects u32 as indices right now.
@@ -1370,6 +1513,7 @@ pub fn draw_elements(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArr
     bind_program(program);
     bind_vertex_array(vao);
     unsafe { gl::DrawElements(primitive as u32, count as i32, gl::UNSIGNED_INT, (start * size_of::<u32>()) as *const void) }
+    check_error();
 }
 
 #[repr(C)]
@@ -1401,6 +1545,7 @@ pub fn draw_arrays_indirect(fbo: &FrameBuffer, program: &LinkedProgram, vao: &Ve
     bind_buffer(commands);
     assert!(commands.kind == BufferType::DrawIndirect);
     unsafe { gl::DrawArraysIndirect(primitive as u32, start as *const void) }
+    check_error();
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1416,11 +1561,14 @@ pub fn clear(fbo: &FrameBuffer, r: f32, g: f32, b: f32, alpha: f32) {
     bind_frame_buffer(fbo);
     unsafe { gl::ClearColor(r, g, b, alpha) };
     unsafe { gl::Clear(gl::COLOR_BUFFER_BIT) };
+    check_error();
+    check_error();
 }
 
 /// Sets both front and back buffer.
 pub fn polygon_mode(mode: PolygonMode) {
     unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, mode as u32) }
+    check_error();
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -95,18 +95,11 @@ impl Instance {
 pub enum Api {
     #[default]
     OpenGl,
-    Es3,
+    Es3, // NOTE: Yes, this is supposed to be Es3.
 }
 
-#[derive(Default)]
-pub enum Profile {
-    #[default]
-    Core,
-    Compat,
-}
-
-/// The sizes of the buffers for this context and surfaces
-/// used with it.
+/// The sizes of the buffers for this
+/// context and surfaces used with it.
 pub struct BufferDesc {
     pub rgba: (usize, usize, usize, usize),
     pub depth: usize,
@@ -126,7 +119,6 @@ impl Default for BufferDesc {
 #[derive(Default)]
 pub struct ConfigBuilder {
     pub api: Api,
-    pub profile: Profile,
     pub version: [usize; 2],
     pub debug: bool,
     pub sizes: BufferDesc,
@@ -136,11 +128,6 @@ impl ConfigBuilder {
 
     pub fn api(mut self, api: Api) -> Self {
         self.api = api;
-        self
-    }
-
-    pub fn profile(mut self, profile: Profile) -> Self {
-        self.profile = profile;
         self
     }
 
@@ -161,44 +148,51 @@ impl ConfigBuilder {
 
     pub fn finish(self, instance: &Instance) -> Result<Config, EglError> {
 
-        let attribs = [
+        // egl::RENDERABLE_TYPE, match self.api {
+        //     Api::OpenGl => egl::OPENGL_BIT,
+        //     Api::Es3    => egl::OPENGL_ES3_BIT,
+        // },
 
-            // surface attribs
-
-            egl::SURFACE_TYPE, egl::WINDOW_BIT, // only window surfaces are supported for now
-
-            egl::RENDERABLE_TYPE, match self.api {
-                Api::OpenGl => egl::OPENGL_BIT,
-                Api::Es3    => egl::OPENGL_ES3_BIT,
-            },
-
-            egl::RED_SIZE,     self.sizes.rgba.0  as i32,
-            egl::GREEN_SIZE,   self.sizes.rgba.1  as i32,
-            egl::BLUE_SIZE,    self.sizes.rgba.2  as i32,
-            egl::ALPHA_SIZE,   self.sizes.rgba.3  as i32,
-            egl::DEPTH_SIZE,   self.sizes.depth   as i32,
-            egl::STENCIL_SIZE, self.sizes.stencil as i32,
-
-            egl::NONE
-
-        ];
+        let attribs = match self.api {
+            Api::OpenGl => vec![
+                egl::SURFACE_TYPE, egl::WINDOW_BIT,
+                egl::RENDERABLE_TYPE, egl::OPENGL_BIT,
+                egl::RED_SIZE,     self.sizes.rgba.0  as i32,
+                egl::GREEN_SIZE,   self.sizes.rgba.1  as i32,
+                egl::BLUE_SIZE,    self.sizes.rgba.2  as i32,
+                egl::ALPHA_SIZE,   self.sizes.rgba.3  as i32,
+                egl::DEPTH_SIZE,   self.sizes.depth   as i32,
+                egl::STENCIL_SIZE, self.sizes.stencil as i32,
+                egl::NONE
+            ],
+            // Es3 is weird.
+            Api::Es3 => vec![
+                egl::SURFACE_TYPE, egl::WINDOW_BIT,
+                egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
+                egl::NONE
+            ]
+        };
 
         let config = instance.lib.choose_first_config(instance.display, &attribs)?
-            .ok_or("failed to choose an egl config (normal context)")?;
+            .ok_or("failed to choose an egl config")?;
 
-        let context_attrs = [
-            egl::CONTEXT_CLIENT_VERSION, self.version[0] as i32,
-            egl::CONTEXT_MAJOR_VERSION, self.version[0] as i32,
-            egl::CONTEXT_MINOR_VERSION, self.version[1] as i32,
-            egl::CONTEXT_OPENGL_DEBUG, self.debug as i32,
-            egl::CONTEXT_OPENGL_PROFILE_MASK, match self.profile {
-                Profile::Core => egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-                Profile::Compat => egl::CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
-            },
-            egl::NONE,
-        ];
+        let context_attrs = match self.api {
+            Api::OpenGl => vec![
+                egl::CONTEXT_CLIENT_VERSION, self.version[0] as i32,
+                egl::CONTEXT_MAJOR_VERSION, self.version[0] as i32,
+                egl::CONTEXT_MINOR_VERSION, self.version[1] as i32,
+                egl::CONTEXT_OPENGL_DEBUG, self.debug as i32,
+                egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                egl::NONE,
+            ],
+            // Es3 is weird.
+            Api::Es3 => vec![
+                egl::CONTEXT_CLIENT_VERSION, self.version[0] as i32,
+                egl::NONE,
+            ]
+        };
 
-        let surface_attrs = [
+        let surface_attrs = vec![
             egl::RENDER_BUFFER, egl::BACK_BUFFER,
             egl::NONE,
         ];
@@ -216,8 +210,8 @@ impl ConfigBuilder {
 
 pub struct Config {
     inner: egl::Config,
-    context_attrs: [i32; 11],
-    surface_attrs: [i32; 3],
+    context_attrs: Vec<i32>,
+    surface_attrs: Vec<i32>,
     api: Api,
 }
 
@@ -232,7 +226,8 @@ impl Config {
 pub struct Context {
     instance: Instance,
     inner: egl::Context,
-    damage_rects: Vec<PhysicalRect>, // only here to amortize some allocations, used in `resize`
+    // only here to amortize some allocations, used in `resize`
+    damage_rects: Vec<PhysicalRect>,
 }
 
 impl Drop for Context {
@@ -250,6 +245,7 @@ impl Context {
 
         // opengl (and related) has the by far worst api i've seen... ever
         // like what the fuck is this, why is this not part of the attributes?!
+
         match config.api {
             Api::OpenGl => instance.lib.bind_api(egl::OPENGL_API)?,
             Api::Es3    => instance.lib.bind_api(egl::OPENGL_ES_API)?,
