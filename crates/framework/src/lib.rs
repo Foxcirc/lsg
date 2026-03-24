@@ -249,9 +249,11 @@ impl Window {
 
                 windowstate.clear();
 
+                let size = self.inner.size();
+
                 let space = Space {
                     state: &mut *windowstate,
-                    size: Size::abs(5000, 5000),
+                    size: Size::abs(size.w, size.h),
                     offset: Position::abs(0, 0)
                 };
 
