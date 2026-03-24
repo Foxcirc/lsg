@@ -300,7 +300,7 @@ pub struct GlTextureAtlas {
 
 impl GlTextureAtlas {
 
-    const MININCR: u16 = 12;
+    const MININCR: u16 = 256;
 
     pub fn new(renderer: &GlRenderer) -> Self {
 
@@ -310,13 +310,21 @@ impl GlTextureAtlas {
             gl::Property::MaxTextureSize
         ) as u16;
 
-        Self {
+        let mut this = Self {
             texture: gl::Texture::invalid(),
             layout: AtlasLayout::new(PhysicalSize::MIN),
             maxsize: PhysicalSize::quad(maxsize),
             entries: Vec::new(),
             mapping: Vec::new(),
-        }
+        };
+
+        // We initiized with an invalid texture, however we need
+        // to always be able to bind the texture during rendering
+        // so we initialize it with a minimal size here.
+
+        this.upsize(Self::MININCR);
+
+        this
 
     }
 
@@ -922,7 +930,8 @@ impl ShapeRenderer {
         gl::enable(gl::Capability::Blend);
         gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
 
-        // Make atlas texture accessible.
+        // Make atlas texture accessible, even if the atlas was not used
+        // it will be correctly initialized to a minimal size.
         gl::active_texture(0);
         gl::uniform_1i(&self.program, self.sampler, 0);
         gl::bind_texture(&atlas.texture);

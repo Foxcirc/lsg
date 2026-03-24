@@ -377,6 +377,7 @@ impl Shader {
     }
 }
 
+#[track_caller]
 pub fn create_shader(kind: ShaderType, source: &str) -> Result<Shader, ShaderError> {
 
     let source_ptr = source.as_ptr().cast();
@@ -483,6 +484,7 @@ impl Program {
     }
 }
 
+#[track_caller]
 pub fn create_program() -> Program {
     let id = unsafe { gl::CreateProgram() };
     check_error();
@@ -493,12 +495,14 @@ pub fn create_program() -> Program {
     }
 }
 
+#[track_caller]
 pub fn attach_shader(program: &mut Program, shader: Shader) {
     unsafe { gl::AttachShader(program.id, shader.id) }
     check_error();
     program.shaders.push(shader);
 }
 
+#[track_caller]
 pub fn link_program(mut program: Program) -> Result<LinkedProgram, LinkError> {
 
     unsafe { gl::LinkProgram(program.id) }
@@ -581,11 +585,13 @@ impl LinkedProgram {
     }
 }
 
+#[track_caller]
 pub fn bind_program(program: &LinkedProgram) {
     unsafe { gl::UseProgram(program.id) }
     check_error();
 }
 
+#[track_caller]
 pub fn attrib_location(program: &LinkedProgram, name: &str) -> Result<AttribLocation, AttribUnknown> {
     let mut buf = [0; 1024];
     let cname = to_small_cstr(&mut buf, name);
@@ -639,6 +645,7 @@ impl VertexArray {
     }
 }
 
+#[track_caller]
 pub fn gen_vertex_array() -> VertexArray {
     let mut id = 0;
     unsafe { gl::GenVertexArrays(1, &mut id) };
@@ -646,11 +653,13 @@ pub fn gen_vertex_array() -> VertexArray {
     VertexArray { id }
 }
 
+#[track_caller]
 pub fn bind_vertex_array(this: &VertexArray) {
     unsafe { gl::BindVertexArray(this.id) }
     check_error();
 }
 
+#[track_caller]
 pub fn gen_buffer(kind: BufferType) -> Buffer {
     let mut id = 0;
     unsafe { gl::GenBuffers(1, &mut id) };
@@ -661,6 +670,7 @@ pub fn gen_buffer(kind: BufferType) -> Buffer {
 /// This function doesn't perform type-checking, it accepts a slice of any type and hands it out as bytes.
 /// This is not unsafe, since all bytes are valid numbers for OpenGL, but can still be unintuitive.
 /// In order to correctly handle vertex layout and avoid bugs use [`AttribStorage`].
+#[track_caller]
 pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
 
     bind_buffer(buffer);
@@ -676,6 +686,7 @@ pub fn buffer_data<T>(buffer: &Buffer, data: &[T], usage: DrawHint) {
 
 }
 
+#[track_caller]
 pub fn bind_buffer(this: &Buffer) {
     unsafe { gl::BindBuffer(this.kind as u32, this.id) }
     check_error();
@@ -747,30 +758,35 @@ impl AttribVec {
 
 }
 
+#[track_caller]
 pub fn vertex_attrib_1f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib1f(loc.into().index, x) };
     check_error();
 }
 
+#[track_caller]
 pub fn vertex_attrib_2f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32, y: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib2f(loc.into().index, x, y) };
     check_error();
 }
 
+#[track_caller]
 pub fn vertex_attrib_3f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32, y: f32, z: f32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttrib3f(loc.into().index, x, y, z) };
     check_error();
 }
 
+#[track_caller]
 pub fn vertex_attrib_1i(vao: &VertexArray, loc: impl Into<AttribLocation>, x: i32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttribI1i(loc.into().index, x) };
     check_error();
 }
 
+#[track_caller]
 pub fn vertex_attrib_1u(vao: &VertexArray, loc: impl Into<AttribLocation>, x: u32) {
     bind_vertex_array(vao);
     unsafe { gl::VertexAttribI1ui(loc.into().index, x) };
@@ -891,6 +907,7 @@ impl FrameBuffer {
     }
 }
 
+#[track_caller]
 pub fn gen_frame_buffer() -> FrameBuffer {
     let mut id = 0;
     unsafe { gl::GenFramebuffers(1, &mut id) };
@@ -898,22 +915,26 @@ pub fn gen_frame_buffer() -> FrameBuffer {
     FrameBuffer { id }
 }
 
+#[track_caller]
 pub fn bind_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, fbo.id) };
     check_error();
 }
 
+#[track_caller]
 pub fn bind_read_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::READ_FRAMEBUFFER, fbo.id) };
     check_error();
 }
 
+#[track_caller]
 pub fn bind_draw_frame_buffer(fbo: &FrameBuffer) {
     unsafe { gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, fbo.id) };
     check_error();
 }
 
 // "36053" means OK
+#[track_caller]
 pub fn check_frame_buffer_status(fbo: &FrameBuffer) -> u32 {
     bind_frame_buffer(fbo);
     let result = unsafe { gl::CheckFramebufferStatus(gl::FRAMEBUFFER) };
@@ -928,6 +949,7 @@ pub enum AttachmentPoint {
     Color1 = gl::COLOR_ATTACHMENT1,
 }
 
+#[track_caller]
 pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, texture: &Texture) {
     bind_frame_buffer(fbo);
     unsafe { gl::FramebufferTexture2D(
@@ -940,6 +962,7 @@ pub fn frame_buffer_texture_2d(fbo: &FrameBuffer, attachment: AttachmentPoint, t
     check_error();
 }
 
+#[track_caller]
 pub fn frame_buffer_render_buffer(fbo: &FrameBuffer, attachment: AttachmentPoint, rbo: &RenderBuffer) {
     bind_frame_buffer(fbo);
     unsafe { gl::FramebufferRenderbuffer(
@@ -951,6 +974,7 @@ pub fn frame_buffer_render_buffer(fbo: &FrameBuffer, attachment: AttachmentPoint
     check_error();
 }
 
+#[track_caller]
 pub fn draw_buffers(fbo: &FrameBuffer, buffers: &[AttachmentPoint]) {
     bind_frame_buffer(fbo);
     unsafe { gl::DrawBuffers(buffers.len() as i32, buffers.as_ptr().cast()) }
@@ -977,6 +1001,7 @@ pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f
 /// - Currently only copies the **color buffer**.
 /// - Rescales the region if the sizes don't match.
 /// - You don't need to bind anything yourself!
+#[track_caller]
 pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBuffer, PhysicalRect), filter: TexValue) {
     bind_draw_frame_buffer(target.0);
     bind_read_frame_buffer(source.0);
@@ -1031,6 +1056,7 @@ pub unsafe fn read_pixels(fbo: &FrameBuffer, rect: PhysicalRect, fpixel: ColorFo
 /// Copy a region from `source` (fbo) to `target` (texture).
 ///
 /// - You don't need to bind anything yourself!
+#[track_caller]
 pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPoint), target: (&Texture, PhysicalPoint), size: PhysicalSize) {
     bind_read_frame_buffer(&source.0);
     bind_texture(&target.0);
@@ -1048,6 +1074,7 @@ pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPoint), target: (&Te
 /// Color value is in RGBA-f32 format.
 /// # Caveat
 /// Only available on versions 4.x.
+#[track_caller]
 pub fn clear_tex_image(texture: &Texture, value: &[f32]) {
 
     let mut safe = [0.0f32; 4];
@@ -1084,6 +1111,7 @@ impl RenderBuffer {
     }
 }
 
+#[track_caller]
 pub fn gen_render_buffer() -> RenderBuffer {
     let mut id = 0;
     unsafe { gl::GenRenderbuffers(1, &mut id) };
@@ -1091,17 +1119,20 @@ pub fn gen_render_buffer() -> RenderBuffer {
     RenderBuffer { id }
 }
 
+#[track_caller]
 pub fn bind_render_buffer(this: &RenderBuffer) {
     unsafe { gl::BindRenderbuffer(gl::RENDERBUFFER, this.id) }
     check_error();
 }
 
+#[track_caller]
 pub fn render_buffer_storage(this: &RenderBuffer, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorage(gl::RENDERBUFFER, format as u32, size.w as i32, size.h as i32); }
     check_error();
 }
 
+#[track_caller]
 pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
     unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.w as i32, size.h as i32); }
@@ -1165,6 +1196,7 @@ impl Texture {
     pub const fn invalid() -> Self { Self { id: 0, kind: TextureType::Basic1D } }
 
     /// Returns the texture which is currently bound to that type.
+    #[track_caller]
     pub fn current(kind: TextureType) -> Self {
         match kind {
             TextureType::Basic1D => Self { id: get_integer_v(BindingProperty::Texture1DBinding) as u32, kind },
@@ -1181,6 +1213,7 @@ impl Texture {
 
 /// Also make sure to call [`tex_sensible_defaults`]. Especially if you want
 /// to sample from it, some parameters have to be set, or sampling will give black.
+#[track_caller]
 pub fn gen_texture(kind: TextureType) -> Texture {
     let mut id = 0;
     unsafe { gl::GenTextures(1, &mut id) };
@@ -1188,6 +1221,7 @@ pub fn gen_texture(kind: TextureType) -> Texture {
     Texture { id, kind }
 }
 
+#[track_caller]
 pub fn bind_texture(texture: &Texture) {
     unsafe { gl::BindTexture(texture.kind as u32, texture.id) };
     check_error();
@@ -1230,6 +1264,7 @@ pub fn tex_image_2d<'d>(
 }
 
 /// Not available in ES versions.
+#[track_caller]
 pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: GpuColorFormat, size: PhysicalSize) {
     bind_texture(texture);
     unsafe { gl::TexImage2DMultisample(
@@ -1243,6 +1278,7 @@ pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: GpuCo
     check_error();
 }
 
+#[track_caller]
 pub fn tex_storage_3d(texture: &Texture, size: PhysicalSize, depth: u16, fcolor: GpuColorFormat) {
     bind_texture(texture);
     unsafe { gl::TexStorage3D(
@@ -1299,6 +1335,7 @@ pub enum TexValue {
     ClampToEdge = gl::CLAMP_TO_EDGE,
 }
 
+#[track_caller]
 pub fn tex_parameter_i(texture: &Texture, property: TexParam, value: TexValue) {
     bind_texture(texture);
     unsafe { gl::TexParameteri(
@@ -1311,6 +1348,7 @@ pub fn tex_parameter_i(texture: &Texture, property: TexParam, value: TexValue) {
 
 /// Used to set some texture properties that really
 /// should be set by default.
+#[track_caller]
 pub fn tex_sensible_defaults(texture: &Texture) {
     tex_parameter_i(&texture, TexParam::MagFilter, TexValue::Nearest);
     tex_parameter_i(&texture, TexParam::MinFilter, TexValue::Nearest);
@@ -1319,6 +1357,7 @@ pub fn tex_sensible_defaults(texture: &Texture) {
     pixel_store_i(&texture, TexParam::UnpackAlignment, 1);
 }
 
+#[track_caller]
 pub fn pixel_store_i(texture: &Texture, param: TexParam, value: i32) {
     bind_texture(texture);
     unsafe { gl::PixelStorei(param as u32, value) };
@@ -1382,6 +1421,7 @@ pub enum BufferType {
 }
 
 
+#[track_caller]
 pub fn uniform_location(program: &LinkedProgram, name: &str) -> Result<UniformLocation, UniformUnknown> {
     let mut buf = [0; 1024];
     let cname = to_small_cstr(&mut buf, name);
@@ -1414,24 +1454,28 @@ impl From<u32> for UniformLocation {
 #[derive(Debug)]
 pub struct UniformUnknown;
 
+#[track_caller]
 pub fn uniform_1i(program: &LinkedProgram, uniform: UniformLocation, val: i32) {
     bind_program(program);
     unsafe { gl::Uniform1i(uniform.index as i32, val) };
     check_error();
 }
 
+#[track_caller]
 pub fn uniform_1ui(program: &LinkedProgram, uniform: UniformLocation, val: u32) {
     bind_program(program);
     unsafe { gl::Uniform1ui(uniform.index as i32, val) };
     check_error();
 }
 
+#[track_caller]
 pub fn uniform_3f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32) {
     bind_program(program);
     unsafe { gl::Uniform3f(uniform.index as i32, x, y, z) };
     check_error();
 }
 
+#[track_caller]
 pub fn uniform_4f(program: &LinkedProgram, uniform: UniformLocation, x: f32, y: f32, z: f32, w: f32) {
     bind_program(program);
     unsafe { gl::Uniform4f(uniform.index as i32, x, y, z, w) };
@@ -1444,11 +1488,13 @@ pub enum Capability {
     AlphaToCoverage = gl::SAMPLE_ALPHA_TO_COVERAGE,
 }
 
+#[track_caller]
 pub fn enable(capability: Capability) {
     unsafe { gl::Enable(capability as u32) }
     check_error();
 }
 
+#[track_caller]
 pub fn disable(capability: Capability) {
     unsafe { gl::Disable(capability as u32) }
     check_error();
@@ -1462,11 +1508,13 @@ pub enum BlendFunc {
     OneMinusSrcAlpha = gl::ONE_MINUS_SRC_ALPHA,
 }
 
+#[track_caller]
 pub fn blend_func(src: BlendFunc, dst: BlendFunc) {
     unsafe { gl::BlendFunc(src as u32, dst as u32) }
     check_error();
 }
 
+#[track_caller]
 pub fn blend_func_i(attachment: AttachmentPoint, func1: BlendFunc, func2: BlendFunc) {
     let idx = match attachment {
         AttachmentPoint::Color0 => 0,
@@ -1476,27 +1524,32 @@ pub fn blend_func_i(attachment: AttachmentPoint, func1: BlendFunc, func2: BlendF
     check_error();
 }
 
+#[track_caller]
 pub fn blend_func_seperate(src1: BlendFunc, dst1: BlendFunc, src2: BlendFunc, dst2: BlendFunc) {
     unsafe { gl::BlendFuncSeparate(src1 as u32, dst1 as u32, src2 as u32, dst2 as u32) }
     check_error();
 }
 
+#[track_caller]
 pub fn depth_mask(enabled: bool) {
     unsafe { gl::DepthMask(enabled as u8) }
     check_error();
 }
 
+#[track_caller]
 pub fn resize_viewport(size: PhysicalSize) {
     unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
     check_error();
 }
 
+#[track_caller]
 pub fn point_size(diameter: f32) {
     unsafe { gl::PointSize(diameter); }
     check_error();
 }
 
 /// `count` is the number of vertices (not primitives).
+#[track_caller]
 pub fn draw_arrays(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
     bind_frame_buffer(fbo);
     bind_program(program);
@@ -1508,6 +1561,7 @@ pub fn draw_arrays(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray
 /// Expects u32 as indices right now.
 /// `start` is an index in bytes * sizeof(u32), not in bytes.
 /// `count` is the number of indices (not primitives).
+#[track_caller]
 pub fn draw_elements(fbo: &FrameBuffer, program: &LinkedProgram, vao: &VertexArray, primitive: Primitive, start: usize, count: usize) {
     bind_frame_buffer(fbo);
     bind_program(program);
@@ -1557,6 +1611,7 @@ pub enum Primitive {
     Points = gl::POINTS,
 }
 
+#[track_caller]
 pub fn clear(fbo: &FrameBuffer, r: f32, g: f32, b: f32, alpha: f32) {
     bind_frame_buffer(fbo);
     unsafe { gl::ClearColor(r, g, b, alpha) };
@@ -1566,6 +1621,7 @@ pub fn clear(fbo: &FrameBuffer, r: f32, g: f32, b: f32, alpha: f32) {
 }
 
 /// Sets both front and back buffer.
+#[track_caller]
 pub fn polygon_mode(mode: PolygonMode) {
     unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, mode as u32) }
     check_error();

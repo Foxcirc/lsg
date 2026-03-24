@@ -143,7 +143,6 @@ impl App {
 
 }
 
-#[repr(transparent)]
 struct DynamicWidget {
     pub inner: Arc<dyn Widget>,
 }

@@ -1,10 +1,11 @@
-#version 320 es
+#version 300 es
 precision mediump float;
 
+in vec4 textureData;
 in vec2 curvePosition;
-in vec2 textureCoords;
 in vec3 barycentric;
-in flat uint fillKind;
+flat in uint fillKind;
+flat in uint isAtlas;
 
 uniform sampler2D atlas;
 
@@ -30,7 +31,12 @@ void main() {
         multiplier = 1.0;
     }
 
-    vec4 pixel = texture(atlas, textureCoords);
+    vec4 pixel;
+    if (isAtlas == 1u) {
+        pixel = texture(atlas, textureData.xy);
+    } else {
+        pixel = textureData;
+    }
 
     color = vec4(
         pixel.rgb,

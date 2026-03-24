@@ -42,16 +42,15 @@ impl Widget for RedPill {
         if let Action::Render { mut space } = action {
             let key = space.curves(&[
                 CurvePoint::new(1,    1,    PointKind::Base),
-                CurvePoint::new(500, 1,    PointKind::Base),
-                CurvePoint::new(500, 500, PointKind::Base),
-                CurvePoint::new(1,    500, PointKind::Base),
+                CurvePoint::new(5000, 1,    PointKind::Base),
+                CurvePoint::new(5000, 5000, PointKind::Base),
+                CurvePoint::new(1,    5000, PointKind::Base),
             ]);
             space.instance(key, Instance {
                 pos: Position::rel(0, 0),
-                size: Size::rel(5000, 5000),
-                texture: render::TextureKind::Color(120, 80, 30, 255),
+                size: Size::rel(500, 500),
+                texture: render::TextureKind::Color(220, 30, 80, 255),
             });
-            println!("render called.");
         }
     }
 }
