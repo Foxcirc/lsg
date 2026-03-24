@@ -25,10 +25,10 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut surface = render::GlSurface::new(&renderer, &window);
     let mut storage = render::GlRenderStorage::new(&renderer, window.size());
 
-    let _index = atlas.upload(&renderer, &[255; 12*12*4], PhysicalSize::quad(12));
-    let _index = atlas.upload(&renderer, &[200; 12*12*4], PhysicalSize::quad(12));
-    let _index = atlas.upload(&renderer, &[150; 12*12*4], PhysicalSize::quad(12));
-    let _index = atlas.upload(&renderer, &[100; 12*12*4], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[255u8; 12*12*4] as &[u8], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[200u8; 12*12*4] as &[u8], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[150u8; 12*12*4] as &[u8], PhysicalSize::quad(12));
+    let _index = atlas.upload(&renderer, &[100u8; 12*12*4] as &[u8], PhysicalSize::quad(12));
 
     loop {
         match block_on(evl.next())? {

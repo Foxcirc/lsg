@@ -8,7 +8,7 @@ use crate::VertexGeometry;
 /// which can be rendered to.
 pub struct GlRenderStorage {
     size: PhysicalSize,
-    framebuffer: gl::FrameBuffer,
+    fbo: gl::FrameBuffer,
     texture: gl::Texture,
 }
 
@@ -34,7 +34,7 @@ impl GlRenderStorage {
 
         Self {
             size,
-            framebuffer,
+            fbo: framebuffer,
             texture
         }
 
@@ -62,7 +62,7 @@ impl GlRenderStorage {
     pub fn inspect(&self) -> Vec<u8> {
 
         unsafe { gl::read_pixels(
-            &self.framebuffer,
+            &self.fbo,
             PhysicalRect::new(PhysicalPoint::ZERO, self.size),
             gl::ColorFormat::Rgba, gl::DataType::U8
         ) }
@@ -320,16 +320,26 @@ impl GlTextureAtlas {
 
     }
 
-    /// This will make an image available to the GPU.
+    /// Write an image into the atlas.
     ///
     /// There is no concept of releasing a single image inside an atlas,
     /// so if you want to release memory you have to drop the whole atlas.
     ///
     /// # Panic
     /// Panics if data length and `size` don't match up.
-    pub fn upload(&mut self, renderer: &GlRenderer, data: &[u8], size: PhysicalSize) -> TextureIndex  {
+    #[track_caller]
+    pub fn upload(&mut self, renderer: &GlRenderer, source: impl GlWriteToAtlas, size: PhysicalSize) -> TextureIndex  {
 
         renderer.ctx.bind(&renderer.instance, None);
+
+        let (index, rect) = self.alloc(size);
+        source.write(&self.texture, rect);
+
+        index
+
+    }
+
+    fn alloc(&mut self, size: PhysicalSize) -> (TextureIndex, PhysicalRect)  {
 
         // Find a slot or return an error.
 
@@ -340,7 +350,7 @@ impl GlTextureAtlas {
                     let incr = overshoot.max(Self::MININCR);
                     if self.layout.size.w + incr > self.maxsize.w &&
                        self.layout.size.h + incr > self.maxsize.h {
-                        return TextureIndex::ERR
+                        return (TextureIndex::ERR, PhysicalRect::ZERO)
                    } else {
                        self.upsize(incr);
                    }
@@ -348,20 +358,46 @@ impl GlTextureAtlas {
             }
         };
 
-        // Copy the image to the slot.
-
-        let rect = PhysicalRect { pos: slot, size };
-        gl::tex_sub_image_2d(&self.texture, rect, gl::ColorFormat::Rgba, gl::DataType::U8, data);
-
         // Add the slot to our state and return it.
 
         let mapping = self.mapping.len() as u16;
         let ientry = self.entries.len() as u16;
 
+        let (index, rect) = (
+            TextureIndex { inner: mapping as u16 },
+            PhysicalRect { pos: slot, size }
+        );
+
         self.entries.push(TextureEntry { rect, mapping });
         self.mapping.push(ientry);
 
-        return TextureIndex { inner: mapping as u16 }
+        (index, rect)
+
+    }
+
+    /// Overwrite the same texture with a new image of the same size.
+    #[track_caller]
+    pub fn update(&self, renderer: &GlRenderer, index: TextureIndex, source: impl GlWriteToAtlas) {
+
+        renderer.ctx.bind(&renderer.instance, None);
+
+        let orig = self.entries[self.mapping[index.inner as usize] as usize].rect;
+        source.write(&self.texture, orig);
+
+    }
+
+    /// Copy the atlas' texture from the GPU over to the CPU.
+    ///
+    /// The color format is RGBA-8.
+    pub fn inspect(&self) -> Vec<u8> {
+
+        let fbo = gl::gen_frame_buffer();
+        gl::frame_buffer_texture_2d(&fbo, gl::AttachmentPoint::Color0, &self.texture);
+
+        unsafe { gl::read_pixels(
+            &fbo, PhysicalRect::new(PhysicalPoint::ZERO, self.layout.size),
+            gl::ColorFormat::Rgba, gl::DataType::U8
+        ) }
 
     }
 
@@ -369,9 +405,8 @@ impl GlTextureAtlas {
     /// to the atlas texture. These coordinates are in a range from
     /// 0..5000 which map to OpenGL's 0.0 .. 1.0 texture cordinates.
     ///
-    /// (Short rant: Why the FUCK are clipspace and texture coordinates
-    /// using two different coordinate systems. THIS IS NOT OK WHY IS OPENGL
-    /// LIKE THIS WHY WHY WHY WHY WHY LIKE HOW MANY HOURS OF MY LIFE-)
+    /// Also: Why the FUCK are "clipspace" and "texture" coordinates
+    /// using two different coordinate systems.
     pub(crate) fn get(&self, index: TextureIndex) -> PhysicalRect {
 
         if index == TextureIndex::ERR {
@@ -456,24 +491,30 @@ impl GlTextureAtlas {
 
     }
 
-    // /// Overwrite the same texture with a new image of the same size.
-    // pub fn update(self: &Arc<Self>, renderer: &GlRenderer, texture: TextureCoords) {
+}
 
-    // }
-    //
+pub trait GlWriteToAtlas {
+    /// The OpenGL context will be bounds.
+    fn write(&self, target: &gl::Texture, rect: PhysicalRect);
+}
 
-    /// Copy the atlas' texture from the GPU over to the CPU.
-    ///
-    /// The color format is RGBA-8.
-    pub fn inspect(&self) -> Vec<u8> {
+impl GlWriteToAtlas for &[u8] {
+    #[track_caller]
+    fn write(&self, target: &gl::Texture, rect: PhysicalRect) {
 
-        let fbo = gl::gen_frame_buffer();
-        gl::frame_buffer_texture_2d(&fbo, gl::AttachmentPoint::Color0, &self.texture);
+        gl::tex_sub_image_2d(
+            &target, rect, gl::ColorFormat::Rgba, gl::DataType::U8, self
+        );
 
-        unsafe { gl::read_pixels(
-            &fbo, PhysicalRect::new(PhysicalPoint::ZERO, self.layout.size),
-            gl::ColorFormat::Rgba, gl::DataType::U8
-        ) }
+    }
+}
+
+impl GlWriteToAtlas for &GlRenderStorage {
+    #[track_caller]
+    fn write(&self, target: &gl::Texture, rect: PhysicalRect) {
+
+        assert_eq!(rect.size, self.size, "the entries' sizes must match");
+        gl::copy_tex_sub_image_2d((&self.fbo, PhysicalPoint::ZERO), (&target, rect.pos), rect.size);
 
     }
 }
@@ -582,7 +623,7 @@ impl GlRenderer {
 
         gl::resize_viewport(storage.size);
 
-        self.shape.draw(&storage.framebuffer, geometry, atlas, storage.size);
+        self.shape.draw(&storage.fbo, geometry, atlas, storage.size);
 
     }
 
@@ -594,7 +635,7 @@ impl GlRenderer {
         self.ctx.bind(&self.instance, Some(&surface.inner));
 
         let target = (&gl::FrameBuffer::default(), PhysicalRect::MAX);
-        let source = (&source.framebuffer, PhysicalRect::MAX);
+        let source = (&source.fbo, PhysicalRect::MAX);
 
         gl::blit_frame_buffer(target, source, gl::TexValue::Linear);
 

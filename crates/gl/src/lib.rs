@@ -1263,7 +1263,7 @@ pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorForm
         * fpixel.components()
         * fdata.size();
 
-    assert!(data.len() == needed);
+    assert!(data.len() == needed, "data len does not match specified size");
 
     bind_texture(texture);
     unsafe { gl::TexSubImage2D(
