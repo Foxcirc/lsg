@@ -141,9 +141,11 @@ pub enum InputMode {
 pub enum QuitReason {
     /// Quit requested programatically.
     Program,
-    /// SIGTERM received. For example on shutdown. Only generated when `signals` feature is enabled.
+    /// SIGTERM received. For example on shutdown.
+    /// Only generated when `signals` feature is enabled.
     System,
-    /// SIGINT received. Only generated when `signals` feature is enabled.
+    /// SIGINT received.
+    /// Only generated when `signals` feature is enabled.
     CtrlC,
 }
 
@@ -160,32 +162,32 @@ pub enum IconFormat {
     Argb8,
 }
 
-/// The layers are ordered from bottom most to top most.
-pub enum WindowLayer {
-    /// Below everything. (Eg. Desktop Widgets)
-    Background,
-    /// Below normal programs.
-    Bottom,
-    /// Above normal programs. (Eg. Always-on-top Window)
-    Top,
-    /// Above everything. (Eg. Fps Counter)
-    Overlay
-}
+// /// The layers are ordered from bottom most to top most.
+// pub enum WindowLayer {
+//     /// Below everything. (Eg. Desktop Widgets)
+//     Background,
+//     /// Below normal programs.
+//     Bottom,
+//     /// Above normal programs. (Eg. Always-on-top Window)
+//     Top,
+//     /// Above everything. (Eg. Fps Counter)
+//     Overlay
+// }
 
-pub enum WindowAnchor {
-    Top,
-    Bottom,
-    Left,
-    Right
-}
+// pub enum WindowAnchor {
+//     Top,
+//     Bottom,
+//     Left,
+//     Right
+// }
 
-/// Keyboard window interactivity.
-pub enum KbInteractivity {
-    /// Window can't have keyboard focus.
-    None,
-    /// Top/Overlay windows will completely grab keyboard focus.
-    Exclusive
-}
+// /// Keyboard window interactivity.
+// pub enum KbInteractivity {
+//     /// Window can't have keyboard focus.
+//     None,
+//     /// Top/Overlay windows will completely grab keyboard focus.
+//     Exclusive
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: derive the right traits to all those classes
 pub enum Key {

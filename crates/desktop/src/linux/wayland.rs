@@ -513,7 +513,7 @@ fn get_window_id(surface: &WlSurface) -> WindowId {
 
 // ### window ###
 
-pub struct WindowState {
+struct WindowState {
     wl_surface: WlSurface,
     xdg_surface: XdgSurface,
     xdg_toplevel: XdgToplevel,
@@ -1057,14 +1057,14 @@ impl CursorShape {
 impl DataKinds {
     pub(crate) fn to_mime_type(&self) -> &'static str {
         match *self {
-            DataKinds::TEXT   => "text/plain",
-            DataKinds::XML    => "application/xml",
-            DataKinds::HTML   => "application/html",
-            DataKinds::ZIP    => "application/zip",
-            DataKinds::JSON   => "text/json",
-            DataKinds::JPEG   => "image/jpeg",
-            DataKinds::PNG    => "image/png",
-            DataKinds::OTHER  => "application/octet-stream",
+            DataKinds::TEXT  => "text/plain",
+            DataKinds::XML   => "application/xml",
+            DataKinds::HTML  => "application/html",
+            DataKinds::ZIP   => "application/zip",
+            DataKinds::JSON  => "text/json",
+            DataKinds::JPEG  => "image/jpeg",
+            DataKinds::PNG   => "image/png",
+            DataKinds::OTHER => "application/octet-stream",
             _ => unreachable!(),
         }
     }

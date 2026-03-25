@@ -1,7 +1,6 @@
 
 // windowing, ...
 pub mod wayland;
-use futures_lite::FutureExt;
 pub use wayland::*;
 
 pub mod signals;
@@ -9,7 +8,7 @@ pub mod signals;
 use crate::shared::*;
 use common::SmartMutex;
 
-use std::{ffi::{CStr, CString, c_void as void}, future, sync::{Arc, MutexGuard}, task, time::Instant};
+use std::{ffi::{CString, c_void as void}, future, sync::Arc, task, time::Instant};
 
 // TODO: add better and more unit-tests
 
@@ -120,11 +119,6 @@ impl EventLoop {
         let mut guard = self.state.lock();
         guard.injected.push(Event::Quit { reason: QuitReason::Program });
     }
-
-    // TODO: make it be Notif::new(&mut evl) instead
-    // pub fn send_notification(&mut self, notif: &NotifBuilder<'_>) -> Notif {
-    //     self.dbus.send_notification(notif)
-    // }
 
 }
 
