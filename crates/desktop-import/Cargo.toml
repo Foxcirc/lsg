@@ -1,0 +1,10 @@
+[package]
+name = "desktop-import"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+export = { path = "../desktop-export", package = "desktop-export" }
+desktop = { path = "../desktop" }
+common = { path = "../common" }

@@ -376,7 +376,7 @@ pub unsafe trait IsDisplay {
     /// **On Wayland,**
     /// should return a pointer to the `wl-display` proxy object.
     // TODO: add link to example in the desktop crate
-    fn ptr(&self) -> *mut void;
+    fn ptr(&self) -> *const void;
 }
 
 /// Implemented by a type that can provide the platform surface pointer.

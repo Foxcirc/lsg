@@ -9,10 +9,12 @@ use desktop::*;
 use common::*;
 use render::{DrawableGeometry, shaper};
 
+const APPID: &str = file!();
+
 #[test]
 fn interactive() -> Result<(), Box<dyn std::error::Error>> {
     desktop::EventLoop::run(desktop::EventLoopConfig {
-        appid: file!().into(),
+        appid: APPID.into(),
         intercept: false,
     }, app)?
 }
@@ -21,7 +23,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     let window = Window::new(&evl);
 
-    window.title(&evl.config().appid);
+    window.title(APPID);
     window.transparency(true);
 
     let mut renderer = render::GlRenderer::new(&*evl)?;

@@ -160,6 +160,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "desktop-export"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "desktop",
+]
+
+[[package]]
+name = "desktop-import"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "desktop",
+ "desktop-export",
+]
+
+[[package]]
 name = "dlib"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

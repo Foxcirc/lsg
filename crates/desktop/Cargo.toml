@@ -1,10 +1,9 @@
 [package]
-name = "desktop"
 
+name = "desktop"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-
 
 [dependencies]
 

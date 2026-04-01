@@ -8,7 +8,7 @@ pub mod signals;
 use crate::shared::*;
 use common::SmartMutex;
 
-use std::{ffi::{CString, c_void as void}, future, sync::Arc, task, time::Instant};
+use std::{ffi::{CString, c_void as void}, future, pin::Pin, sync::Arc, task, time::Instant};
 
 // TODO: add better and more unit-tests
 
@@ -39,7 +39,6 @@ struct EventLoopState {
     signals: signals::SignalListener,
     injected: Vec<Event>,
     // dbus: dbus::Connection,
-    config: EventLoopConfig,
 }
 
 // TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
@@ -63,7 +62,6 @@ impl EventLoop {
                 wayland: wayland::Connection::new(&config.appid)?,
                 signals: signals::SignalListener::new(config.intercept)?,
                 injected: Vec::with_capacity(1),
-                config,
             }),
         }))
 
@@ -79,16 +77,18 @@ impl EventLoop {
     }
 
     pub async fn next(&self) -> Result<Event, EvlError> {
+        future::poll_fn(|cx| self.poll(cx)).await
+    }
+
+    pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<Result<Event, EvlError>> {
 
         use task::Poll::*;
 
-        future::poll_fn(|cx| {
-            let mut state = self.state.lock(); // only lock briefly during polling
-                 if let Ready(ev) = state.wayland.poll(cx) { Ready(ev) }
-            else if let Ready(ev) = state.signals.poll(cx) { Ready(ev) }
-            else if let Some(ev)  = state.injected.pop()   { Ready(Ok(ev)) }
-            else { Pending }
-        }).await
+        let mut state = self.state.lock(); // only lock briefly during polling
+             if let Ready(ev) = state.wayland.poll(cx) { Ready(ev) }
+        else if let Ready(ev) = state.signals.poll(cx) { Ready(ev) }
+        else if let Some(ev)  = state.injected.pop()   { Ready(Ok(ev)) }
+        else { Pending }
 
     }
 
@@ -99,11 +99,6 @@ impl EventLoop {
     //     // self.dbus.flush().await
     //     Ok(())
     // }
-
-    pub fn config(&self) -> EventLoopConfig {
-        let guard = self.state.lock();
-        guard.config.clone()
-    }
 
     pub fn suspend(&self) {
         let mut guard = self.state.lock();
@@ -123,7 +118,7 @@ impl EventLoop {
 }
 
 unsafe impl common::IsDisplay for EventLoop {
-    fn ptr(&self) -> *mut void {
+    fn ptr(&self) -> *const void {
         self.state.lock().wayland.display()
     }
 }

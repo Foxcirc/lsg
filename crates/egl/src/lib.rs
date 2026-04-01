@@ -67,7 +67,7 @@ impl Instance {
         };
 
         let egl_display = unsafe {
-            lib.get_display(display.ptr())
+            lib.get_display(display.ptr().cast_mut())
         }.ok_or("no display")?;
 
         lib.initialize(egl_display)?;
