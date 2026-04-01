@@ -2,8 +2,6 @@
 use common::*;
 use crate::*;
 
-use bitflags::bitflags;
-
 #[derive(Debug)]
 pub enum Event {
     /// Your app was resumed from the background or started and should show it's view.
@@ -57,7 +55,7 @@ pub enum WindowEvent {
 pub enum DataSourceEvent {
     /// Data of the specific [`DataKind`] you advertised was requested to be transferred.
     /// Could be send multiple times.
-    Send { kind: DataKinds, writer: DataWriter },
+    Send { kind: DataKind, writer: DataWriter },
     /// Data was successfully transfarred.
     /// Could be send multiple times, one per `Send`.
     Success,
@@ -235,23 +233,21 @@ pub enum MouseButton {
     Unknown(u32),
 }
 
-bitflags! {
-    #[derive(Debug, Clone, Copy,PartialEq, Eq)]
-    pub struct DataKinds: u64 {
-        const TEXT   = 1;
-        const XML    = 1 << 1;
-        const HTML   = 1 << 2;
-        const ZIP    = 1 << 3;
-        const JSON   = 1 << 4;
-        const JPEG   = 1 << 5;
-        const PNG    = 1 << 6;
-        const OTHER  = 1 << 7;
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataKind {
+    Text,
+    Xml,
+    Html,
+    Zip,
+    Json,
+    Jpeg,
+    Png,
+    Other
 }
 
-impl Default for DataKinds {
+impl Default for DataKind {
     fn default() -> Self {
-        Self::OTHER
+        Self::Other
     }
 }
 

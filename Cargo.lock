@@ -148,7 +148,6 @@ version = "0.1.0"
 dependencies = [
  "async-io",
  "async-signals",
- "bitflags 2.10.0",
  "bv",
  "common",
  "futures-lite",

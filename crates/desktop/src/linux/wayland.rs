@@ -36,7 +36,7 @@ use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
 use std::{
-    collections::{HashMap, VecDeque}, env, error::Error as StdError, ffi::c_void as void, fmt, io, os::fd::{AsFd, OwnedFd}, sync::Arc, task, time::{Duration, Instant}
+    collections::{HashMap, VecDeque}, env, error::Error as StdError, ffi::c_void as void, fmt, io, mem, os::fd::{AsFd, OwnedFd}, sync::Arc, task, time::{Duration, Instant}
 };
 
 use common::*;
@@ -80,7 +80,7 @@ struct MonitorData {
 /// Used for handling drag-and-drop and selections.
 #[derive(Default)]
 struct OfferData {
-    advertised_data_kinds: Option<DataKinds>,
+    advertised_data_kinds: Vec<DataKind>,
     dnd: DndOfferData,
 }
 
@@ -1054,31 +1054,32 @@ impl CursorShape {
 
 // ### drag and drop ###
 
-impl DataKinds {
+impl DataKind {
     pub(crate) fn to_mime_type(&self) -> &'static str {
         match *self {
-            DataKinds::TEXT  => "text/plain",
-            DataKinds::XML   => "application/xml",
-            DataKinds::HTML  => "application/html",
-            DataKinds::ZIP   => "application/zip",
-            DataKinds::JSON  => "text/json",
-            DataKinds::JPEG  => "image/jpeg",
-            DataKinds::PNG   => "image/png",
-            DataKinds::OTHER => "application/octet-stream",
-            _ => unreachable!(),
+            DataKind::Text  => "text/plain",
+            DataKind::Xml   => "application/xml",
+            DataKind::Html  => "application/html",
+            DataKind::Zip   => "application/zip",
+            DataKind::Json  => "text/json",
+            DataKind::Jpeg  => "image/jpeg",
+            DataKind::Png   => "image/png",
+            DataKind::Other => "application/octet-stream",
         }
     }
     pub(crate) fn from_mime_type(mime_type: &str) -> Option<Self> {
         match mime_type {
-            "text/plain"       => Some(DataKinds::TEXT),
-            "application/xml"  => Some(DataKinds::XML),
-            "application/html" => Some(DataKinds::HTML),
-            "application/zip"  => Some(DataKinds::ZIP),
-            "text/json"        => Some(DataKinds::JSON),
-            "image/jpeg"       => Some(DataKinds::JPEG),
-            "image/png"        => Some(DataKinds::PNG),
-            "application/octet-stream" => Some(DataKinds::OTHER),
-            "UTF8_STRING" | "STRING" | "TEXT" => Some(DataKinds::TEXT), // apparently used in some X11 apps
+            "text/plain"       => Some(DataKind::Text),
+            "application/xml"  => Some(DataKind::Xml),
+            "application/html" => Some(DataKind::Html),
+            "application/zip"  => Some(DataKind::Zip),
+            "text/json"        => Some(DataKind::Json),
+            "image/jpeg"       => Some(DataKind::Jpeg),
+            "image/png"        => Some(DataKind::Png),
+            "UTF8_STRING" |
+            "STRING" |
+            "TEXT" => Some(DataKind::Text), // apparently used in some X11 apps
+            "application/octet-stream" => Some(DataKind::Other),
             _ => None,
         }
     }
@@ -1089,13 +1090,13 @@ pub type DataOfferId = u32;
 /// Don't hold onto it. You should immediatly decide if you want to receive something or not.
 pub struct DataOffer {
     wl_data_offer: WlDataOffer,
-    kinds: DataKinds,
+    data_kinds: Vec<DataKind>,
     dnd: bool, // checked in the destructor to determine how wl_data_offer should be destroyed
 }
 
 impl fmt::Debug for DataOffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DataOffer {{ kinds: {:?} }}", &self.kinds)
+        write!(f, "DataOffer {{ kinds: {:?} }}", &self.data_kinds)
     }
 }
 
@@ -1109,12 +1110,12 @@ impl Drop for DataOffer {
 
 impl DataOffer {
 
-    pub fn kinds(&self) -> DataKinds {
-        self.kinds
+    pub fn kinds(&self) -> &[DataKind] {
+        &self.data_kinds
     }
 
     /// A `DataOffer` can be read multiple times. Also using different `DataKinds`.
-    pub fn receive(&self, evl: &EventLoop, kind: DataKinds) -> Result<DataReader, EvlError> {
+    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> Result<DataReader, EvlError> {
 
         let (reader, writer) = io::pipe()?;
 
@@ -1196,35 +1197,12 @@ impl Drop for DataSource {
 
 impl DataSource {
 
-    fn new(evl: &EventLoop, offers: DataKinds) -> Self {
-
-        let evb = &evl.state.lock().wayland.state;
-
-        debug_assert!(!offers.is_empty(), "must offer at least one DataKind");
-
-        let wl_data_source = evb.globals.data_device_mgr.create_data_source(&evb.qh, ());
-
-        for offer in offers {
-            let mime_type = offer.to_mime_type();
-            wl_data_source.offer(mime_type.to_string()); // why do all wayland methods take String's and not &str?
-        }
-
-        // actions are not implemented right now
-        wl_data_source.set_actions(DndAction::Move | DndAction::Copy);
-
-        Self {
-            id: get_data_source_id(&wl_data_source),
-            wl_data_source,
-        }
-
-    }
-
     /// Create a DataSource that will be the new selection.
     ///
     /// In other words this "sets the selection (clipboard)". You will receive events for this DataSource when another client
     /// wants to read from the selection.
     // TODO + DOCS: docs-rs alias to "clipboard" or smth
-    pub fn new_selection(evl: &EventLoop, offers: DataKinds) -> Self {
+    pub fn selection(evl: &EventLoop, offers: &[DataKind]) -> Self {
 
         let this = Self::new(evl, offers);
 
@@ -1243,7 +1221,7 @@ impl DataSource {
     /// *and* the user then moves the mouse.
     /// Otherwise the request may be denied or visually broken.
     #[track_caller]
-    pub fn new_drag_and_drop(handle: &Window, offers: DataKinds, icon: CustomIcon) -> Self {
+    pub fn dnd(handle: &Window, offers: &[DataKind], icon: CustomIcon) -> Self {
 
         let this = Self::new(&handle.evl, offers);
 
@@ -1262,6 +1240,29 @@ impl DataSource {
         evb.offer.dnd.icon = Some(icon);
 
         this
+
+    }
+
+    fn new(evl: &EventLoop, offers: &[DataKind]) -> Self {
+
+        let evb = &evl.state.lock().wayland.state;
+
+        debug_assert!(!offers.len() != 0, "must offer at least one DataKind");
+
+        let wl_data_source = evb.globals.data_device_mgr.create_data_source(&evb.qh, ());
+
+        for offer in offers {
+            let mime_type = offer.to_mime_type();
+            wl_data_source.offer(mime_type.to_string()); // why do all wayland methods take String's and not &str?
+        }
+
+        // actions are not implemented right now
+        wl_data_source.set_actions(DndAction::Move | DndAction::Copy);
+
+        Self {
+            id: get_data_source_id(&wl_data_source),
+            wl_data_source,
+        }
 
     }
 
@@ -1552,7 +1553,7 @@ pub struct DndHandle {
 }
 
 impl DndHandle {
-    pub fn advertise(&self, kinds: &[DataKinds]) {
+    pub fn advertise(&self, kinds: &[DataKind]) {
         if let Some(ref wl_data_offer) = self.wl_data_offer {
             for kind in kinds {
                 let mime_type = kind.to_mime_type();
@@ -1920,11 +1921,11 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 let y = evl.offer.dnd.y;
 
                 // The offer will have been introduced with the advertised mime types already.
-                let kinds = evl.offer.advertised_data_kinds.unwrap();
+                let data_kinds = mem::take(&mut evl.offer.advertised_data_kinds);
 
                 let offer = DataOffer {
                     wl_data_offer,
-                    kinds,
+                    data_kinds,
                     dnd: true,
                 };
 
@@ -1957,7 +1958,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
 
             }
 
-            evl.offer.advertised_data_kinds = None;
+            evl.offer.advertised_data_kinds.clear();
             evl.offer.dnd.focused = None;
             evl.offer.dnd.current = None;
 
@@ -1968,11 +1969,11 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
             if let Some(wl_data_offer) = value {
 
                 // The offer will have been introduced with the advertised mime types already.
-                let kinds = evl.offer.advertised_data_kinds.unwrap_or_default();
+                let data_kinds = mem::take(&mut evl.offer.advertised_data_kinds);
 
                 let offer = Some(DataOffer {
                     wl_data_offer,
-                    kinds,
+                    data_kinds,
                     dnd: false,
                 });
 
@@ -1980,7 +1981,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
 
             } else {
 
-                evl.offer.advertised_data_kinds = None;
+                evl.offer.advertised_data_kinds.clear();
                 evl.events.push_back(Event::SelectionUpdate { offer: None });
 
             }
@@ -2010,12 +2011,12 @@ impl wayland_client::Dispatch<WlDataOffer, ()> for ConnectionState {
 
         if let WlDataOfferEvent::Offer { mime_type } = event {
 
+            let data_kinds = &mut evl.offer.advertised_data_kinds;
+
             // Insert the advertised mime type which will be consumed later.
-            if let Some(data_kinds) = &mut evl.offer.advertised_data_kinds {
-                if let Some(kind) = DataKinds::from_mime_type(&mime_type) {
-                    data_kinds.insert(kind)
-                };
-            }
+            if let Some(kind) = DataKind::from_mime_type(&mime_type) {
+                data_kinds.push(kind)
+            };
 
         }
 
@@ -2036,7 +2037,7 @@ impl wayland_client::Dispatch<WlDataSource, ()> for ConnectionState {
 
         if let WlDataSourceEvent::Send { mime_type, fd } = event {
 
-            let kind = DataKinds::from_mime_type(&mime_type).unwrap();
+            let kind = DataKind::from_mime_type(&mime_type).unwrap();
 
             let writer = DataWriter {
                 inner: io::PipeWriter::from(fd)
