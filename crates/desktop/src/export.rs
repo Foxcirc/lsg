@@ -1,5 +1,5 @@
 
-//! This crate contains a C-ABI compatible API which
+//! This module contains a C-ABI compatible API which
 //! makes this crate usable as a library from other languages.
 
 use core::task;
@@ -26,13 +26,13 @@ pub unsafe extern "C" fn event_loop_run(config0: EventLoopConfig, handler0: Even
     let appid = unsafe { CStr::from_ptr(config0.appid) }
         .to_str().expect("`appid` must be valid utf8").to_string();
 
-    let config = desktop::EventLoopConfig {
+    let config = crate::EvlConfig {
         appid,
         intercept: config0.intercept,
     };
 
-    let result = desktop::EventLoop::run(config, |evl| {
-        let ptr: *const Arc<desktop::EventLoop> = &evl;
+    let result = crate::EventLoop::run(config, |evl| {
+        let ptr: *const Arc<crate::EventLoop> = &evl;
         handler0(ptr.cast(), state);
     });
 
@@ -122,9 +122,10 @@ pub enum Poll {
     Pending,
 }
 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn event_loop_poll_rust(this0: *const SharedEventLoop, rawcx: EvlPollContextRust, state: *mut void) -> Poll {
 
-    let this: &Arc<desktop::EventLoop> = unsafe { &*this0.cast() };
+    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
 
     let waker = unsafe { task::Waker::new(
         rawcx.waker.state.cast(),
@@ -139,7 +140,7 @@ pub unsafe extern "C" fn event_loop_poll_rust(this0: *const SharedEventLoop, raw
 
 // pub unsafe extern "C" fn event_loop_poll(this0: *const SharedEventLoop, rawcx: EvlPollContext, state: *mut void) {
 
-//     let this: &Arc<desktop::EventLoop> = unsafe { &*this0.cast() };
+//     let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
 
 //     let waker = unsafe { task::Waker::new(rawcx.waker.cast(), &VTABLE) };
 //     let cx = task::Context::from_waker(&waker);
@@ -148,7 +149,7 @@ pub unsafe extern "C" fn event_loop_poll_rust(this0: *const SharedEventLoop, raw
 
 // }
 
-fn event_loop_poll_inner(this: &Arc<desktop::EventLoop>, mut cx: task::Context) -> Poll {
+fn event_loop_poll_inner(this: &Arc<crate::EventLoop>, mut cx: task::Context) -> Poll {
 
     let poll = this.poll(&mut cx);
 
@@ -161,22 +162,26 @@ fn event_loop_poll_inner(this: &Arc<desktop::EventLoop>, mut cx: task::Context) 
 
 }
 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn event_loop_suspend(this0: *const SharedEventLoop) {
-    let this: &Arc<desktop::EventLoop> = unsafe { &*this0.cast() };
+    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
     this.suspend();
 }
 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn event_loop_resume(this0: *const SharedEventLoop) {
-    let this: &Arc<desktop::EventLoop> = unsafe { &*this0.cast() };
+    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
     this.resume();
 }
 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn event_loop_quit(this0: *const SharedEventLoop) {
-    let this: &Arc<desktop::EventLoop> = unsafe { &*this0.cast() };
+    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
     this.quit();
 }
 
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn event_loop_display_ptr(this0: *const SharedEventLoop) -> *const void {
-    let this: &Arc<desktop::EventLoop> = unsafe { &*this0.cast() };
+    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
     this.ptr()
 }

@@ -1,36 +1,17 @@
 
-// windowing, ...
 pub mod wayland;
-pub use wayland::*;
-
 pub mod signals;
 
-use crate::shared::*;
-use common::SmartMutex;
+pub use wayland::*;
 
-use std::{ffi::{CString, c_void as void}, future, pin::Pin, sync::Arc, task, time::Instant};
+use crate::*;
+use common::*;
+
+use std::{ffi::{CString, c_void as void}, future, sync::Arc, task};
 
 // TODO: add better and more unit-tests
 
-#[derive(Clone)]
-pub struct EventLoopConfig {
-    pub appid: String,
-    /// If `true` relevant signals will be intercepted and
-    /// turned into `Quit` events. Otherwise signals
-    /// will never be intercepted.
-    pub intercept: bool,
-}
-
-impl Default for EventLoopConfig {
-    fn default() -> Self {
-        Self {
-            appid: format!("lsg-{:?}", Instant::now()),
-            intercept: true,
-        }
-    }
-}
-
-pub struct EventLoop {
+pub struct EventLoopBackend {
     state: SmartMutex<EventLoopState>,
 }
 
@@ -43,10 +24,10 @@ struct EventLoopState {
 
 // TODO: implement cleanup for the event loop, eg. the dbus connection should be flushed
 
-impl EventLoop {
+impl EventLoopBackend {
 
     #[track_caller]
-    fn new(config: EventLoopConfig) -> Result<Arc<Self>, EvlError> {
+    fn new(config: EvlConfig) -> Result<Self, EvlError> {
 
         // We do some setup here, which should be nice
         // for the user, since this is a framework after all.
@@ -57,27 +38,26 @@ impl EventLoop {
         // Set the process' name to the appid.
         nix::sys::prctl::set_name(&name)?;
 
-        Ok(Arc::new(Self {
+        Ok(Self {
             state: SmartMutex::new(EventLoopState {
                 wayland: wayland::Connection::new(&config.appid)?,
                 signals: signals::SignalListener::new(config.intercept)?,
                 injected: Vec::with_capacity(1),
             }),
-        }))
+        })
 
     }
 
     #[track_caller]
-    pub fn run<R, H>(config: EventLoopConfig, handler: H) -> Result<R, EvlError>
-        where H: FnOnce(Arc<Self>) -> R {
+    pub fn run<R, H>(config: EvlConfig, handler: H) -> Result<R, EvlError>
+        where H: FnOnce(Arc<EventLoop>) -> R {
 
-        let target = Self::new(config)?;
-        Ok(handler(target))
+        let evl = EventLoop {
+            backend: Self::new(config)?
+        };
 
-    }
+        Ok(handler(Arc::new(evl)))
 
-    pub async fn next(&self) -> Result<Event, EvlError> {
-        future::poll_fn(|cx| self.poll(cx)).await
     }
 
     pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<Result<Event, EvlError>> {
@@ -115,10 +95,8 @@ impl EventLoop {
         guard.injected.push(Event::Quit { reason: QuitReason::Program });
     }
 
-}
-
-unsafe impl common::IsDisplay for EventLoop {
-    fn ptr(&self) -> *const void {
+    pub fn ptr(&self) -> *const void {
         self.state.lock().wayland.display()
     }
+
 }

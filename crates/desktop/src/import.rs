@@ -1,7 +1,11 @@
 
-use std::{ffi::{self, c_void as void}, future, mem, ptr, sync::Arc, task, time::Instant};
+//! This module reconstructs the original rust API based on the C-ABI compatible API,
+//! so the crate can be used by simply linking to a library without including the implementation.
 
+use std::{ffi::{self, c_void as void}, future, mem, ptr, sync::Arc, task, time::Instant};
 use common::SmartMutex;
+
+use crate::export;
 
 #[derive(Clone)]
 pub struct EventLoopConfig {
@@ -21,10 +25,8 @@ impl Default for EventLoopConfig {
     }
 }
 
-pub struct EvlError;
-
 pub struct EventLoopState {
-    events: Vec<desktop::Event>,
+    events: Vec<crate::Event>,
 }
 
 pub struct EventLoop {
@@ -35,7 +37,7 @@ pub struct EventLoop {
 impl EventLoop {
 
     #[track_caller]
-    pub fn run<R, H>(config: EventLoopConfig, handler: H) -> Result<R, EvlError>
+    pub fn run<R, H>(config: EventLoopConfig, handler: H) -> Result<R, crate::EvlError>
         where H: FnOnce(Arc<Self>) -> R {
 
         let appid0 = ffi::CString::new(config.appid)
@@ -58,16 +60,16 @@ impl EventLoop {
             if let RunState::Post(value) = state.take() { Ok(value) }
             else { unreachable!() }
         } else {
-            Err(EvlError)
+            Err(crate::EvlError::fatal("TODO".into()))
         }
 
     }
 
-    pub async fn next(&self) -> Result<(), EvlError> {
+    pub async fn next(&self) -> Result<(), crate::EvlError> {
         future::poll_fn(|cx| self.poll(cx)).await
     }
 
-    pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<Result<(), EvlError>> {
+    pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<Result<(), crate::EvlError>> {
 
         let waker = cx.waker();
 

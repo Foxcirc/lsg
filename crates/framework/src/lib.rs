@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod test;
 
-use common::{IsSurface, LogicalSize, SmartMutex};
+use common::{IsSurface, SmartMutex};
 use desktop::{MouseButton, ScrollAxis, Key};
 use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
@@ -21,7 +21,7 @@ pub struct App {
     executor: async_executor::LocalExecutor<'static>,
     eventloop: Arc<desktop::EventLoop>,
     handlers: AppEventHandlers,
-    windows: SmartMutex<HashMap<desktop::WindowId, Weak<Window>>>,
+    windows: SmartMutex<HashMap<desktop::Id, Weak<Window>>>,
     renderstate: SmartMutex<AppRenderState>,
 }
 
@@ -31,7 +31,7 @@ impl App {
         where H: AsyncFnOnce(Arc<Self>) -> R + 'static,
               R: 'static {
 
-            let config2 = desktop::EventLoopConfig {
+            let config2 = desktop::EvlConfig {
                 appid: config.appid.clone(),
                 intercept: config.intercept,
             };
@@ -182,7 +182,7 @@ impl Drop for Window {
     fn drop(&mut self) {
         // Remove ourselves from the window list.
         self.app.windows.lock().remove(
-            &self.inner.id
+            &self.inner.id()
         );
     }
 }
@@ -213,7 +213,7 @@ impl Window {
 
         // Insert ourselves into the window list.
         app.windows.lock().insert(
-            this.inner.id,
+            this.inner.id(),
             Arc::downgrade(&this)
         );
 

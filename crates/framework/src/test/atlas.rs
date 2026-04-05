@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 #[test]
 pub fn atlas() -> Result<(), Box<dyn std::error::Error>> {
-    desktop::EventLoop::run(desktop::EventLoopConfig {
+    desktop::EventLoop::run(desktop::EvlConfig {
         appid: file!().into(),
         intercept: false,
     }, app)?

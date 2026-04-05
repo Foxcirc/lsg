@@ -13,7 +13,7 @@ const APPID: &str = file!();
 
 #[test]
 fn interactive() -> Result<(), Box<dyn std::error::Error>> {
-    desktop::EventLoop::run(desktop::EventLoopConfig {
+    desktop::EventLoop::run(desktop::EvlConfig {
         appid: APPID.into(),
         intercept: false,
     }, app)?
