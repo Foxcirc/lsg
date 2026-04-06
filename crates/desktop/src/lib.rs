@@ -169,6 +169,7 @@ pub enum QuitReason {
     CtrlC,
 }
 
+#[repr(C)]
 #[derive(Debug, Default)]
 pub enum Urgency {
     /// Should display a hint or might do nothing.
@@ -455,8 +456,9 @@ impl DataReadable {
     }
 
     /// A [`Receiver`] can be read multiple times. Also using different [`DataKind`].
-    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> Result<impl io::Read, EvlError> {
-        self.backend.receive(evl, kind)
+    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> Result<DataReader, EvlError> {
+        let backend = self.backend.receive(evl, kind)?;
+        Ok(DataReader { backend })
     }
 
 }

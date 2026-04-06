@@ -3,9 +3,9 @@
 //! makes this crate usable as a library from other languages.
 
 use core::task;
-use std::{ffi::{CStr, CString, c_void as void}, mem, ptr::null, sync::{Arc, Mutex}};
+use std::{ffi::{CStr, CString, c_void as void}, mem::{self, ManuallyDrop}, ptr::{NonNull, null}, sync::{Arc, Mutex}};
 
-use common::{IsDisplay, SmartMutex};
+use common::IsDisplay;
 
 #[repr(C)]
 pub struct EventLoopConfig {
@@ -13,15 +13,19 @@ pub struct EventLoopConfig {
     pub intercept: bool,
 }
 
-pub type EventLoopHandler = extern "C" fn(*const SharedEventLoop, *mut void);
+pub type EventLoopHandler = extern "C" fn(*const EventLoop, *mut void);
 
 #[repr(C)]
-pub struct SharedEventLoop;
+pub struct EventLoop;
 
-pub type EventLoopErrorCode = i32;
+#[repr(C)]
+pub enum EvlResult {
+    Ok,
+    Err
+}
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_run(config0: EventLoopConfig, handler0: EventLoopHandler, state: *mut void) -> EventLoopErrorCode {
+pub unsafe extern "C" fn event_loop_run(config0: EventLoopConfig, handler0: EventLoopHandler, state: *mut void) -> EvlResult {
 
     let appid = unsafe { CStr::from_ptr(config0.appid) }
         .to_str().expect("`appid` must be valid utf8").to_string();
@@ -32,13 +36,19 @@ pub unsafe extern "C" fn event_loop_run(config0: EventLoopConfig, handler0: Even
     };
 
     let result = crate::EventLoop::run(config, |evl| {
-        let ptr: *const Arc<crate::EventLoop> = &evl;
-        handler0(ptr.cast(), state);
+
+        let ptr = Arc::into_raw(evl).cast();
+
+        handler0(ptr, state);
+
+        // Make sure to actually drop the Arc.
+        unsafe { drop(Arc::from_raw(ptr)) };
+
     });
 
     match result {
-        Ok(()) => 0i32,
-        Err(..) => 1i32,
+        Ok(()) => EvlResult::Ok,
+        Err(..) => EvlResult::Err,
     }
 
 }
@@ -127,17 +137,72 @@ pub struct MonitorInfo {
 #[repr(C)]
 pub struct Monitor;
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn monitor_drop(this0: *mut Monitor) {
+    let mut this = unsafe { get_monitor(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
+
 #[repr(C)]
 pub struct HoveredItem;
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hovered_item_drop(this0: *mut HoveredItem) {
+    let mut this = unsafe { get_hovered_item(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
+
 #[repr(C)]
-pub struct Receiver;
+pub struct DataReadable;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_readable_drop(this0: *mut DataReadable) {
+    let mut this = unsafe { get_data_readable(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
+
+// #[repr(C)]
+// pub struct DataReadableKinds {
+//     ptr: *const crate::DataKind,
+//     len: usize,
+// }
+
+// #[unsafe(no_mangle)]
+// pub unsafe extern "C" fn data_readable_kinds(this0: *mut DataReadable) -> DataReadableKinds {
+//     let this = unsafe { get_data_readable(this0) };
+//     let slice = this.kinds();
+//     DataReadableKinds {
+//         ptr: slice.as_ptr(),
+//         len: slice.len(),
+//     }
+// }
+
+#[repr(C)]
+pub struct DataReader;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_reader_drop(this0: *mut DataReader) {
+    let mut this = unsafe { get_data_reader(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
+
+#[repr(C)]
+pub struct DataWritable;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writable_drop(this0: *mut DataWritable) {
+    let mut this = unsafe { get_data_writable(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
 
 #[repr(C)]
 pub struct DataWriter;
 
-#[repr(C)]
-pub struct DataReadable;
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writer_drop(this0: *mut DataWriter) {
+    let mut this = unsafe { get_data_writer(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
 
 #[repr(C)]
 pub struct EvlHandlers {
@@ -177,7 +242,7 @@ pub struct EvlHandlers {
     window_text_compose_cancel: extern "C" fn(*mut void, crate::Id),
 
     window_dnd_motion: extern "C" fn(*mut void, crate::Id, sameapp: bool, x: f64, y: f64, *mut HoveredItem),
-    window_dnd_drop:   extern "C" fn(*mut void, crate::Id, sameapp: bool, x: f64, y: f64, *mut Receiver),
+    window_dnd_drop:   extern "C" fn(*mut void, crate::Id, sameapp: bool, x: f64, y: f64, *mut DataReader),
     window_dnd_cancel: extern "C" fn(*mut void, crate::Id, sameapp: bool),
 
     data_source_send: extern "C" fn(*mut void, crate::Id, kind: crate::DataKind, writer: *mut DataWriter),
@@ -196,9 +261,9 @@ pub enum Poll {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_poll_rust(this0: *const SharedEventLoop, rawcx: EvlPollContextRust, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
+pub unsafe extern "C" fn event_loop_poll_rust(this0: *const EventLoop, rawcx: EvlPollContextRust, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
 
-    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
+    let this = unsafe { get_event_loop(this0) };
     let handlers: &EvlHandlers = unsafe { &*handlers0 };
 
     let waker = unsafe { task::Waker::new(
@@ -208,7 +273,7 @@ pub unsafe extern "C" fn event_loop_poll_rust(this0: *const SharedEventLoop, raw
 
     let cx = task::Context::from_waker(&waker);
 
-    event_loop_poll_inner(this, cx, handlers, state)
+    event_loop_poll_inner(&this, cx, handlers, state)
 
 }
 
@@ -335,26 +400,156 @@ fn event_loop_poll_inner(this: &Arc<crate::EventLoop>, mut cx: task::Context, ha
 
 }
 
+unsafe fn get_event_loop(ptr: *const EventLoop) -> ManuallyDrop<Arc<crate::EventLoop>> {
+    unsafe { ManuallyDrop::new(Arc::from_raw(ptr.cast())) }
+}
+
+unsafe fn get_window(ptr: *mut Window) -> ManuallyDrop<Box<crate::Window>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
+unsafe fn get_monitor(ptr: *mut Monitor) -> ManuallyDrop<Box<crate::Monitor>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
+unsafe fn get_hovered_item(ptr: *mut HoveredItem) -> ManuallyDrop<Box<crate::HoveredItem>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
+unsafe fn get_data_readable(ptr: *mut DataReadable) -> ManuallyDrop<Box<crate::DataReadable>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
+unsafe fn get_data_reader(ptr: *mut DataReader) -> ManuallyDrop<Box<crate::DataReader>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
+unsafe fn get_data_writable(ptr: *mut DataWritable) -> ManuallyDrop<Box<crate::DataWritable>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
+unsafe fn get_data_writer(ptr: *mut DataWriter) -> ManuallyDrop<Box<crate::DataWriter>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_suspend(this0: *const SharedEventLoop) {
-    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
+pub unsafe extern "C" fn event_loop_suspend(this0: *const EventLoop) {
+    let this = unsafe { get_event_loop(this0) };
     this.suspend();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_resume(this0: *const SharedEventLoop) {
-    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
+pub unsafe extern "C" fn event_loop_resume(this0: *const EventLoop) {
+    let this = unsafe { get_event_loop(this0) };
     this.resume();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_quit(this0: *const SharedEventLoop) {
-    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
+pub unsafe extern "C" fn event_loop_quit(this0: *const EventLoop) {
+    let this = unsafe { get_event_loop(this0) };
     this.quit();
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_display_ptr(this0: *const SharedEventLoop) -> *const void {
-    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
+pub unsafe extern "C" fn event_loop_display_ptr(this0: *const EventLoop) -> *const void {
+    let this = unsafe { get_event_loop(this0) };
     this.ptr()
+}
+
+#[repr(C)]
+pub struct Window;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_drop(this0: *mut Window) {
+    let mut this = unsafe { get_window(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_new(this0: *const EventLoop) -> *mut Window {
+    let this = unsafe { get_event_loop(this0) };
+    let window = crate::Window::new(&this);
+    Box::into_raw(Box::new(window)).cast()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_id(this0: *mut Window) -> crate::Id {
+    let this = unsafe { get_window(this0) };
+    this.id()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_present(this0: *mut Window) {
+    let this = unsafe { get_window(this0) };
+    this.present()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_redraw(this0: *mut Window) {
+    let this = unsafe { get_window(this0) };
+    this.redraw()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_transparency(this0: *mut Window, value: bool) {
+    let this = unsafe { get_window(this0) };
+    this.transparency(value);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_decorations(this0: *mut Window, value: bool) {
+    let this = unsafe { get_window(this0) };
+    this.decorations(value);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_title(this0: *mut Window, text0: *const i8) {
+    let this = unsafe { get_window(this0) };
+    let text = unsafe { CStr::from_ptr(text0).to_str()
+        .expect("`window title` must be valid utf8").to_string() };
+    this.title(text);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_maximize(this0: *mut Window, value: bool) {
+    let this = unsafe { get_window(this0) };
+    this.maximize(value);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_fullscreen(this0: *mut Window, value: bool, monitor0: *mut Monitor) {
+    let this = unsafe { get_window(this0) };
+    match NonNull::new(monitor0) {
+        Some(it) => {
+            let monitor = unsafe { get_monitor(it.as_ptr()) };
+            this.fullscreen(value, Some(&monitor));
+        },
+        None => this.fullscreen(value, None)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_sizehint(this0: *mut Window, size: common::PhysicalSize) {
+    let this = unsafe { get_window(this0) };
+    this.sizehint(size);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_minsize(this0: *mut Window, size: common::LogicalSize, set: bool) {
+    let this = unsafe { get_window(this0) };
+    let val = if set { Some(size) } else { None };
+    this.minsize(val);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_maxsize(this0: *mut Window, size: common::LogicalSize, set: bool) {
+    let this = unsafe { get_window(this0) };
+    let val = if set { Some(size) } else { None };
+    this.minsize(val);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_alert(this0: *mut Window, urgency: crate::Urgency) {
+    let this = unsafe { get_window(this0) };
+    this.alert(urgency);
 }
