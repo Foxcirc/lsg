@@ -5,5 +5,9 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
-[dev-dependencies]
-futures-lite = { version = "2.6.1", default-features = false, features = ["alloc", "std"] }
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+export = []

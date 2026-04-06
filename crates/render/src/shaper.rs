@@ -147,7 +147,7 @@ impl LoweringPass {
 
     fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
 
-        let Some(points) = geometry.points.get(shape.range()) else { return Err(()) };
+        let Some(points) = geometry.points.get(shape.range2()) else { return Err(()) };
 
         if points.len() < 3 { return Err(()) }
 
@@ -310,7 +310,7 @@ impl TriangulationPass {
 
     fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
 
-        let points = geometry.points.get(shape.range())
+        let points = geometry.points.get(shape.range2())
             .unwrap_or_default();
 
         if points.len() < 3 {

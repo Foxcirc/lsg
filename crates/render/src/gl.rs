@@ -1,8 +1,7 @@
 
-use std::{error::Error as StdError, fmt, iter::{self, once, repeat, zip}, ops::Range, sync::Arc};
+use std::{error::Error as StdError, fmt, iter::{repeat, zip}, ops::Range};
 
 use common::*;
-use crate::VertexGeometry;
 
 /// A render storage backed by a texture,
 /// which can be rendered to.
@@ -579,7 +578,7 @@ pub struct GeometryTarget {
 /// Represents multiple instances of shapes together with their vertex information.
 #[derive(Debug)]
 pub struct DrawableGeometry<'a> {
-    pub source: &'a [&'a VertexGeometry],
+    pub source: &'a [&'a crate::VertexGeometry],
     pub instances: &'a [Instance],
 }
 
@@ -652,7 +651,7 @@ impl GlRenderer {
     /// Actually make all changes visible to the user.
     pub fn swap(&mut self, surface: &GlSurface) {
 
-        self.ctx.swap(&surface.inner, Damage::all());
+        self.ctx.swap(&surface.inner, egl::Damage::all());
 
     }
 
@@ -826,7 +825,7 @@ impl ShapeRenderer {
 
             let inner = &geometry.source[instance.target.geometry as usize];
             let shape = &inner.shapes[instance.target.shape as usize];
-            let vertices = &inner.vertices[shape.range()];
+            let vertices = &inner.vertices[shape.range2()];
 
             let ivertices = repeat([0, 1, 2] as [u16; 3]).flatten();
 

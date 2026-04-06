@@ -1,5 +1,5 @@
 
-use common::{Damage, LogicalSize, PhysicalSize, PhysicalRect};
+use common::{LogicalSize, PhysicalSize, PhysicalRect};
 use std::{ffi::c_void as void, fmt, mem, sync::Arc, error::Error as StdError};
 
 /*
@@ -389,4 +389,23 @@ impl Surface {
         self.size
     }
 
+}
+
+/// Area of a window that has to be redrawn.
+pub struct Damage<'s> {
+    /// Empty means full damage.
+    pub rects: &'s [PhysicalRect],
+}
+
+impl<'s> Damage<'s> {
+    /// Everything will be redrawn.
+    pub fn all() -> Self {
+        Self { rects: &[] }
+    }
+    /// Only the marked rects should be redrawn.
+    /// This is only an optimization and the system may choose
+    /// to redraw more parts of the window.
+    pub fn partial(rects: &'s [PhysicalRect]) -> Self {
+        Self { rects }
+    }
 }

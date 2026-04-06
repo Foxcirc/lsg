@@ -80,7 +80,7 @@ impl WindowData {
 
 #[derive(Default)]
 struct MonitorData {
-    inner: HashMap<Id, Monitor>,
+    inner: HashMap<Id, (MonitorInfo, WlOutput)>,
 }
 
 /// Used for handling drag-and-drop and selections.
@@ -97,7 +97,7 @@ struct DndOfferData {
     x: f64,
     y: f64,
     ours: bool, // set if we started a drag and drop
-    icon: Option<CustomIconBackend>, // set if we started a drag and drop
+    icon: Option<CustomIcon>, // set if we started a drag and drop
 }
 
 #[derive(Default)]
@@ -795,7 +795,7 @@ impl ReceiverBackend {
     }
 
     /// A `DataOffer` can be read multiple times. Also using different `DataKinds`.
-    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> Result<DataReader, EvlError> {
+    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> Result<DataReaderBackend, EvlError> {
 
         let (reader, writer) = io::pipe()?;
 
@@ -807,7 +807,7 @@ impl ReceiverBackend {
          // that we want to read now, otherwise reading immediatly would deadlock.
         evl.backend.state.lock().wayland.state.con.get_ref().flush()?;
 
-        Ok(DataReader {
+        Ok(DataReaderBackend {
             inner: reader,
         })
 
@@ -815,34 +815,34 @@ impl ReceiverBackend {
 
 }
 
-pub struct DataReader {
+pub struct DataReaderBackend {
     inner: io::PipeReader,
 }
 
-impl AsFd for DataReader {
+impl AsFd for DataReaderBackend {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.inner.as_fd()
     }
 }
 
-impl io::Read for DataReader {
+impl io::Read for DataReaderBackend {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)
     }
 }
 
 #[derive(Debug)]
-pub struct SenderBackend {
+pub struct DataWriterBackend {
     inner: io::PipeWriter,
 }
 
-impl AsFd for SenderBackend {
+impl AsFd for DataWriterBackend {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.inner.as_fd()
     }
 }
 
-impl io::Write for SenderBackend {
+impl io::Write for DataWriterBackend {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.inner.write(buf)
     }
@@ -855,19 +855,23 @@ impl io::Write for SenderBackend {
 ///
 /// You will receive events for this DataSource when another client
 /// or the system wants to read from the selection.
-pub struct DataSource {
+pub struct DataSourceBackend {
     pub id: Id,
     wl_data_source: WlDataSource,
 }
 
 /// Dropping this will cancel a drag-and-drop operation.
-impl Drop for DataSource {
+impl Drop for DataSourceBackend {
     fn drop(&mut self) {
         self.wl_data_source.destroy();
     }
 }
 
-impl DataSource {
+impl DataSourceBackend {
+
+    pub fn id(&self) -> Id {
+        self.id
+    }
 
     /// Create a DataSource that will be the new selection.
     ///
@@ -893,18 +897,18 @@ impl DataSource {
     /// *and* the user then moves the mouse.
     /// Otherwise the request may be denied or visually broken.
     #[track_caller]
-    pub fn dnd(handle: &WindowBackend, offers: &[DataKind], icon: CustomIconBackend) -> Self {
+    pub fn dnd(handle: &Window, offers: &[DataKind], icon: CustomIcon) -> Self {
 
-        let this = Self::new(&handle.evl, offers);
+        let this = Self::new(&handle.backend.evl, offers);
 
-        let evb = &mut handle.evl.backend.state.lock().wayland.state;
-        let window = evb.windows.get(handle.id);
+        let evb = &mut handle.backend.evl.backend.state.lock().wayland.state;
+        let window = evb.windows.get(handle.backend.id);
 
         // actually start the drag and drop
         evb.globals.data_device.start_drag(
             Some(&this.wl_data_source),
             &window.wl_surface,
-            Some(&icon.wl_surface),
+            Some(&icon.backend.wl_surface),
             evb.last_serial
         );
 
@@ -936,10 +940,6 @@ impl DataSource {
             wl_data_source,
         }
 
-    }
-
-    pub fn id(&self) -> Id {
-        self.id
     }
 
 }
@@ -1249,39 +1249,39 @@ pub fn translate_xkb_sym(xkb_sym: xkb::Keysym) -> Key {
 
     match xkb_sym {
 
-        Keysym::Escape    => Key::Escape,
-        Keysym::Tab       => Key::Tab,
-        Keysym::Caps_Lock => Key::CapsLock,
-        Keysym::Shift_L   => Key::Shift,
-        Keysym::Shift_R   => Key::Shift,
-        Keysym::Control_L => Key::Control,
-        Keysym::Control_R => Key::Control,
-        Keysym::Alt_L     => Key::Alt,
-        Keysym::Alt_R     => Key::Alt,
-        Keysym::ISO_Level3_Shift => Key::AltGr,
-        Keysym::Super_L   => Key::Super,
-        Keysym::Super_R   => Key::Super,
-        Keysym::Menu      => Key::AppMenu,
-        Keysym::Return    => Key::Return,
-        Keysym::BackSpace => Key::Backspace,
-        Keysym::space     => Key::Space,
-        Keysym::Up        => Key::ArrowUp,
-        Keysym::Down      => Key::ArrowDown,
-        Keysym::Left      => Key::ArrowLeft,
-        Keysym::Right     => Key::ArrowRight,
+        Keysym::Escape    => Key::Special(SpecialKey::Escape),
+        Keysym::Tab       => Key::Special(SpecialKey::Tab),
+        Keysym::Caps_Lock => Key::Special(SpecialKey::CapsLock),
+        Keysym::Shift_L   => Key::Special(SpecialKey::Shift),
+        Keysym::Shift_R   => Key::Special(SpecialKey::Shift),
+        Keysym::Control_L => Key::Special(SpecialKey::Control),
+        Keysym::Control_R => Key::Special(SpecialKey::Control),
+        Keysym::Alt_L     => Key::Special(SpecialKey::Alt),
+        Keysym::Alt_R     => Key::Special(SpecialKey::Alt),
+        Keysym::Super_L   => Key::Special(SpecialKey::Super),
+        Keysym::Super_R   => Key::Special(SpecialKey::Super),
+        Keysym::Menu      => Key::Special(SpecialKey::AppMenu),
+        Keysym::Return    => Key::Special(SpecialKey::Return),
+        Keysym::BackSpace => Key::Special(SpecialKey::Backspace),
+        Keysym::space     => Key::Special(SpecialKey::Space),
+        Keysym::Up        => Key::Special(SpecialKey::ArrowUp),
+        Keysym::Down      => Key::Special(SpecialKey::ArrowDown),
+        Keysym::Left      => Key::Special(SpecialKey::ArrowLeft),
+        Keysym::Right     => Key::Special(SpecialKey::ArrowRight),
+        Keysym::ISO_Level3_Shift => Key::Special(SpecialKey::AltGr),
 
-        Keysym::F1  => Key::F(1),
-        Keysym::F2  => Key::F(2),
-        Keysym::F3  => Key::F(3),
-        Keysym::F4  => Key::F(4),
-        Keysym::F5  => Key::F(5),
-        Keysym::F6  => Key::F(6),
-        Keysym::F7  => Key::F(7),
-        Keysym::F8  => Key::F(8),
-        Keysym::F9  => Key::F(9),
-        Keysym::F10 => Key::F(10),
-        Keysym::F11 => Key::F(11),
-        Keysym::F12 => Key::F(12),
+        Keysym::F1  => Key::Special(SpecialKey::F1),
+        Keysym::F2  => Key::Special(SpecialKey::F2),
+        Keysym::F3  => Key::Special(SpecialKey::F3),
+        Keysym::F4  => Key::Special(SpecialKey::F4),
+        Keysym::F5  => Key::Special(SpecialKey::F5),
+        Keysym::F6  => Key::Special(SpecialKey::F6),
+        Keysym::F7  => Key::Special(SpecialKey::F7),
+        Keysym::F8  => Key::Special(SpecialKey::F8),
+        Keysym::F9  => Key::Special(SpecialKey::F9),
+        Keysym::F10 => Key::Special(SpecialKey::F10),
+        Keysym::F11 => Key::Special(SpecialKey::F11),
+        Keysym::F12 => Key::Special(SpecialKey::F12),
 
         Keysym::_1 => Key::Char('1'),
         Keysym::_2 => Key::Char('2'),
@@ -1431,10 +1431,7 @@ impl wayland_client::Dispatch<WlRegistry, GlobalListContents> for ConnectionStat
                 let wl_output = registry.bind(name, 2, qh, ());
                 let id = get_object_id(&wl_output);
 
-                evl.monitors.inner.insert(Id(id), Monitor {
-                    info: MonitorInfo::default(),
-                    backend: MonitorBackend { wl_output },
-                });
+                evl.monitors.inner.insert(Id(id), (MonitorInfo::default(), wl_output));
 
             }
 
@@ -1446,7 +1443,7 @@ impl wayland_client::Dispatch<WlRegistry, GlobalListContents> for ConnectionStat
             let id = Id(id);
             if evl.monitors.inner.contains_key(&id) {
                 evl.monitors.inner.remove(&id);
-                evl.events.push_back(Event::MonitorRemove { id })
+                evl.events.push_back(Event::Monitor{ id, event: MonitorEvent::Remove })
             }
         }
 
@@ -1465,11 +1462,9 @@ impl wayland_client::Dispatch<WlOutput, ()> for ConnectionState {
 
         let id = get_object_id(wl_output);
 
-        let monitor = evl.monitors.inner
+        let (info, _wl_output) = evl.monitors.inner
             .get_mut(&Id(id))
             .unwrap();
-
-        let info = &mut monitor.info;
 
         match event {
             WlOutputEvent::Name { name } => {
@@ -1488,13 +1483,13 @@ impl wayland_client::Dispatch<WlOutput, ()> for ConnectionState {
                 if info.name.is_empty() { info.name = make };
             },
             WlOutputEvent::Done => {
-                evl.events.push_back(Event::MonitorUpdate {
+                evl.events.push_back(Event::Monitor {
                     id: Id(id),
-                    state: Monitor {
+                    event: MonitorEvent::Update {
                         info: info.clone(),
-                        backend: MonitorBackend {
+                        monitor: Monitor { backend: MonitorBackend {
                             wl_output: wl_output.clone(),
-                        },
+                        } }
                     },
                 });
             },
@@ -1594,7 +1589,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 let surface = evl.offer.dnd.focused.as_ref().unwrap();
                 let sameapp = evl.offer.dnd.ours;
 
-                let recv = Receiver {
+                let recv = DataReadable {
                     backend: ReceiverBackend {
                         wl_data_offer,
                         data_kinds,
@@ -1605,7 +1600,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 evl.events.push_back(Event::Window {
                     id: Id(get_object_id(surface)),
                     event: WindowEvent::Dnd {
-                        event: DndEvent::Drop { x, y, recv },
+                        event: DndEvent::Drop { x, y, source: recv },
                         sameapp
                     },
                 });
@@ -1641,18 +1636,18 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 // The offer will have been introduced with the advertised mime types already.
                 let data_kinds = mem::take(&mut evl.offer.advertised_data_kinds);
 
-                let recv = Some(Receiver { backend: ReceiverBackend {
+                let recv = Some(DataReadable { backend: ReceiverBackend {
                     wl_data_offer,
                     data_kinds,
                     dnd: false,
                 } });
 
-                evl.events.push_back(Event::SelectionUpdate { recv });
+                evl.events.push_back(Event::SelectionUpdate { sink: recv });
 
             } else {
 
                 evl.offer.advertised_data_kinds.clear();
-                evl.events.push_back(Event::SelectionUpdate { recv: None });
+                evl.events.push_back(Event::SelectionUpdate { sink: None });
 
             }
 
@@ -1709,22 +1704,22 @@ impl wayland_client::Dispatch<WlDataSource, ()> for ConnectionState {
 
             let kind = DataKind::from_mime_type(&mime_type).unwrap();
 
-            let send = Sender { backend: SenderBackend {
+            let writer = DataWriter { backend: DataWriterBackend {
                 inner: io::PipeWriter::from(fd)
             } };
 
-            evl.events.push_back(Event::Sender {
+            evl.events.push_back(Event::DataSource {
                 id: Id(id),
-                event: SenderEvent::Send { kind, send }
+                event: DataSourceEvent::Send { kind, writer }
             });
 
         }
 
         else if let WlDataSourceEvent::DndFinished = event { // emitted on succesfull write
 
-            evl.events.push_back(Event::Sender {
+            evl.events.push_back(Event::DataSource {
                 id: Id(id),
-                event: SenderEvent::Success
+                event: DataSourceEvent::Success
             });
 
         }
@@ -1734,9 +1729,9 @@ impl wayland_client::Dispatch<WlDataSource, ()> for ConnectionState {
             evl.offer.dnd.ours = false;
             evl.offer.dnd.icon = None;
 
-            evl.events.push_back(Event::Sender {
+            evl.events.push_back(Event::DataSource {
                 id: Id(id),
-                event: SenderEvent::Close
+                event: DataSourceEvent::Close
             });
 
         }
@@ -2164,7 +2159,7 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                     evl.events.push_back(Event::Window { id: Id(id), event: WindowEvent::Leave });
 
                     // also invalidate selection, to be more correct
-                    evl.events.push_back(Event::SelectionUpdate { recv: None });
+                    evl.events.push_back(Event::SelectionUpdate { sink: None });
 
                     evl.keyboard.focused = None;
 

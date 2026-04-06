@@ -105,7 +105,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                         );
 
                         if let Some(shape) = geometry.shapes.last_mut() {
-                            shape.target.end += 1;
+                            shape.end += 1;
                             window.redraw();
                         }
 

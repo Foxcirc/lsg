@@ -1,17 +1,19 @@
 
+#[cfg(feature = "import")] mod import;
+#[cfg(feature = "import")] use import as backend2;
+
+#[cfg(all(target_os = "linux", not(feature = "import")))] mod linux;
+#[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend2;
+
+#[cfg(feature = "export")] mod export;
+mod export;
+
 use core::{error::Error as StdError, fmt, future, task};
 
 // TODO: use alloc instead of std to possibly support non-std targets
 use std::{io, os::fd::AsFd, sync::Arc};
 
-#[cfg(feature = "import")] mod import;
-#[cfg(feature = "import")] use import as backend2;
-
-#[cfg(all(target_os = "linux", feature = "export"))] mod linux;
-#[cfg(all(target_os = "linux", feature = "export"))] use linux as backend2;
-
-#[cfg(feature = "export")] mod export;
-
+#[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(u32);
 
@@ -23,19 +25,24 @@ pub enum Event {
     Suspend,
     /// Your app should quit.
     Quit { reason: QuitReason },
-    /// A monitor was discovered or updated.
-    MonitorUpdate { id: Id, state: Monitor },
-    /// A monitor was removed.
-    MonitorRemove { id: Id },
+    /// A monitor event.
+    Monitor { id: Id, event: MonitorEvent },
     /// An event that belongs to a specific window. (eg. focus change, mouse movement)
     Window { id: Id, event: WindowEvent },
     /// Requests you sending data to another client.
-    Sender { id: Id, event: SenderEvent },
+    DataSource { id: Id, event: DataSourceEvent },
     /// The selection changed. This event will not be send if your app isn't in focus.
     /// `None` indicates that the current selection was invalidated.
-    SelectionUpdate { recv: Option<Receiver> },
+    SelectionUpdate { sink: Option<DataReadable> },
     // ///  Notification event. (eg. an action was invoked)
     // Notif { id: NotifId, event: NotifEvent },
+}
+
+#[derive(Debug)]
+pub enum MonitorEvent {
+    /// A monitor was discovered or updated.
+    Update { info: MonitorInfo, monitor: Monitor },
+    Remove
 }
 
 #[derive(Debug)]
@@ -65,10 +72,10 @@ pub enum WindowEvent {
 
 /// Events for a [`DataSource`].
 #[derive(Debug)]
-pub enum SenderEvent {
+pub enum DataSourceEvent {
     /// Data of the specific [`DataKind`] you advertised was requested to be transferred.
     /// Could be send multiple times.
-    Send { kind: DataKind, send: Sender },
+    Send { kind: DataKind, writer: DataWriter },
     /// Data was successfully transfarred.
     /// Could be send multiple times, one per `Send`.
     Success,
@@ -86,7 +93,7 @@ pub enum NotifEvent {
 #[derive(Debug)]
 pub enum DndEvent {
     Motion { x: f64, y: f64, item: HoveredItem },
-    Drop { x: f64, y: f64, recv: Receiver },
+    Drop { x: f64, y: f64, source: DataReadable },
     Cancel,
 }
 
@@ -142,12 +149,14 @@ pub enum CursorShape {
     ZoomOut,
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum InputMode {
     SingleKey,
     Text,
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum QuitReason {
     /// Quit requested programatically.
@@ -175,6 +184,28 @@ pub enum IconFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: derive the right traits to all those classes
 pub enum Key {
+    Special(SpecialKey),
+    Char(char), // a-z, A-Z, 1-9, + special chars
+    DeadChar(char),
+    Unknown(u32)
+}
+
+impl Key {
+    pub fn modifier(&self) -> bool {
+        if let Self::Special(key) = self {
+            matches!(key,
+                SpecialKey::Shift | SpecialKey::Control | SpecialKey::CapsLock |
+                SpecialKey::Alt   | SpecialKey::AltGr   | SpecialKey::Super
+            )
+        } else {
+            false
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialKey {
     Escape,
     Tab,
     CapsLock,
@@ -193,22 +224,11 @@ pub enum Key {
     ArrowDown,
     ArrowLeft,
     ArrowRight,
-    F(u32), // f1, f2, f3, etc.
-    Char(char), // a-z, A-Z, 1-9, + special chars
-    DeadChar(char),
-    Unknown(u32),
+    F1, F2, F3, F4, F5, F6,
+    F7, F8, F9, F10, F11, F12,
 }
 
-impl Key {
-    pub fn modifier(&self) -> bool {
-        matches!(
-            self,
-            Self::Shift | Self::Control | Self::CapsLock |
-            Self::Alt | Self::AltGr | Self::Super
-        )
-    }
-}
-
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum MouseButton {
     Left,
@@ -219,6 +239,7 @@ pub enum MouseButton {
     Unknown(u32),
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataKind {
     Text,
@@ -237,6 +258,7 @@ impl Default for DataKind {
     }
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub enum ScrollAxis {
     Vertical,
@@ -419,15 +441,14 @@ unsafe impl common::IsSurface for Window {
 }
 
 pub struct Monitor {
-    pub info: MonitorInfo,
     backend: backend2::MonitorBackend,
 }
 
-pub struct Receiver {
+pub struct DataReadable {
     backend: backend2::ReceiverBackend,
 }
 
-impl Receiver {
+impl DataReadable {
 
     pub fn kinds(&self) -> &[DataKind] {
         self.backend.kinds()
@@ -440,17 +461,64 @@ impl Receiver {
 
 }
 
-pub struct Sender {
-    backend: backend2::SenderBackend,
+pub struct DataWritable {
+    backend: backend2::DataSourceBackend,
 }
 
-impl AsFd for Sender {
+impl DataWritable {
+
+    pub fn id(&self) -> Id {
+        self.backend.id()
+    }
+
+    /// Create a DataSource that will be the new selection.
+    ///
+    /// In other words this "sets the selection (clipboard)". You will receive events for this DataSource when another client
+    /// wants to read from the selection.
+    // TODO + DOCS: docs-rs alias to "clipboard" or smth
+    pub fn selection(evl: &EventLoop, offers: &[DataKind]) -> Self {
+        let backend = backend2::DataSourceBackend::selection(evl, offers);
+        Self { backend }
+    }
+
+    /// You should only start a drag-and-drop when the left mouse button is held down
+    /// *and* the user then moves the mouse.
+    /// Otherwise the request may be denied or visually broken.
+    #[track_caller]
+    pub fn dnd(handle: &Window, offers: &[DataKind], icon: CustomIcon) -> Self {
+        let backend = backend2::DataSourceBackend::dnd(handle, offers, icon);
+        Self { backend }
+    }
+
+}
+
+pub struct DataReader {
+    backend: backend2::DataReaderBackend,
+}
+
+impl AsFd for DataReader {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.backend.as_fd()
     }
 }
 
-impl io::Write for Sender {
+impl io::Read for DataReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.backend.read(buf)
+    }
+}
+
+pub struct DataWriter {
+    backend: backend2::DataWriterBackend,
+}
+
+impl AsFd for DataWriter {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.backend.as_fd()
+    }
+}
+
+impl io::Write for DataWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.backend.write(buf)
     }
@@ -519,8 +587,8 @@ macro_rules! impl_debug_opaque {
 
 impl_debug_opaque!(
     Monitor,
-    Receiver,
-    Sender,
+    DataReadable,
+    DataWriter,
     HoveredItem,
     CustomIcon
 );

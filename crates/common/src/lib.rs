@@ -1,5 +1,7 @@
 
-use std::{collections::VecDeque, convert::identity, ffi::c_void as void, fmt, future, marker::PhantomData, ops::{self, Range}, pin::{Pin, pin}, sync::{Mutex, MutexGuard}, task};
+#[cfg(feature = "export")] mod export;
+
+use std::{ffi::c_void as void, fmt, ops::{self, Range}, sync::{Mutex, MutexGuard}};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -23,6 +25,7 @@ impl PhysicalRect {
 /// A non-negative size, specified in logical coordinates.
 ///
 /// See [`LogicalPoint`].
+#[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LogicalSize {
     pub w: u16,
@@ -51,8 +54,8 @@ impl From<PhysicalSize> for LogicalSize {
     }
 }
 
-// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-// /// A non-negative size, specified in physical coordinates.
+/// A non-negative size, specified in physical coordinates.
+#[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalSize {
     pub w: u16,
@@ -73,6 +76,7 @@ impl From<LogicalSize> for PhysicalSize {
 }
 
 /// A point, specified in logical coordinates.
+#[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LogicalPoint {
     pub x: i16,
@@ -103,6 +107,7 @@ impl From<CurvePoint> for LogicalPoint {
 }
 
 /// A point, specified in logical coordinates.
+#[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalPoint {
     pub x: i16,
@@ -120,6 +125,7 @@ impl PhysicalPoint {
 
 // TODO: I believe we should work with integer points that have high coordinate values instead of using f32 generally
 /// A mathematical point.
+#[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct MathPoint {
     pub x: f32,
@@ -165,29 +171,11 @@ impl ops::Add<MathPoint> for MathPoint {
     }
 }
 
-/// Area of a window that has to be redrawn.
-pub struct Damage<'s> {
-    /// Empty means full damage.
-    pub rects: &'s [PhysicalRect],
-}
-
-impl<'s> Damage<'s> {
-    /// Everything will be redrawn.
-    pub fn all() -> Self {
-        Self { rects: &[] }
-    }
-    /// Only the marked rects should be redrawn.
-    /// This is only an optimization and the system may choose
-    /// to redraw more parts of the window.
-    pub fn partial(rects: &'s [PhysicalRect]) -> Self {
-        Self { rects }
-    }
-}
-
 /// A point with additional curve information.
 ///
 /// Can represent base (on-curve) and control (off-curve) points using
 /// a compressed format to save space.
+#[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CurvePoint {
     /// # Layout
@@ -284,29 +272,30 @@ pub trait CurvePointFrom<T> {
     fn convert(t: T, kind: PointKind) -> Self;
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointKind {
     Base,
-    Ctrl,
+    Ctrl
 }
 
 /// Description of what points or vertices make up a shape.
+#[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape {
-    pub target: Range<u16>,
+    pub start: u16,
+    pub end: u16,
 }
 
 impl Shape {
 
     pub const ZERO: Self = Self::new(0..0);
 
-    pub const fn new(target: Range<u16>) -> Self {
-        Self { target }
-    }
+    pub const fn new(target: Range<u16>)    -> Self { Self { start: target.start, end: target.end } }
+    pub const fn new2(start: u16, end: u16) -> Self { Self { start,               end             } }
 
-    pub fn range(&self) -> Range<usize> {
-        self.target.start as usize .. self.target.end as usize
-    }
+    pub fn range(&self)  -> Range<u16>   { self.start          .. self.end          }
+    pub fn range2(&self) -> Range<usize> { self.start as usize .. self.end as usize }
 
 }
 
@@ -424,84 +413,3 @@ impl<T> SmartMutex<T> {
     }
 
 }
-
-// pub struct EventChannel<T> {
-//     inner: SmartMutex<EventChannelInner<T>>,
-// }
-
-// impl<T> Default for EventChannel<T> {
-//     fn default() -> Self {
-//         Self::new()
-//     }
-// }
-
-// struct EventChannelInner<T> {
-//     events: VecDeque<T>,
-//     waker: Option<task::Waker>,
-// }
-
-// impl<T> EventChannel<T> {
-
-//     pub const fn new() -> Self {
-//         Self {
-//             inner: SmartMutex::new(EventChannelInner {
-//                 events: VecDeque::new(),
-//                 waker: None,
-//             }),
-//         }
-//     }
-
-//     /// Returns `true` if this channel has any listeners.
-//     pub fn active(&self) -> bool {
-//         self.inner.with(|it| it.waker.is_some())
-//     }
-
-//     pub fn len(&self) -> usize {
-//         self.inner.with(|it| it.events.len())
-//     }
-
-//     pub fn send(&self, event: T) {
-
-//         let mut inner = self.inner.lock();
-
-//         inner.events.push_back(event);
-
-//         if let Some(waker) = &inner.waker {
-//             waker.wake_by_ref();
-//         }
-
-//     }
-
-// }
-
-// impl<T> Future for &EventChannel<T> {
-
-//     type Output = T;
-
-//     fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
-
-//         let mut inner = self.inner.lock();
-
-//         let maybe = inner.events.pop_front();
-
-//         if let Some(it) = maybe {
-//             task::Poll::Ready(it)
-//         } else {
-
-//             let old = &mut inner.waker;
-//             let new = cx.waker();
-
-//             let same = old.as_mut()
-//                 .map(|it| it.will_wake(new))
-//                 .unwrap_or_default();
-
-//             if !same {
-//                 *old = Some(new.clone());
-//             }
-
-//             task::Poll::Pending
-//         }
-
-//     }
-
-// }
