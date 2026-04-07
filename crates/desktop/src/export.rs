@@ -2,10 +2,10 @@
 //! This module contains a C-ABI compatible API which
 //! makes this crate usable as a library from other languages.
 
-use core::task;
-use std::{ffi::{CStr, CString, c_void as void}, mem::{self, ManuallyDrop}, ptr::{NonNull, null}, sync::{Arc, Mutex}};
+use core::{slice, task};
+use std::{ffi::{CStr, CString, c_void as void}, io::{Read, Write}, mem::{self, ManuallyDrop}, os::fd::{AsFd, AsRawFd}, ptr::{NonNull, null, null_mut}, sync::{Arc, Mutex}};
 
-use common::IsDisplay;
+use common::{IsDisplay, IsSurface};
 
 #[repr(C)]
 pub struct EventLoopConfig {
@@ -134,6 +134,12 @@ pub struct MonitorInfo {
     pub refresh: u32,
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn monitor_info_drop(this: MonitorInfo) {
+    drop(unsafe { CString::from_raw(this.name) });
+    drop(unsafe { CString::from_raw(this.description) });
+}
+
 #[repr(C)]
 pub struct Monitor;
 
@@ -141,6 +147,23 @@ pub struct Monitor;
 pub unsafe extern "C" fn monitor_drop(this0: *mut Monitor) {
     let mut this = unsafe { get_monitor(this0) };
     unsafe { ManuallyDrop::drop(&mut this) };
+}
+
+#[repr(C)]
+pub struct CustomIcon;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn custom_icon_drop(this0: *mut CustomIcon) {
+    let mut this = unsafe { get_custom_icon(this0) };
+    unsafe { ManuallyDrop::drop(&mut this) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn custom_icon_new(evl0: *const EventLoop, size: common::LogicalSize, format: crate::IconFormat, data0: WriteSlice) -> *mut CustomIcon {
+    let evl = unsafe { get_event_loop(evl0) };
+    let data = unsafe { slice::from_raw_parts(data0.ptr, data0.len) };
+    let icon = crate::CustomIcon::new(&evl, size, format, data);
+    Box::into_raw(Box::new(icon)).cast()
 }
 
 #[repr(C)]
@@ -152,6 +175,13 @@ pub unsafe extern "C" fn hovered_item_drop(this0: *mut HoveredItem) {
     unsafe { ManuallyDrop::drop(&mut this) };
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hovered_item_advertise(this0: *mut HoveredItem, kinds0: DataKindsSlice) {
+    let this = unsafe { get_hovered_item(this0) };
+    let kinds = unsafe { slice::from_raw_parts(kinds0.ptr, kinds0.len) };
+    this.advertise(kinds);
+}
+
 #[repr(C)]
 pub struct DataReadable;
 
@@ -161,21 +191,41 @@ pub unsafe extern "C" fn data_readable_drop(this0: *mut DataReadable) {
     unsafe { ManuallyDrop::drop(&mut this) };
 }
 
-// #[repr(C)]
-// pub struct DataReadableKinds {
-//     ptr: *const crate::DataKind,
-//     len: usize,
-// }
+#[repr(C)]
+pub struct DataKindsSlice {
+    pub ptr: *const crate::DataKind,
+    pub len: usize,
+}
 
-// #[unsafe(no_mangle)]
-// pub unsafe extern "C" fn data_readable_kinds(this0: *mut DataReadable) -> DataReadableKinds {
-//     let this = unsafe { get_data_readable(this0) };
-//     let slice = this.kinds();
-//     DataReadableKinds {
-//         ptr: slice.as_ptr(),
-//         len: slice.len(),
-//     }
-// }
+#[repr(C)]
+pub struct ReadSlice {
+    pub ptr: *mut u8,
+    pub len: usize,
+}
+
+#[repr(C)]
+pub struct WriteSlice {
+    pub ptr: *const u8,
+    pub len: usize,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_readable_kinds(this0: *mut DataReadable) -> DataKindsSlice {
+    let this = unsafe { get_data_readable(this0) };
+    let slice = this.kinds();
+    DataKindsSlice {
+        ptr: slice.as_ptr(),
+        len: slice.len(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_readable_receive(this0: *mut DataReadable, evl0: *const EventLoop, kind: crate::DataKind) -> *mut DataReader {
+    let this = unsafe { get_data_readable(this0) };
+    let evl = unsafe { get_event_loop(evl0) };
+    let reader = this.receive(&evl, kind);
+    Box::into_raw(Box::new(reader)).cast()
+}
 
 #[repr(C)]
 pub struct DataReader;
@@ -184,6 +234,19 @@ pub struct DataReader;
 pub unsafe extern "C" fn data_reader_drop(this0: *mut DataReader) {
     let mut this = unsafe { get_data_reader(this0) };
     unsafe { ManuallyDrop::drop(&mut this) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_reader_as_fd(this0: *mut DataReader) -> i32 {
+    let this = unsafe { get_data_reader(this0) };
+    this.as_fd().as_raw_fd()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_reader_read(this0: *mut DataReader, out0: ReadSlice) -> usize {
+    let mut this = unsafe { get_data_reader(this0) };
+    let out = unsafe { slice::from_raw_parts_mut(out0.ptr, out0.len) };
+    this.read(out).expect("cannot read") // TODO: foreward I/O error, otherwise a bad client could crash our program, also: do we even want this to be a IO read impl, what about windows/web where this isnt a file read (or is it?)?
 }
 
 #[repr(C)]
@@ -195,6 +258,28 @@ pub unsafe extern "C" fn data_writable_drop(this0: *mut DataWritable) {
     unsafe { ManuallyDrop::drop(&mut this) };
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writable_id(this0: *mut DataWritable) -> crate::Id {
+    let this = unsafe { get_data_writable(this0) };
+    this.id()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writable_selection(evl0: *const EventLoop, offers0: DataKindsSlice) -> *mut DataWritable {
+    let evl = unsafe { get_event_loop(evl0) };
+    let offers = unsafe { slice::from_raw_parts(offers0.ptr, offers0.len) };
+    Box::into_raw(Box::new(crate::DataWritable::selection(&evl, offers))).cast()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writable_dnd(wnd0: *mut Window, offers0: DataKindsSlice, icon0: *mut CustomIcon /* consumed */) -> *mut DataWritable {
+    let wnd = unsafe { get_window(wnd0) };
+    let icon1 = unsafe { get_custom_icon(icon0) };
+    let icon = *ManuallyDrop::into_inner(icon1); // move out, since we want to take ownership
+    let offers = unsafe { slice::from_raw_parts(offers0.ptr, offers0.len) };
+    Box::into_raw(Box::new(crate::DataWritable::dnd(&wnd, offers, icon))).cast()
+}
+
 #[repr(C)]
 pub struct DataWriter;
 
@@ -204,52 +289,130 @@ pub unsafe extern "C" fn data_writer_drop(this0: *mut DataWriter) {
     unsafe { ManuallyDrop::drop(&mut this) };
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writer_as_fd(this0: *mut DataWriter) -> i32 {
+    let this = unsafe { get_data_writer(this0) };
+    this.as_fd().as_raw_fd()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writer_write(this0: *mut DataWriter, src0: WriteSlice) -> usize {
+    let mut this = unsafe { get_data_writer(this0) };
+    let src = unsafe { slice::from_raw_parts(src0.ptr, src0.len) };
+    this.write(src).expect("cannot write") // TODO: see data_reader_read
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_writer_flush(this0: *mut DataWriter) {
+    let mut this = unsafe { get_data_writer(this0) };
+    this.flush().expect("cannot flush") // TODO: see data_reader_read
+}
+
 #[repr(C)]
 pub struct EvlHandlers {
 
-    resume:  extern "C" fn(*mut void),
-    suspend: extern "C" fn(*mut void),
-    quit:    extern "C" fn(*mut void, crate::QuitReason),
+    pub resume:  extern "C" fn(*mut void),
+    pub suspend: extern "C" fn(*mut void),
+    pub quit:    extern "C" fn(*mut void, crate::QuitReason),
 
-    monitor_update: extern "C" fn(*mut void, crate::Id, info: MonitorInfo, monitor: *mut Monitor),
-    monitor_remove: extern "C" fn(*mut void, crate::Id),
+    pub monitor_update: extern "C" fn(*mut void, crate::Id, info: MonitorInfo, monitor: *mut Monitor),
+    pub monitor_remove: extern "C" fn(*mut void, crate::Id),
 
-    window_should_close: extern "C" fn(*mut void, crate::Id),
-    window_redraw:       extern "C" fn(*mut void, crate::Id),
-    window_resize:       extern "C" fn(*mut void, crate::Id, size: common::PhysicalSize, fullscreen: bool),
-    window_rescale:      extern "C" fn(*mut void, crate::Id, scale: f64),
-    window_decorations:  extern "C" fn(*mut void, crate::Id, active: bool),
-    window_enter:        extern "C" fn(*mut void, crate::Id),
-    window_leave:        extern "C" fn(*mut void, crate::Id),
+    pub window_should_close: extern "C" fn(*mut void, crate::Id),
+    pub window_redraw:       extern "C" fn(*mut void, crate::Id),
+    pub window_resize:       extern "C" fn(*mut void, crate::Id, size: common::PhysicalSize, fullscreen: bool),
+    pub window_rescale:      extern "C" fn(*mut void, crate::Id, scale: f64),
+    pub window_decorations:  extern "C" fn(*mut void, crate::Id, active: bool),
+    pub window_enter:        extern "C" fn(*mut void, crate::Id),
+    pub window_leave:        extern "C" fn(*mut void, crate::Id),
 
-    window_mouse_enter:  extern "C" fn(*mut void, crate::Id),
-    window_mouse_leave:  extern "C" fn(*mut void, crate::Id),
-    window_mouse_motion: extern "C" fn(*mut void, crate::Id, point: common::LogicalPoint),
-    window_mouse_down:   extern "C" fn(*mut void, crate::Id, point: common::LogicalPoint, button: crate::MouseButton),
-    window_mouse_up:     extern "C" fn(*mut void, crate::Id, point: common::LogicalPoint, button: crate::MouseButton),
-    window_mouse_scroll: extern "C" fn(*mut void, crate::Id, axis: crate::ScrollAxis, value: i16),
+    pub window_mouse_enter:  extern "C" fn(*mut void, crate::Id),
+    pub window_mouse_leave:  extern "C" fn(*mut void, crate::Id),
+    pub window_mouse_motion: extern "C" fn(*mut void, crate::Id, point: common::LogicalPoint),
+    pub window_mouse_down:   extern "C" fn(*mut void, crate::Id, point: common::LogicalPoint, button: crate::MouseButton),
+    pub window_mouse_up:     extern "C" fn(*mut void, crate::Id, point: common::LogicalPoint, button: crate::MouseButton),
+    pub window_mouse_scroll: extern "C" fn(*mut void, crate::Id, axis: crate::ScrollAxis, value: i16),
 
-    window_key_down_special: extern "C" fn(*mut void, crate::Id, key: crate::SpecialKey, repeat: bool),
-    window_key_down_char:    extern "C" fn(*mut void, crate::Id, chr: u32, dead: bool, repeat: bool),
-    window_key_down_unknown: extern "C" fn(*mut void, crate::Id, key: u32, repeat: bool),
+    pub window_key_down_special: extern "C" fn(*mut void, crate::Id, key: crate::SpecialKey, repeat: bool),
+    pub window_key_down_char:    extern "C" fn(*mut void, crate::Id, chr: u32, dead: bool, repeat: bool),
+    pub window_key_down_unknown: extern "C" fn(*mut void, crate::Id, key: u32, repeat: bool),
 
-    window_key_up_special:   extern "C" fn(*mut void, crate::Id, key: crate::SpecialKey),
-    window_key_up_char:      extern "C" fn(*mut void, crate::Id, chr: u32, dead: bool),
-    window_key_up_unknown:   extern "C" fn(*mut void, crate::Id, key: u32),
+    pub window_key_up_special:   extern "C" fn(*mut void, crate::Id, key: crate::SpecialKey),
+    pub window_key_up_char:      extern "C" fn(*mut void, crate::Id, chr: u32, dead: bool),
+    pub window_key_up_unknown:   extern "C" fn(*mut void, crate::Id, key: u32),
 
-    window_text_input:          extern "C" fn(*mut void, crate::Id, chr: u32),
-    window_text_compose:        extern "C" fn(*mut void, crate::Id, chr: u32),
-    window_text_compose_cancel: extern "C" fn(*mut void, crate::Id),
+    pub window_text_input:          extern "C" fn(*mut void, crate::Id, chr: u32),
+    pub window_text_compose:        extern "C" fn(*mut void, crate::Id, chr: u32),
+    pub window_text_compose_cancel: extern "C" fn(*mut void, crate::Id),
 
-    window_dnd_motion: extern "C" fn(*mut void, crate::Id, sameapp: bool, x: f64, y: f64, *mut HoveredItem),
-    window_dnd_drop:   extern "C" fn(*mut void, crate::Id, sameapp: bool, x: f64, y: f64, *mut DataReader),
-    window_dnd_cancel: extern "C" fn(*mut void, crate::Id, sameapp: bool),
+    pub window_dnd_motion: extern "C" fn(*mut void, crate::Id, sameapp: bool, x: f64, y: f64, *mut HoveredItem),
+    pub window_dnd_drop:   extern "C" fn(*mut void, crate::Id, sameapp: bool, x: f64, y: f64, *mut DataReadable),
+    pub window_dnd_cancel: extern "C" fn(*mut void, crate::Id, sameapp: bool),
 
-    data_source_send: extern "C" fn(*mut void, crate::Id, kind: crate::DataKind, writer: *mut DataWriter),
-    data_source_success: extern "C" fn(*mut void, crate::Id),
-    data_source_close: extern "C" fn(*mut void, crate::Id),
+    pub data_source_send:    extern "C" fn(*mut void, crate::Id, kind: crate::DataKind, writer: *mut DataWriter),
+    pub data_source_success: extern "C" fn(*mut void, crate::Id),
+    pub data_source_close:   extern "C" fn(*mut void, crate::Id),
 
-    selection_update: extern "C" fn(*mut void, *mut DataReadable),
+    pub selection_update: extern "C" fn(*mut void, *mut DataReadable),
+
+}
+
+#[unsafe(no_mangle)]
+pub const extern "C" fn evl_handlers_default() -> EvlHandlers {
+
+    macro_rules! noop {
+        ($($arg:ty),*) => {{
+            extern "C" fn f($(_: $arg),*) {} f
+        }};
+    }
+
+    EvlHandlers {
+
+        resume:  noop!(*mut void),
+        suspend: noop!(*mut void),
+        quit:    noop!(*mut void, crate::QuitReason),
+
+        monitor_update: noop!(*mut void, crate::Id, MonitorInfo, *mut Monitor),
+        monitor_remove: noop!(*mut void, crate::Id),
+
+        window_should_close: noop!(*mut void, crate::Id),
+        window_redraw:       noop!(*mut void, crate::Id),
+        window_resize:       noop!(*mut void, crate::Id, common::PhysicalSize, bool),
+        window_rescale:      noop!(*mut void, crate::Id, f64),
+        window_decorations:  noop!(*mut void, crate::Id, bool),
+        window_enter:        noop!(*mut void, crate::Id),
+        window_leave:        noop!(*mut void, crate::Id),
+
+        window_mouse_enter:  noop!(*mut void, crate::Id),
+        window_mouse_leave:  noop!(*mut void, crate::Id),
+        window_mouse_motion: noop!(*mut void, crate::Id, common::LogicalPoint),
+        window_mouse_down:   noop!(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
+        window_mouse_up:     noop!(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
+        window_mouse_scroll: noop!(*mut void, crate::Id, crate::ScrollAxis, i16),
+
+        window_key_down_special: noop!(*mut void, crate::Id, crate::SpecialKey, bool),
+        window_key_down_char:    noop!(*mut void, crate::Id, u32, bool, bool),
+        window_key_down_unknown: noop!(*mut void, crate::Id, u32, bool),
+
+        window_key_up_special:   noop!(*mut void, crate::Id, crate::SpecialKey),
+        window_key_up_char:      noop!(*mut void, crate::Id, u32, bool),
+        window_key_up_unknown:   noop!(*mut void, crate::Id, u32),
+
+        window_text_input:          noop!(*mut void, crate::Id, u32),
+        window_text_compose:        noop!(*mut void, crate::Id, u32),
+        window_text_compose_cancel: noop!(*mut void, crate::Id),
+
+        window_dnd_motion: noop!(*mut void, crate::Id, bool, f64, f64, *mut HoveredItem),
+        window_dnd_drop:   noop!(*mut void, crate::Id, bool, f64, f64, *mut DataReadable),
+        window_dnd_cancel: noop!(*mut void, crate::Id, bool),
+
+        data_source_send:    noop!(*mut void, crate::Id, crate::DataKind, *mut DataWriter),
+        data_source_success: noop!(*mut void, crate::Id),
+        data_source_close:   noop!(*mut void, crate::Id),
+
+        selection_update: noop!(*mut void, *mut DataReadable)
+
+    }
 
 }
 
@@ -364,9 +527,9 @@ fn event_loop_poll_inner(this: &Arc<crate::EventLoop>, mut cx: task::Context, ha
                             let item0 = Box::into_raw(Box::new(item)).cast();
                             (handlers.window_dnd_motion)(state, id, sameapp, x, y, item0)
                         },
-                        DndEvent::Drop { x, y, source } => {
-                            let source0 = Box::into_raw(Box::new(source)).cast();
-                            (handlers.window_dnd_drop)(state, id, sameapp, x, y, source0)
+                        DndEvent::Drop { x, y, readable } => {
+                            let readable0 = Box::into_raw(Box::new(readable)).cast();
+                            (handlers.window_dnd_drop)(state, id, sameapp, x, y, readable0)
                         },
                         DndEvent::Cancel => {
                             (handlers.window_dnd_cancel)(state, id, sameapp)
@@ -385,9 +548,10 @@ fn event_loop_poll_inner(this: &Arc<crate::EventLoop>, mut cx: task::Context, ha
                     DataSourceEvent::Close   => (handlers.data_source_close)   (state, id),
                 },
 
-                Event::SelectionUpdate { sink } => {
-                    let sink0 = Box::into_raw(Box::new(sink)).cast();
-                    (handlers.selection_update)(state, sink0)
+                Event::SelectionUpdate { readable } => {
+                    let readable0 = readable.map(|it| Box::into_raw(Box::new(it)).cast())
+                        .unwrap_or(null_mut::<DataReadable>());
+                    (handlers.selection_update)(state, readable0)
                 }
 
             }
@@ -405,6 +569,10 @@ unsafe fn get_event_loop(ptr: *const EventLoop) -> ManuallyDrop<Arc<crate::Event
 }
 
 unsafe fn get_window(ptr: *mut Window) -> ManuallyDrop<Box<crate::Window>> {
+    ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
+}
+
+unsafe fn get_custom_icon(ptr: *mut CustomIcon) -> ManuallyDrop<Box<crate::CustomIcon>> {
     ManuallyDrop::new(unsafe { Box::from_raw(ptr.cast()) })
 }
 
@@ -507,7 +675,7 @@ pub unsafe extern "C" fn window_title(this0: *mut Window, text0: *const i8) {
     let this = unsafe { get_window(this0) };
     let text = unsafe { CStr::from_ptr(text0).to_str()
         .expect("`window title` must be valid utf8").to_string() };
-    this.title(text);
+    this.title(&text);
 }
 
 #[unsafe(no_mangle)]
@@ -535,21 +703,43 @@ pub unsafe extern "C" fn window_sizehint(this0: *mut Window, size: common::Physi
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn window_minsize(this0: *mut Window, size: common::LogicalSize, set: bool) {
+pub unsafe extern "C" fn window_minsize(this0: *mut Window, size: common::LogicalSize) {
     let this = unsafe { get_window(this0) };
-    let val = if set { Some(size) } else { None };
-    this.minsize(val);
+    this.minsize(Some(size));
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn window_maxsize(this0: *mut Window, size: common::LogicalSize, set: bool) {
+pub unsafe extern "C" fn window_minsize_unset(this0: *mut Window) {
     let this = unsafe { get_window(this0) };
-    let val = if set { Some(size) } else { None };
-    this.minsize(val);
+    this.minsize(None);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_maxsize(this0: *mut Window, size: common::LogicalSize) {
+    let this = unsafe { get_window(this0) };
+    this.minsize(Some(size));
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_maxsize_unset(this0: *mut Window) {
+    let this = unsafe { get_window(this0) };
+    this.minsize(None);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn window_alert(this0: *mut Window, urgency: crate::Urgency) {
     let this = unsafe { get_window(this0) };
     this.alert(urgency);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_ptr(this0: *mut Window) -> *mut void {
+    let this = unsafe { get_window(this0) };
+    this.ptr()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_size(this0: *mut Window) -> common::PhysicalSize {
+    let this = unsafe { get_window(this0) };
+    this.size()
 }

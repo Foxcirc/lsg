@@ -1,9 +1,9 @@
 
 #[cfg(feature = "import")] mod import;
-#[cfg(feature = "import")] use import as backend2;
+#[cfg(feature = "import")] use import as backend;
 
 #[cfg(all(target_os = "linux", not(feature = "import")))] mod linux;
-#[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend2;
+#[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend;
 
 #[cfg(feature = "export")] mod export;
 mod export;
@@ -11,7 +11,7 @@ mod export;
 use core::{error::Error as StdError, fmt, future, task};
 
 // TODO: use alloc instead of std to possibly support non-std targets
-use std::{io, os::fd::AsFd, sync::Arc};
+use std::{io, os::fd::{AsFd, BorrowedFd}, sync::Arc};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -33,7 +33,7 @@ pub enum Event {
     DataSource { id: Id, event: DataSourceEvent },
     /// The selection changed. This event will not be send if your app isn't in focus.
     /// `None` indicates that the current selection was invalidated.
-    SelectionUpdate { sink: Option<DataReadable> },
+    SelectionUpdate { readable: Option<DataReadable> },
     // ///  Notification event. (eg. an action was invoked)
     // Notif { id: NotifId, event: NotifEvent },
 }
@@ -93,7 +93,7 @@ pub enum NotifEvent {
 #[derive(Debug)]
 pub enum DndEvent {
     Motion { x: f64, y: f64, item: HoveredItem },
-    Drop { x: f64, y: f64, source: DataReadable },
+    Drop { x: f64, y: f64, readable: DataReadable },
     Cancel,
 }
 
@@ -179,6 +179,7 @@ pub enum Urgency {
     Switch,
 }
 
+#[repr(C)]
 pub enum IconFormat {
     Argb8,
 }
@@ -290,20 +291,20 @@ pub struct EvlError {
 }
 
 impl EvlError {
-    pub fn new(severity: Severity, message: String) -> Self {
-        Self { severity, message }
+    pub fn new(severity: Severity, message: &str) -> Self {
+        Self { severity, message: message.to_string() }
     }
-    pub fn fatal(message: String) -> Self {
+    pub fn fatal(message: &str) -> Self {
         Self::new(Severity::Fatal, message)
     }
-    pub fn warning(message: String) -> Self {
+    pub fn warning(message: &str) -> Self {
         Self::new(Severity::Warning, message)
     }
-    pub fn unsupported(message: String) -> Self {
+    pub fn unsupported(message: &str) -> Self {
         Self::new(Severity::Unsupported, message)
     }
     pub fn anyerror<T: StdError>(t: T) -> Self {
-        Self::fatal(t.to_string())
+        Self::fatal(&t.to_string())
     }
 }
 
@@ -329,7 +330,7 @@ impl StdError for EvlError {}
 // the backend are defined.
 
 pub struct EventLoop {
-    backend: backend2::EventLoopBackend,
+    backend: backend::EventLoopBackend,
 }
 
 impl EventLoop {
@@ -338,7 +339,7 @@ impl EventLoop {
     pub fn run<R, H>(config: EvlConfig, handler: H) -> Result<R, EvlError>
         where H: FnOnce(Arc<Self>) -> R {
 
-            backend2::EventLoopBackend::run(config, handler)
+            backend::EventLoopBackend::run(config, handler)
 
     }
 
@@ -381,12 +382,12 @@ impl Default for EvlConfig {
 }
 
 pub struct Window {
-    backend: backend2::WindowBackend,
+    backend: backend::WindowBackend,
 }
 
 impl Window {
     pub fn new(evl: &Arc<EventLoop>) -> Self {
-        let backend = backend2::WindowBackend::new(evl);
+        let backend = backend::WindowBackend::new(evl);
         Self { backend }
     }
     pub fn id(&self) -> Id {
@@ -409,7 +410,7 @@ impl Window {
     pub fn decorations(&self, value: bool) {
         self.backend.decorations(value);
     }
-    pub fn title<S: Into<String>>(&self, text: S) {
+    pub fn title(&self, text: &str) {
         self.backend.title(text);
     }
     pub fn maximize(&self, value: bool) {
@@ -442,11 +443,11 @@ unsafe impl common::IsSurface for Window {
 }
 
 pub struct Monitor {
-    backend: backend2::MonitorBackend,
+    backend: backend::MonitorBackend,
 }
 
 pub struct DataReadable {
-    backend: backend2::ReceiverBackend,
+    backend: backend::DataReadableBackend,
 }
 
 impl DataReadable {
@@ -456,15 +457,15 @@ impl DataReadable {
     }
 
     /// A [`Receiver`] can be read multiple times. Also using different [`DataKind`].
-    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> Result<DataReader, EvlError> {
-        let backend = self.backend.receive(evl, kind)?;
-        Ok(DataReader { backend })
+    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> DataReader {
+        let backend = self.backend.receive(evl, kind);
+        DataReader { backend }
     }
 
 }
 
 pub struct DataWritable {
-    backend: backend2::DataSourceBackend,
+    backend: backend::DataWritableBackend,
 }
 
 impl DataWritable {
@@ -479,7 +480,7 @@ impl DataWritable {
     /// wants to read from the selection.
     // TODO + DOCS: docs-rs alias to "clipboard" or smth
     pub fn selection(evl: &EventLoop, offers: &[DataKind]) -> Self {
-        let backend = backend2::DataSourceBackend::selection(evl, offers);
+        let backend = backend::DataWritableBackend::selection(evl, offers);
         Self { backend }
     }
 
@@ -488,18 +489,18 @@ impl DataWritable {
     /// Otherwise the request may be denied or visually broken.
     #[track_caller]
     pub fn dnd(handle: &Window, offers: &[DataKind], icon: CustomIcon) -> Self {
-        let backend = backend2::DataSourceBackend::dnd(handle, offers, icon);
+        let backend = backend::DataWritableBackend::dnd(handle, offers, icon);
         Self { backend }
     }
 
 }
 
 pub struct DataReader {
-    backend: backend2::DataReaderBackend,
+    backend: backend::DataReaderBackend,
 }
 
 impl AsFd for DataReader {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+    fn as_fd(&self) -> BorrowedFd<'_> {
         self.backend.as_fd()
     }
 }
@@ -511,7 +512,7 @@ impl io::Read for DataReader {
 }
 
 pub struct DataWriter {
-    backend: backend2::DataWriterBackend,
+    backend: backend::DataWriterBackend,
 }
 
 impl AsFd for DataWriter {
@@ -530,7 +531,7 @@ impl io::Write for DataWriter {
 }
 
 pub struct HoveredItem {
-    backend: backend2::HoveredItemBackend,
+    backend: backend::HoveredItemBackend,
 }
 
 impl HoveredItem {
@@ -540,13 +541,13 @@ impl HoveredItem {
 }
 
 pub struct CustomIcon {
-    backend: backend2::CustomIconBackend,
+    backend: backend::CustomIconBackend,
 }
 
 impl CustomIcon {
-    pub fn new(evl: &EventLoop, size: common::LogicalSize, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
-        let backend = backend2::CustomIconBackend::new(evl, size, format, data)?;
-        Ok(Self { backend })
+    pub fn new(evl: &EventLoop, size: common::LogicalSize, format: IconFormat, data: &[u8]) -> Self {
+        let backend = backend::CustomIconBackend::new(evl, size, format, data);
+        Self { backend }
     }
 }
 

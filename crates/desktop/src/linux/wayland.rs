@@ -548,12 +548,12 @@ impl WindowBackend {
 
     }
 
-    pub fn title<S: Into<String>>(&self, text: S) {
+    pub fn title(&self, text: &str) {
 
         let evb = &mut self.evl.backend.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
 
-        state.xdg_toplevel.set_title(text.into());
+        state.xdg_toplevel.set_title(text.to_string());
     }
 
     pub fn maximize(&self, value: bool) {
@@ -795,9 +795,10 @@ impl ReceiverBackend {
     }
 
     /// A `DataOffer` can be read multiple times. Also using different `DataKinds`.
-    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> Result<DataReaderBackend, EvlError> {
+    #[track_caller]
+    pub fn receive(&self, evl: &EventLoop, kind: DataKind) -> DataReaderBackend {
 
-        let (reader, writer) = io::pipe()?;
+        let (reader, writer) = io::pipe().expect("cannot create pipe");
 
         // receive the data
         let mime_type = kind.to_mime_type();
@@ -805,7 +806,8 @@ impl ReceiverBackend {
 
          // This is important! We need the compositor to inform the other side
          // that we want to read now, otherwise reading immediatly would deadlock.
-        evl.backend.state.lock().wayland.state.con.get_ref().flush()?;
+        evl.backend.state.lock().wayland.state.con.get_ref().flush()
+            .expect("cannot flush wayland socket");
 
         Ok(DataReaderBackend {
             inner: reader,
@@ -970,7 +972,7 @@ impl CustomIconBackend {
     /// This function assserts that the `size` is valid for `data.len()`
     /// and also that `size > 0`.
     #[track_caller]
-    pub fn new(evl: &EventLoop, size: LogicalSize, format: IconFormat, data: &[u8]) -> Result<Self, EvlError> {
+    pub fn new(evl: &EventLoop, size: LogicalSize, format: IconFormat, data: &[u8]) -> Self {
 
         use nix::{sys::{mman, stat}, fcntl, unistd};
         use std::num::NonZeroUsize;
@@ -997,9 +999,10 @@ impl CustomIconBackend {
             &evb.appid[..],
             fcntl::OFlag::O_CREAT | fcntl::OFlag::O_RDWR,
             stat::Mode::S_IRWXU
-        )?;
+        ).expect("open shared memory");
 
-        unistd::ftruncate(mapping.as_fd(), len.get() as i64)?;
+        unistd::ftruncate(mapping.as_fd(), len.get() as i64)
+            .expect("truncate file");
 
         unsafe {
 

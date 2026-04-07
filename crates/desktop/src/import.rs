@@ -2,43 +2,26 @@
 //! This module reconstructs the original rust API based on the C-ABI compatible API,
 //! so the crate can be used by simply linking to a library without including the implementation.
 
-use std::{ffi::{self, c_void as void}, future, mem, ptr, sync::Arc, task, time::Instant};
+use core::slice;
+use std::{ffi::{self, CStr, CString, c_void as void}, future, io, mem::{self, ManuallyDrop}, os::fd::{AsFd, BorrowedFd}, ptr::{self, NonNull, null_mut}, sync::Arc, task, time::Instant};
 use common::SmartMutex;
 
-use crate::export;
-
-#[derive(Clone)]
-pub struct EventLoopConfig {
-    pub appid: String,
-    /// If `true` relevant signals will be intercepted and
-    /// turned into `Quit` events. Otherwise signals
-    /// will never be intercepted.
-    pub intercept: bool,
-}
-
-impl Default for EventLoopConfig {
-    fn default() -> Self {
-        Self {
-            appid: format!("lsg-{:?}", Instant::now()),
-            intercept: true,
-        }
-    }
-}
+use crate::{export, DndEvent, Event, Key, MonitorEvent, WindowEvent, DataSourceEvent};
 
 pub struct EventLoopState {
-    events: Vec<crate::Event>,
+    events: Vec<Event>,
 }
 
-pub struct EventLoop {
-    inner: *const export::SharedEventLoop,
+pub struct EventLoopBackend {
+    inner: *const export::EventLoop,
     state: SmartMutex<EventLoopState>
 }
 
-impl EventLoop {
+impl EventLoopBackend {
 
     #[track_caller]
-    pub fn run<R, H>(config: EventLoopConfig, handler: H) -> Result<R, crate::EvlError>
-        where H: FnOnce(Arc<Self>) -> R {
+    pub fn run<R, H>(config: crate::EvlConfig, handler: H) -> Result<R, crate::EvlError>
+        where H: FnOnce(Arc<crate::EventLoop>) -> R {
 
         let appid0 = ffi::CString::new(config.appid)
             .expect("`appid` contains nul byte").into_raw();
@@ -56,7 +39,7 @@ impl EventLoop {
             ptr::from_mut(&mut state).cast()
         ) };
 
-        if status == 0 {
+        if status as u32 == export::EvlResult::Ok as u32 {
             if let RunState::Post(value) = state.take() { Ok(value) }
             else { unreachable!() }
         } else {
@@ -65,11 +48,16 @@ impl EventLoop {
 
     }
 
-    pub async fn next(&self) -> Result<(), crate::EvlError> {
-        future::poll_fn(|cx| self.poll(cx)).await
-    }
+    pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<Result<Event, crate::EvlError>> {
 
-    pub fn poll(&self, cx: &mut task::Context<'_>) -> task::Poll<Result<(), crate::EvlError>> {
+        let mut guard = self.state.lock();
+
+        if let Some(event) = guard.events.pop() {
+            return task::Poll::Ready(Ok(event))
+        }
+
+        // If we don't have any events stored, we need
+        // to actually poll for more.
 
         let waker = cx.waker();
 
@@ -80,11 +68,23 @@ impl EventLoop {
             }
         };
 
-        let poll = unsafe { export::event_loop_poll_rust(self.inner, rawcx, ptr::null_mut()) };
+        let state = &mut *guard as *mut EventLoopState;
+
+        let poll = unsafe { export::event_loop_poll_rust(self.inner, rawcx, &HANDLERS, state.cast()) };
 
         match poll {
-            export::Poll::Ready => task::Poll::Ready(Ok(())),
-            export::Poll::Pending => task::Poll::Pending
+
+            export::Poll::Err => {
+                task::Poll::Ready(Err(crate::EvlError::fatal("unknown error")))
+            },
+
+            export::Poll::Ready => {
+                waker.wake_by_ref();
+                task::Poll::Pending
+            },
+
+            export::Poll::Pending => task::Poll::Pending,
+
         }
 
     }
@@ -103,7 +103,7 @@ impl EventLoop {
 
 }
 
-unsafe impl common::IsDisplay for EventLoop {
+unsafe impl common::IsDisplay for EventLoopBackend {
     fn ptr(&self) -> *const void {
         unsafe { export::event_loop_display_ptr(self.inner) }
     }
@@ -116,9 +116,9 @@ enum RunState<R, H> {
 }
 
 impl<R, H> RunState<R, H>
-    where H: FnOnce(Arc<EventLoop>) -> R {
+    where H: FnOnce(Arc<crate::EventLoop>) -> R {
 
-    pub extern "C" fn handler0 (evl0: *const export::SharedEventLoop, this0: *mut void) {
+    pub extern "C" fn handler0(evl0: *const export::EventLoop, this0: *mut void) {
 
         let this: &mut Self = unsafe {
             &mut *this0.cast()
@@ -126,12 +126,14 @@ impl<R, H> RunState<R, H>
 
         let Self::Pre(handler) = this.take() else { unreachable!() };
 
-        let evl = EventLoop {
+        let backend = EventLoopBackend {
             inner: evl0,
             state: SmartMutex::new(EventLoopState {
                 events: Vec::new()
             }),
         };
+
+        let evl = crate::EventLoop { backend };
 
         let result = handler(Arc::new(evl));
 
@@ -144,3 +146,322 @@ impl<R, H> RunState<R, H>
     }
 
 }
+
+pub struct WindowBackend {
+    inner: *mut export::Window,
+}
+
+impl WindowBackend {
+    pub fn new(evl: &Arc<crate::EventLoop>) -> Self {
+        let inner = unsafe { export::window_new(evl.backend.inner) };
+        Self { inner }
+    }
+    pub fn id(&self) -> crate::Id {
+        unsafe { export::window_id(self.inner) }
+    }
+    pub fn present(&self) {
+        unsafe { export::window_present(self.inner) };
+    }
+    #[track_caller]
+    pub fn redraw(&self) {
+        unsafe { export::window_redraw(self.inner) };
+    }
+    pub fn transparency(&self, value: bool) {
+        unsafe { export::window_transparency(self.inner, value) };
+    }
+    pub fn decorations(&self, value: bool) {
+        unsafe { export::window_decorations(self.inner, value) };
+    }
+    pub fn title(&self, text: &str) {
+        let text0 = CString::new(text).expect("contains nul");
+        unsafe { export::window_title(self.inner, text0.as_ptr()) };
+    }
+    pub fn maximize(&self, value: bool) {
+        unsafe { export::window_maximize(self.inner, value) };
+    }
+    pub fn fullscreen(&self, value: bool, monitor: Option<&crate::Monitor>) {
+        let monitor0 = monitor.map(|it| it.backend.inner).unwrap_or(null_mut());
+        unsafe { export::window_fullscreen(self.inner, value, monitor0) };
+    }
+    pub fn sizehint(&self, size: common::PhysicalSize) {
+        unsafe { export::window_sizehint(self.inner, size) };
+    }
+    pub fn minsize(&self, size: Option<common::LogicalSize>) {
+        match size {
+            Some(it) => unsafe { export::window_minsize(self.inner, it) },
+            None     => unsafe { export::window_minsize_unset(self.inner) }
+        }
+    }
+    pub fn maxsize(&self, size: Option<common::LogicalSize>) {
+        match size {
+            Some(it) => unsafe { export::window_maxsize(self.inner, it) },
+            None     => unsafe { export::window_maxsize_unset(self.inner) }
+        }
+    }
+    pub fn alert(&self, urgency: crate::Urgency) {
+        unsafe { export::window_alert(self.inner, urgency) };
+    }
+    pub fn ptr(&self) -> *mut std::ffi::c_void {
+        unsafe { export::window_ptr(self.inner) }
+    }
+    pub fn size(&self) -> common::PhysicalSize {
+        unsafe { export::window_size(self.inner) }
+    }
+}
+
+pub struct MonitorBackend {
+    inner: *mut export::Monitor,
+}
+
+impl Drop for MonitorBackend {
+    fn drop(&mut self) {
+        unsafe { export::monitor_drop(self.inner) };
+    }
+}
+
+pub struct CustomIconBackend {
+    inner: *mut export::CustomIcon,
+}
+
+impl Drop for CustomIconBackend {
+    fn drop(&mut self) {
+        unsafe { export::custom_icon_drop(self.inner) };
+    }
+}
+
+impl CustomIconBackend {
+    pub fn new(evl: &crate::EventLoop, size: common::LogicalSize, format: crate::IconFormat, data: &[u8]) -> Self {
+        let data0 = export::WriteSlice { ptr: data.as_ptr(), len: data.len() };
+        let inner = unsafe { export::custom_icon_new(evl.backend.inner, size, format, data0) };
+        Self { inner }
+    }
+}
+
+pub struct HoveredItemBackend {
+    inner: *mut export::HoveredItem,
+}
+
+impl Drop for HoveredItemBackend {
+    fn drop(&mut self) {
+        unsafe { export::hovered_item_drop(self.inner) };
+    }
+}
+
+impl HoveredItemBackend {
+    pub fn advertise(&self, kinds: &[crate::DataKind]) {
+        let kinds0 = export::DataKindsSlice { ptr: kinds.as_ptr(), len: kinds.len() };
+        unsafe { export::hovered_item_advertise(self.inner, kinds0) };
+    }
+}
+
+pub struct DataReadableBackend {
+    inner: *mut export::DataReadable,
+}
+
+impl Drop for DataReadableBackend {
+    fn drop(&mut self) {
+        unsafe { export::data_readable_drop(self.inner) };
+    }
+}
+
+impl DataReadableBackend {
+    pub fn kinds(&self) -> &[crate::DataKind] {
+        let kinds0 = unsafe { export::data_readable_kinds(self.inner) };
+        unsafe { slice::from_raw_parts(kinds0.ptr, kinds0.len) }
+    }
+    pub fn receive(&self, evl: &crate::EventLoop, kind: crate::DataKind) -> DataReaderBackend {
+        let inner = unsafe { export::data_readable_receive(self.inner, evl.backend.inner, kind) };
+        DataReaderBackend { inner } // TODO: make it directly return crate::DataReader / unify these places
+    }
+}
+
+pub struct DataReaderBackend {
+    inner: *mut export::DataReader,
+}
+
+impl Drop for DataReaderBackend {
+    fn drop(&mut self) {
+        unsafe { export::data_reader_drop(self.inner) };
+    }
+}
+
+impl AsFd for DataReaderBackend {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        let raw = unsafe { export::data_reader_as_fd(self.inner) };
+        unsafe { BorrowedFd::borrow_raw(raw) }
+    }
+}
+
+impl io::Read for DataReaderBackend {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let buf0 = export::ReadSlice { ptr: buf.as_mut_ptr(), len: buf.len() };
+        let num = unsafe { export::data_reader_read(self.inner, buf0) };
+        Ok(num)
+    }
+}
+
+pub struct DataWritableBackend {
+    inner: *mut export::DataWritable,
+}
+
+impl Drop for DataWritableBackend {
+    fn drop(&mut self) {
+        unsafe { export::data_writable_drop(self.inner) };
+    }
+}
+
+impl DataWritableBackend {
+    pub fn id(&self) -> crate::Id {
+        unsafe { export::data_writable_id(self.inner) }
+    }
+    pub fn selection(evl: &crate::EventLoop, offers: &[crate::DataKind]) -> Self {
+        let offers0 = export::DataKindsSlice { ptr: offers.as_ptr(), len: offers.len() };
+        let inner = unsafe { export::data_writable_selection(evl.backend.inner, offers0) };
+        Self { inner }
+    }
+    #[track_caller]
+    pub fn dnd(handle: &crate::Window, offers: &[crate::DataKind], icon: crate::CustomIcon) -> Self {
+        let offers0 = export::DataKindsSlice { ptr: offers.as_ptr(), len: offers.len() };
+        let inner = unsafe { export::data_writable_dnd(handle.backend.inner, offers0, icon.backend.inner) };
+        mem::forget(icon); // this is needed, because `data_writable_dnd` takes ownership of the value
+        // TODO: ^^^ it should not take ownership (?) possible?
+        Self { inner }
+    }
+}
+
+pub struct DataWriterBackend {
+    inner: *mut export::DataWriter,
+}
+
+impl Drop for DataWriterBackend {
+    fn drop(&mut self) {
+        unsafe { export::data_writer_drop(self.inner) };
+    }
+}
+
+impl AsFd for DataWriterBackend {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        let raw = unsafe { export::data_writer_as_fd(self.inner) };
+        unsafe { BorrowedFd::borrow_raw(raw) }
+    }
+}
+
+impl io::Write for DataWriterBackend {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let buf0 = export::WriteSlice { ptr: buf.as_ptr(), len: buf.len() };
+        let num = unsafe { export::data_writer_write(self.inner, buf0) };
+        Ok(num)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        unsafe { export::data_writer_flush(self.inner) };
+        Ok(())
+    }
+}
+
+macro_rules! handler {
+    ($state:ident, ($($arg:ident : $ty:ty),* $(,)?), $body:expr) => {{
+        extern "C" fn f(state0: *mut void, $($arg: $ty),*) {
+            let $state: &mut EventLoopState = unsafe { &mut *state0.cast() };
+            $state.events.push($body);
+        }
+        f
+    }};
+}
+
+const HANDLERS: export::EvlHandlers = export::EvlHandlers {
+
+    resume:  handler!(state, (), Event::Resume),
+    suspend: handler!(state, (), Event::Suspend),
+    quit:    handler!(state, (reason: crate::QuitReason), Event::Quit { reason }),
+
+    monitor_update: handler!(state, (id: crate::Id, info0: export::MonitorInfo, monitor0: *mut export::Monitor), {
+        let info = crate::MonitorInfo {
+            name:        unsafe { CStr::from_ptr(info0.name)        }.to_str().expect("invalid utf8").to_string(),
+            description: unsafe { CStr::from_ptr(info0.description) }.to_str().expect("invalid utf8").to_string(),
+            size: info0.size,
+            refresh: info0.refresh
+        };
+        let backend = MonitorBackend { inner: monitor0 };
+        let monitor = crate::Monitor { backend };
+        Event::Monitor { id, event: crate::MonitorEvent::Update { info, monitor } }
+    }),
+
+    monitor_remove: handler!(state, (id: crate::Id), {
+        Event::Monitor { id, event: MonitorEvent::Remove }
+    }),
+
+    window_enter:        handler!(state, (id: crate::Id), Event::Window { id, event: WindowEvent::Enter {} }),
+    window_leave:        handler!(state, (id: crate::Id), Event::Window { id, event: WindowEvent::Leave {} }),
+    window_should_close: handler!(state, (id: crate::Id), Event::Window { id, event: WindowEvent::ShouldClose {} }),
+    window_redraw:       handler!(state, (id: crate::Id), Event::Window { id, event: WindowEvent::Redraw {} }),
+
+    window_resize:       handler!(state, (id: crate::Id, size: common::PhysicalSize, fullscreen: bool), Event::Window { id, event: WindowEvent::Resize { size, fullscreen } }),
+    window_rescale:      handler!(state, (id: crate::Id, scale: f64),                                   Event::Window { id, event: WindowEvent::Rescale { scale } }),
+    window_decorations:  handler!(state, (id: crate::Id, active: bool),                                 Event::Window { id, event: WindowEvent::Decorations { active } }),
+
+    window_mouse_enter:  handler!(state, (id: crate::Id),                              Event::Window { id, event: WindowEvent::MouseEnter }),
+    window_mouse_leave:  handler!(state, (id: crate::Id),                              Event::Window { id, event: WindowEvent::MouseLeave }),
+    window_mouse_motion: handler!(state, (id: crate::Id, point: common::LogicalPoint), Event::Window { id, event: WindowEvent::MouseMotion { point } }),
+
+    window_mouse_down:   handler!(state, (id: crate::Id, point: common::LogicalPoint, button: crate::MouseButton), Event::Window { id, event: WindowEvent::MouseDown { point, button } }),
+    window_mouse_up:     handler!(state, (id: crate::Id, point: common::LogicalPoint, button: crate::MouseButton), Event::Window { id, event: WindowEvent::MouseUp { point, button } }),
+
+    window_mouse_scroll: handler!(state, (id: crate::Id, axis: crate::ScrollAxis, value: i16), Event::Window { id, event: WindowEvent::MouseScroll { axis, value } }),
+
+    window_key_down_unknown: handler!(state, (id: crate::Id, key: u32, repeat: bool),               Event::Window { id, event: WindowEvent::KeyDown { key: Key::Unknown(key), repeat } }),
+    window_key_down_special: handler!(state, (id: crate::Id, key: crate::SpecialKey, repeat: bool), Event::Window { id, event: WindowEvent::KeyDown { key: Key::Special(key), repeat } }),
+    window_key_down_char:    handler!(state, (id: crate::Id, chr: u32, dead: bool, repeat: bool), match dead {
+        false => Event::Window { id, event: WindowEvent::KeyDown { key: Key::Char     (char::from_u32(chr).expect("invalid charcode")), repeat } },
+        true  => Event::Window { id, event: WindowEvent::KeyDown { key: Key::DeadChar (char::from_u32(chr).expect("invalid charcode")), repeat } }
+    }),
+
+    window_key_up_unknown: handler!(state, (id: crate::Id, key: u32),               Event::Window { id, event: WindowEvent::KeyUp { key: Key::Unknown(key) } }),
+    window_key_up_special: handler!(state, (id: crate::Id, key: crate::SpecialKey), Event::Window { id, event: WindowEvent::KeyUp { key: Key::Special(key) } }),
+    window_key_up_char:    handler!(state, (id: crate::Id, chr: u32, dead: bool), match dead {
+        false => Event::Window { id, event: WindowEvent::KeyUp { key: Key::Char     (char::from_u32(chr).expect("invalid charcode")) } },
+        true  => Event::Window { id, event: WindowEvent::KeyUp { key: Key::DeadChar (char::from_u32(chr).expect("invalid charcode")) } }
+    }),
+
+    window_text_input:          handler!(state, (id: crate::Id, chr: u32), Event::Window { id, event: WindowEvent::TextInput   { chr: char::from_u32(chr).expect("invalid charcode") } }),
+    window_text_compose:        handler!(state, (id: crate::Id, chr: u32), Event::Window { id, event: WindowEvent::TextCompose { chr: char::from_u32(chr).expect("invalid charcode") } }),
+    window_text_compose_cancel: handler!(state, (id: crate::Id),           Event::Window { id, event: WindowEvent::TextComposeCancel }),
+
+    window_dnd_motion: handler!(state, (id: crate::Id, sameapp: bool, x: f64, y: f64, item0: *mut export::HoveredItem), {
+        let backend = HoveredItemBackend { inner: item0 };
+        let item = crate::HoveredItem { backend };
+        Event::Window { id, event: WindowEvent::Dnd { event: DndEvent::Motion { x, y, item }, sameapp } }
+    }),
+
+    window_dnd_drop:   handler!(state, (id: crate::Id, sameapp: bool, x: f64, y: f64, readable: *mut export::DataReadable), {
+        let backend = DataReadableBackend { inner: readable };
+        let readable = crate::DataReadable { backend };
+        Event::Window { id, event: WindowEvent::Dnd { event: DndEvent::Drop { x, y, readable }, sameapp } }
+    }),
+
+    window_dnd_cancel: handler!(state, (id: crate::Id, sameapp: bool), {
+        Event::Window { id, event: WindowEvent::Dnd { event: DndEvent::Cancel, sameapp } }
+    }),
+
+    data_source_send:    handler!(state, (id: crate::Id, kind: crate::DataKind, writer0: *mut export::DataWriter), {
+        let backend = DataWriterBackend { inner: writer0 };
+        let writer = crate::DataWriter { backend };
+        Event::DataSource { id, event: DataSourceEvent::Send { kind, writer } }
+    }),
+
+    data_source_success: handler!(state, (id: crate::Id), Event::DataSource { id, event: DataSourceEvent::Success }),
+    data_source_close:   handler!(state, (id: crate::Id), Event::DataSource { id, event: DataSourceEvent::Close }),
+
+    selection_update: handler!(state, (readable0: *mut export::DataReadable), {
+        match NonNull::new(readable0) {
+            Some(ptr) => {
+                let backend = DataReadableBackend { inner: ptr.as_ptr() };
+                let readable = crate::DataReadable { backend };
+                Event::SelectionUpdate { readable: Some(readable) }
+            },
+            None => {
+                Event::SelectionUpdate { readable: None }
+            }
+        }
+    }),
+
+};
