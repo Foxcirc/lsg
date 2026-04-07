@@ -774,21 +774,21 @@ impl DataKind {
 pub type DataOfferId = u32;
 
 /// Don't hold onto it. You should immediatly decide if you want to receive something or not.
-pub struct ReceiverBackend {
+pub struct DataReadableBackend {
     wl_data_offer: WlDataOffer,
     data_kinds: Vec<DataKind>,
     dnd: bool, // checked in the destructor to determine how wl_data_offer should be destroyed
 }
 
 /// Dropping this will cancel drag-and-drop.
-impl Drop for ReceiverBackend {
+impl Drop for DataReadableBackend {
     fn drop(&mut self) {
         if self.dnd { self.wl_data_offer.finish() };
         self.wl_data_offer.destroy();
     }
 }
 
-impl ReceiverBackend {
+impl DataReadableBackend {
 
     pub fn kinds(&self) -> &[DataKind] {
         &self.data_kinds
@@ -809,9 +809,9 @@ impl ReceiverBackend {
         evl.backend.state.lock().wayland.state.con.get_ref().flush()
             .expect("cannot flush wayland socket");
 
-        Ok(DataReaderBackend {
+        DataReaderBackend {
             inner: reader,
-        })
+        }
 
     }
 
@@ -857,19 +857,19 @@ impl io::Write for DataWriterBackend {
 ///
 /// You will receive events for this DataSource when another client
 /// or the system wants to read from the selection.
-pub struct DataSourceBackend {
+pub struct DataWritableBackend {
     pub id: Id,
     wl_data_source: WlDataSource,
 }
 
 /// Dropping this will cancel a drag-and-drop operation.
-impl Drop for DataSourceBackend {
+impl Drop for DataWritableBackend {
     fn drop(&mut self) {
         self.wl_data_source.destroy();
     }
 }
 
-impl DataSourceBackend {
+impl DataWritableBackend {
 
     pub fn id(&self) -> Id {
         self.id
@@ -1014,7 +1014,7 @@ impl CustomIconBackend {
                 mman::MapFlags::MAP_SHARED,
                 mapping.as_fd(),
                 0 /* offset */
-            )?;
+            ).expect("map shared memory");
 
             ptr.as_ptr().cast::<u8>()
                 .copy_from_nonoverlapping(data.as_ptr(), len.get());
@@ -1037,14 +1037,14 @@ impl CustomIconBackend {
         wl_surface.attach(Some(&wl_buffer), 0, 0);
         wl_surface.commit();
 
-        Ok(Self {
+        Self {
             // for more info about the lifetimes
             // of these objects see `drop`
             wl_shm_pool,
             wl_buffer,
             wl_surface,
             _mapping: mapping,
-        })
+        }
 
     }
 
@@ -1592,8 +1592,8 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 let surface = evl.offer.dnd.focused.as_ref().unwrap();
                 let sameapp = evl.offer.dnd.ours;
 
-                let recv = DataReadable {
-                    backend: ReceiverBackend {
+                let readable = DataReadable {
+                    backend: DataReadableBackend {
                         wl_data_offer,
                         data_kinds,
                         dnd: true
@@ -1603,7 +1603,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 evl.events.push_back(Event::Window {
                     id: Id(get_object_id(surface)),
                     event: WindowEvent::Dnd {
-                        event: DndEvent::Drop { x, y, source: recv },
+                        event: DndEvent::Drop { x, y, readable },
                         sameapp
                     },
                 });
@@ -1639,18 +1639,18 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
                 // The offer will have been introduced with the advertised mime types already.
                 let data_kinds = mem::take(&mut evl.offer.advertised_data_kinds);
 
-                let recv = Some(DataReadable { backend: ReceiverBackend {
+                let readable = DataReadable { backend: DataReadableBackend {
                     wl_data_offer,
                     data_kinds,
                     dnd: false,
-                } });
+                } };
 
-                evl.events.push_back(Event::SelectionUpdate { sink: recv });
+                evl.events.push_back(Event::SelectionUpdate { readable: Some(readable) });
 
             } else {
 
                 evl.offer.advertised_data_kinds.clear();
-                evl.events.push_back(Event::SelectionUpdate { sink: None });
+                evl.events.push_back(Event::SelectionUpdate { readable: None });
 
             }
 
@@ -2162,7 +2162,7 @@ impl wayland_client::Dispatch<WlKeyboard, ()> for ConnectionState {
                     evl.events.push_back(Event::Window { id: Id(id), event: WindowEvent::Leave });
 
                     // also invalidate selection, to be more correct
-                    evl.events.push_back(Event::SelectionUpdate { sink: None });
+                    evl.events.push_back(Event::SelectionUpdate { readable: None });
 
                     evl.keyboard.focused = None;
 
@@ -2465,42 +2465,42 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
 
 impl From<wayland_client::ConnectError> for crate::EvlError {
     fn from(value: wayland_client::ConnectError) -> Self {
-        Self::fatal(format!("cannot connect to wayland, {}", value))
+        Self::fatal(&format!("cannot connect to wayland, {}", value))
     }
 }
 
 impl From<wayland_client::globals::GlobalError> for crate::EvlError {
     fn from(value: wayland_client::globals::GlobalError) -> Self {
-        Self::fatal(format!("failed to get wayland globals, {}", value))
+        Self::fatal(&format!("failed to get wayland globals, {}", value))
     }
 }
 
 impl From<BindError> for crate::EvlError {
     fn from(value: BindError) -> Self {
-        Self::fatal(format!("failed to get wayland global, {}", value))
+        Self::fatal(&format!("failed to get wayland global, {}", value))
     }
 }
 
 impl From<wayland_client::backend::WaylandError> for crate::EvlError {
     fn from(value: wayland_client::backend::WaylandError) -> Self {
-        Self::fatal(format!("failed wayland call, {}", value))
+        Self::fatal(&format!("failed wayland call, {}", value))
     }
 }
 
 impl From<wayland_client::DispatchError> for crate::EvlError {
     fn from(value: wayland_client::DispatchError) -> Self {
-        Self::fatal(format!("failed wayland dispatch, {}", value))
+        Self::fatal(&format!("failed wayland dispatch, {}", value))
     }
 }
 
 impl From<nix::errno::Errno> for crate::EvlError {
     fn from(value: nix::errno::Errno) -> Self {
-        Self::fatal(format!("failed I/O, {}", value))
+        Self::fatal(&format!("failed I/O, {}", value))
     }
 }
 
 impl From<io::Error> for crate::EvlError {
     fn from(value: io::Error) -> Self {
-        Self::fatal(format!("failed I/O, {}", value))
+        Self::fatal(&format!("failed I/O, {}", value))
     }
 }

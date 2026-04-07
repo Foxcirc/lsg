@@ -8,7 +8,7 @@ authors.workspace = true
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["import"]
+default = []
 export = []
 import = []
 
