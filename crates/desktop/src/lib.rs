@@ -5,8 +5,7 @@
 #[cfg(all(target_os = "linux", not(feature = "import")))] mod linux;
 #[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend;
 
-#[cfg(feature = "export")] mod export;
-mod export;
+#[cfg(any(feature = "import", feature = "export"))] mod export;
 
 use core::{error::Error as StdError, fmt, future, task};
 

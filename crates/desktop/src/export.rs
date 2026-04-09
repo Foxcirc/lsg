@@ -2,6 +2,11 @@
 //! This module contains a C-ABI compatible API which
 //! makes this crate usable as a library from other languages.
 
+pub use types::*;
+
+#[cfg(feature = "export")]
+pub use implementation::*;
+
 pub mod types {
 
     use std::ffi::c_void as void;
@@ -147,6 +152,7 @@ pub mod types {
 
 }
 
+#[cfg(feature = "export")]
 pub mod implementation {
 
     use core::{slice, task};
@@ -184,144 +190,6 @@ pub mod implementation {
             Err(..) => EvlResult::Err,
         }
 
-    }
-
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn monitor_info_drop(this: MonitorInfo) {
-        drop(unsafe { CString::from_raw(this.name) });
-        drop(unsafe { CString::from_raw(this.description) });
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn monitor_drop(this0: *mut Monitor) {
-        let this = unsafe { get_monitor(this0) };
-        unsafe { drop_in_place(this ) };
-    }
-
-    // CustomIcon is only ever consumed, so this shall rather be left out:
-    //
-    // #[unsafe(no_mangle)]
-    // pub unsafe extern "C" fn custom_icon_drop(this0: *mut CustomIcon) {
-    //     let this = unsafe { get_custom_icon(this0) };
-    //     unsafe { drop_in_place(this ) };
-    // }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn custom_icon_new(evl0: *const EventLoop, size: common::LogicalSize, format: crate::IconFormat, data0: WriteSlice) -> *mut CustomIcon {
-        let evl = unsafe { get_event_loop(evl0) };
-        let data = unsafe { slice::from_raw_parts(data0.ptr, data0.len) };
-        let icon = crate::CustomIcon::new(&evl, size, format, data);
-        Box::into_raw(Box::new(icon)).cast()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn hovered_item_drop(this0: *mut HoveredItem) {
-        let this = unsafe { get_hovered_item(this0) };
-        unsafe { drop_in_place(this ) };
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn hovered_item_advertise(this0: *mut HoveredItem, kinds0: DataKindsSlice) {
-        let this = unsafe { get_hovered_item(this0) };
-        let kinds = unsafe { slice::from_raw_parts(kinds0.ptr, kinds0.len) };
-        this.advertise(kinds);
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_readable_drop(this0: *mut DataReadable) {
-        let this = unsafe { get_data_readable(this0) };
-        unsafe { drop_in_place(this ) };
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_readable_kinds(this0: *mut DataReadable) -> DataKindsSlice {
-        let this = unsafe { get_data_readable(this0) };
-        let slice = this.kinds();
-        DataKindsSlice {
-            ptr: slice.as_ptr(),
-            len: slice.len(),
-        }
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_readable_receive(this0: *mut DataReadable, evl0: *const EventLoop, kind: crate::DataKind) -> *mut DataReader {
-        let this = unsafe { get_data_readable(this0) };
-        let evl = unsafe { get_event_loop(evl0) };
-        let reader = this.receive(&evl, kind);
-        Box::into_raw(Box::new(reader)).cast()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_reader_drop(this0: *mut DataReader) {
-        let this = unsafe { get_data_reader(this0) };
-        unsafe { drop_in_place(this) };
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_reader_as_fd(this0: *mut DataReader) -> i32 {
-        let this = unsafe { get_data_reader(this0) };
-        this.as_fd().as_raw_fd()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_reader_read(this0: *mut DataReader, out0: ReadSlice) -> usize {
-        let this = unsafe { get_data_reader(this0) };
-        let out = unsafe { slice::from_raw_parts_mut(out0.ptr, out0.len) };
-        this.read(out).expect("cannot read") // TODO: foreward I/O error, otherwise a bad client could crash our program, also: do we even want this to be a IO read impl, what about windows/web where this isnt a file read (or is it?)?
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writable_drop(this0: *mut DataWritable) {
-        let this = unsafe { get_data_writable(this0) };
-        unsafe { drop_in_place(this) };
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writable_id(this0: *mut DataWritable) -> crate::Id {
-        let this = unsafe { get_data_writable(this0) };
-        this.id()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writable_selection(evl0: *const EventLoop, offers0: DataKindsSlice) -> *mut DataWritable {
-        let evl = unsafe { get_event_loop(evl0) };
-        let offers = unsafe { slice::from_raw_parts(offers0.ptr, offers0.len) };
-        Box::into_raw(Box::new(crate::DataWritable::selection(&evl, offers))).cast()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writable_dnd(wnd0: *mut Window, offers0: DataKindsSlice, icon0: *mut CustomIcon /* consumed */) -> *mut DataWritable {
-        let wnd = unsafe { get_window(wnd0) };
-        let icon1 = unsafe { get_custom_icon(icon0) };
-        let icon = unsafe { ptr::read(icon1) }; // this takes ownership
-        let offers = unsafe { slice::from_raw_parts(offers0.ptr, offers0.len) };
-        Box::into_raw(Box::new(crate::DataWritable::dnd(&wnd, offers, icon))).cast()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writer_drop(this0: *mut DataWriter) {
-        let this = unsafe { get_data_writer(this0) };
-        unsafe { drop_in_place(this) };
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writer_as_fd(this0: *mut DataWriter) -> i32 {
-        let this = unsafe { get_data_writer(this0) };
-        this.as_fd().as_raw_fd()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writer_write(this0: *mut DataWriter, src0: WriteSlice) -> usize {
-        let this = unsafe { get_data_writer(this0) };
-        let src = unsafe { slice::from_raw_parts(src0.ptr, src0.len) };
-        this.write(src).expect("cannot write") // TODO: see data_reader_read
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn data_writer_flush(this0: *mut DataWriter) {
-        let this = unsafe { get_data_writer(this0) };
-        this.flush().expect("cannot flush") // TODO: see data_reader_read
     }
 
     #[unsafe(no_mangle)]
@@ -524,42 +392,6 @@ pub mod implementation {
 
     }
 
-    unsafe fn get_event_loop<'x>(ptr: *const EventLoop) -> &'x Arc<crate::EventLoop> {
-        unsafe { &*ptr.cast() }
-    }
-
-    unsafe fn get_window<'x>(ptr: *mut Window) -> &'x mut crate::Window {
-        unsafe { &mut *ptr.cast() }
-    }
-
-    unsafe fn get_custom_icon<'x>(ptr: *mut CustomIcon) -> &'x mut crate::CustomIcon {
-        unsafe { &mut *ptr.cast() }
-    }
-
-    unsafe fn get_monitor<'x>(ptr: *mut Monitor) -> &'x mut crate::Monitor {
-        unsafe { &mut *ptr.cast() }
-    }
-
-    unsafe fn get_hovered_item<'x>(ptr: *mut HoveredItem) -> &'x mut crate::HoveredItem {
-        unsafe { &mut *ptr.cast() }
-    }
-
-    unsafe fn get_data_readable<'x>(ptr: *mut DataReadable) -> &'x mut crate::DataReadable {
-        unsafe { &mut *ptr.cast() }
-    }
-
-    unsafe fn get_data_reader<'x>(ptr: *mut DataReader) -> &'x mut crate::DataReader {
-        unsafe { &mut *ptr.cast() }
-    }
-
-    unsafe fn get_data_writable<'x>(ptr: *mut DataWritable) -> &'x mut crate::DataWritable {
-        unsafe { &mut *ptr.cast() }
-    }
-
-    unsafe fn get_data_writer<'x>(ptr: *mut DataWriter) -> &'x mut crate::DataWriter {
-        unsafe { &mut *ptr.cast() }
-    }
-
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn event_loop_suspend(this0: *const EventLoop) {
         let this = unsafe { get_event_loop(this0) };
@@ -585,8 +417,149 @@ pub mod implementation {
     }
 
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn monitor_info_drop(this: MonitorInfo) {
+        drop(unsafe { CString::from_raw(this.name) });
+        drop(unsafe { CString::from_raw(this.description) });
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn monitor_drop(this0: *mut Monitor) {
+        let this = unsafe { get_monitor(this0) };
+        unsafe { drop_in_place(this ) };
+    }
+
+    // CustomIcon is only ever consumed, so this shall rather be left out:
+    //
+    // #[unsafe(no_mangle)]
+    // pub unsafe extern "C" fn custom_icon_drop(this0: *mut CustomIcon) {
+    //     let this = unsafe { get_custom_icon(this0) };
+    //     unsafe { drop_in_place(this ) };
+    // }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn custom_icon_new(
+        evl0: *const EventLoop,
+        size: common::LogicalSize,
+        format: crate::IconFormat,
+        data0: WriteSlice
+    ) -> *mut CustomIcon {
+        let evl = unsafe { get_event_loop(evl0) };
+        let data = unsafe { slice::from_raw_parts(data0.ptr, data0.len) };
+        let icon = crate::CustomIcon::new(&evl, size, format, data);
+        Box::into_raw(Box::new(icon)).cast()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hovered_item_drop(this0: *mut HoveredItem) {
+        let this = unsafe { get_hovered_item(this0) };
+        unsafe { drop_in_place(this ) };
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hovered_item_advertise(this0: *mut HoveredItem, kinds0: DataKindsSlice) {
+        let this = unsafe { get_hovered_item(this0) };
+        let kinds = unsafe { slice::from_raw_parts(kinds0.ptr, kinds0.len) };
+        this.advertise(kinds);
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_readable_drop(this0: *mut DataReadable) {
+        let this = unsafe { get_data_readable(this0) };
+        unsafe { drop_in_place(this ) };
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_readable_kinds(this0: *mut DataReadable) -> DataKindsSlice {
+        let this = unsafe { get_data_readable(this0) };
+        let slice = this.kinds();
+        DataKindsSlice {
+            ptr: slice.as_ptr(),
+            len: slice.len(),
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_readable_receive(this0: *mut DataReadable, evl0: *const EventLoop, kind: crate::DataKind) -> *mut DataReader {
+        let this = unsafe { get_data_readable(this0) };
+        let evl = unsafe { get_event_loop(evl0) };
+        let reader = this.receive(&evl, kind);
+        Box::into_raw(Box::new(reader)).cast()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_reader_drop(this0: *mut DataReader) {
+        let this = unsafe { get_data_reader(this0) };
+        unsafe { drop_in_place(this) };
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_reader_as_fd(this0: *mut DataReader) -> i32 {
+        let this = unsafe { get_data_reader(this0) };
+        this.as_fd().as_raw_fd()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_reader_read(this0: *mut DataReader, out0: ReadSlice) -> usize {
+        let this = unsafe { get_data_reader(this0) };
+        let out = unsafe { slice::from_raw_parts_mut(out0.ptr, out0.len) };
+        this.read(out).expect("cannot read") // TODO: foreward I/O error, otherwise a bad client could crash our program, also: do we even want this to be a IO read impl, what about windows/web where this isnt a file read (or is it?)?
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writable_drop(this0: *mut DataWritable) {
+        let this = unsafe { get_data_writable(this0) };
+        unsafe { drop_in_place(this) };
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writable_id(this0: *mut DataWritable) -> crate::Id {
+        let this = unsafe { get_data_writable(this0) };
+        this.id()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writable_selection(evl0: *const EventLoop, offers0: DataKindsSlice) -> *mut DataWritable {
+        let evl = unsafe { get_event_loop(evl0) };
+        let offers = unsafe { slice::from_raw_parts(offers0.ptr, offers0.len) };
+        Box::into_raw(Box::new(crate::DataWritable::selection(&evl, offers))).cast()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writable_dnd(wnd0: *mut Window, offers0: DataKindsSlice, icon0: *mut CustomIcon /* consumed */) -> *mut DataWritable {
+        let wnd = unsafe { get_window(wnd0) };
+        let icon = unsafe { own_custom_icon(icon0) };
+        let offers = unsafe { slice::from_raw_parts(offers0.ptr, offers0.len) };
+        Box::into_raw(Box::new(crate::DataWritable::dnd(&wnd, offers, *icon))).cast()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writer_drop(this0: *mut DataWriter) {
+        let this = unsafe { get_data_writer(this0) };
+        unsafe { drop_in_place(this) };
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writer_as_fd(this0: *mut DataWriter) -> i32 {
+        let this = unsafe { get_data_writer(this0) };
+        this.as_fd().as_raw_fd()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writer_write(this0: *mut DataWriter, src0: WriteSlice) -> usize {
+        let this = unsafe { get_data_writer(this0) };
+        let src = unsafe { slice::from_raw_parts(src0.ptr, src0.len) };
+        this.write(src).expect("cannot write") // TODO: see data_reader_read
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn data_writer_flush(this0: *mut DataWriter) {
+        let this = unsafe { get_data_writer(this0) };
+        this.flush().expect("cannot flush") // TODO: see data_reader_read
+    }
+
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn window_drop(this0: *mut Window) {
-        let this = unsafe { get_window(this0) };
+        let this = unsafe { get_window_mut(this0) };
         unsafe { drop_in_place(this) };
     }
 
@@ -699,6 +672,50 @@ pub mod implementation {
     pub unsafe extern "C" fn window_size(this0: *mut Window) -> common::PhysicalSize {
         let this = unsafe { get_window(this0) };
         this.size()
+    }
+
+    unsafe fn get_event_loop<'x>(ptr: *const EventLoop) -> &'x Arc<crate::EventLoop> {
+        unsafe { &*ptr.cast() }
+    }
+
+    unsafe fn get_window<'x>(ptr: *const Window) -> &'x crate::Window {
+        unsafe { & *ptr.cast() }
+    }
+
+    unsafe fn get_window_mut<'x>(ptr: *mut Window) -> &'x mut crate::Window {
+        unsafe { &mut *ptr.cast() }
+    }
+
+    unsafe fn get_custom_icon<'x>(ptr: *mut CustomIcon) -> &'x mut crate::CustomIcon {
+        unsafe { &mut *ptr.cast() }
+    }
+
+    unsafe fn own_custom_icon<'x>(ptr: *mut CustomIcon) -> Box<crate::CustomIcon> {
+        unsafe { Box::from_raw(ptr.cast()) }
+    }
+
+    unsafe fn get_monitor<'x>(ptr: *mut Monitor) -> &'x mut crate::Monitor {
+        unsafe { &mut *ptr.cast() }
+    }
+
+    unsafe fn get_hovered_item<'x>(ptr: *mut HoveredItem) -> &'x mut crate::HoveredItem {
+        unsafe { &mut *ptr.cast() }
+    }
+
+    unsafe fn get_data_readable<'x>(ptr: *mut DataReadable) -> &'x mut crate::DataReadable {
+        unsafe { &mut *ptr.cast() }
+    }
+
+    unsafe fn get_data_reader<'x>(ptr: *mut DataReader) -> &'x mut crate::DataReader {
+        unsafe { &mut *ptr.cast() }
+    }
+
+    unsafe fn get_data_writable<'x>(ptr: *mut DataWritable) -> &'x mut crate::DataWritable {
+        unsafe { &mut *ptr.cast() }
+    }
+
+    unsafe fn get_data_writer<'x>(ptr: *mut DataWriter) -> &'x mut crate::DataWriter {
+        unsafe { &mut *ptr.cast() }
     }
 
 }
