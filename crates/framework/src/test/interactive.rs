@@ -29,7 +29,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = render::GlRenderer::new(&*evl)?;
     let mut storage = render::GlRenderStorage::new(&renderer, window.size());
     let mut surface = render::GlSurface::new(&renderer, &window);
-    let mut atlas = render::GlTextureAtlas::new(&renderer);
+    let atlas = render::GlTextureAtlas::new(&renderer);
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut shaper = shaper::GeometryShaper::new();
@@ -46,7 +46,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
         target: render::GeometryTarget { geometry: 0, shape: 0 },
         pos: LogicalPoint::new(0, 0),
         size: LogicalSize::new(500, 500),
-        texture: render::TextureKind::Color(30, 80, 120, 255),
+        texture: render::TextureKind::Color(0, 255, 100, 255),
     });
 
     unsafe { render::SHAPE_TAKE_PART = usize::MAX };
@@ -68,6 +68,8 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             source: &[vertices],
                             instances: &instances,
                         };
+
+                        renderer.clear(&storage);
 
                         window.present();
                         renderer.draw(&drawable, &atlas, &storage);

@@ -634,6 +634,14 @@ impl GlRenderer {
 
     }
 
+    pub fn clear(&mut self, source: &GlRenderStorage) {
+
+        self.ctx.bind(&self.instance, None);
+
+        gl::clear(&source.fbo, 0f32, 0f32, 0f32, 1f32);
+
+    }
+
     /// Blit all contents from the render storage onto the surface.
     ///
     /// The content will be scaled if sized don't match.
@@ -859,10 +867,10 @@ impl ShapeRenderer {
 
                         isatlas = false;
                         packed_texture =
-                            ((a as u32 & 0xFF)  << 0)  | // a
-                            ((b as u32 & 0xFF)  << 8)  | // b
-                            ((g as u32 & 0xFF)  << 16) | // g
-                            ((r as u32 & 0xFF)  << 24);  // r
+                            ((r as u32 & 0xFF)  << 0)  | // r
+                            ((g as u32 & 0xFF)  << 8)  | // g
+                            ((b as u32 & 0xFF)  << 16) | // b
+                            ((a as u32 & 0xFF)  << 24);  // a
 
                     },
 

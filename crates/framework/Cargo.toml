@@ -10,7 +10,7 @@ edition.workspace = true
 [dependencies]
 
 common = { path = "../common" }
-desktop = { path = "../desktop", features = ["import"] }
+desktop = { path = "../desktop" }
 egl = { path = "../egl" }
 gl = { path = "../gl" }
 render = { path = "../render" }

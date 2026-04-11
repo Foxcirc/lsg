@@ -45,7 +45,7 @@ void main() {
         (inTEX >> 0u)  & 0xFFFFu
     );
 
-    ivec4 intColor = ivec4(
+    uvec4 uintColor = uvec4(
         (inTEX >> 0u)  & 0xFFu, // r
         (inTEX >> 8u)  & 0xFFu, // g
         (inTEX >> 16u) & 0xFFu, // b
@@ -62,10 +62,10 @@ void main() {
         );
     } else {
         textureData = vec4(
-            float(intColor.r) / 255.0,
-            float(intColor.g) / 255.0,
-            float(intColor.b) / 255.0,
-            float(intColor.a) / 255.0
+            float(uintColor.r) / 255.0,
+            float(uintColor.g) / 255.0,
+            float(uintColor.b) / 255.0,
+            float(uintColor.a) / 255.0
         );
     }
 
