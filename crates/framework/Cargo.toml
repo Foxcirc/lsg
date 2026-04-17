@@ -8,8 +8,9 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-
 common = { path = "../common" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 desktop = { path = "../desktop" }
 egl = { path = "../egl" }
 gl = { path = "../gl" }
@@ -21,3 +22,6 @@ futures-lite = "2.6.1"
 async-executor = "1.13.3"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 slab = "0.4.11"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+desktop = { path = "../desktop", features = ["import"] }

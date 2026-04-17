@@ -4,6 +4,7 @@ resolver = "3"
 members = [
     "crates/framework",
     "crates/common",
+    "crates/futures",
     "crates/desktop",
     "crates/egl",
     "crates/gl",

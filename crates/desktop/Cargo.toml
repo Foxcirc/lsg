@@ -7,8 +7,12 @@ authors.workspace = true
 [lib]
 crate-type = ["rlib", "staticlib"]
 
+[[bin]]
+name = "wasm"
+path = "src/browser/test/wasm.rs"
+
 [features]
-default = ["export"]
+default = []
 export = []
 import = []
 

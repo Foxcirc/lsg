@@ -1,7 +1,7 @@
 
 //! Interactive test to try out features that are currently being worked on.
 
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use futures_lite::future::block_on;
 

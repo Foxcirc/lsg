@@ -821,15 +821,13 @@ pub struct DataReaderBackend {
     inner: io::PipeReader,
 }
 
-impl AsFd for DataReaderBackend {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        self.inner.as_fd()
-    }
-}
-
-impl io::Read for DataReaderBackend {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buf)
+impl DataReaderBackend {
+    // fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+    //     self.inner.as_fd()
+    // }
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
+        io::Read::read(&mut self.inner, buf)
+            .map_err(|_| ())
     }
 }
 
@@ -838,19 +836,19 @@ pub struct DataWriterBackend {
     inner: io::PipeWriter,
 }
 
-impl AsFd for DataWriterBackend {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        self.inner.as_fd()
+impl DataWriterBackend {
+    // fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+    //     self.inner.as_fd()
+    // }
+    pub fn write(&mut self, buf: &[u8]) -> Result<usize, ()> {
+        let result = io::Write::write(&mut self.inner, buf).map_err(|_| ())?;
+        // Make sure to flush, so we actually send the data.
+        io::Write::flush(&mut self.inner).map_err(|_| ())?;
+        Ok(result)
     }
-}
-
-impl io::Write for DataWriterBackend {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.write(buf)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
+    // fn flush(&mut self) -> io::Result<()> {
+    //     self.inner.flush()
+    // }
 }
 
 /// A handle that let's you send data to other clients. Used for clipboard and drag-and-drop.

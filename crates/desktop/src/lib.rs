@@ -1,16 +1,20 @@
 
-#[cfg(feature = "import")] mod import;
-#[cfg(feature = "import")] use import as backend;
+#![allow(unexpected_cfgs)]
+
+#[cfg(all(target_family = "wasm", feature = "import"))] mod browser;
 
 #[cfg(all(target_os = "linux", not(feature = "import")))] mod linux;
 #[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend;
 
-#[cfg(any(feature = "import", feature = "export"))] mod export;
+#[cfg(any(feature = "import", feature = "export"))] pub mod ffi;
+#[cfg(feature = "import")] use ffi::backend as backend;
+
+// For rust-analyzer compatibility while developing:
+// #[cfg(lsp)] mod linux; TODO: make the backends "self contained" so that they dont rely on the fact the "backend" is themselves.
 
 use core::{error::Error as StdError, fmt, future, task};
 
-// TODO: use alloc instead of std to possibly support non-std targets
-use std::{io, os::fd::{AsFd, BorrowedFd}, sync::Arc};
+use std::sync::Arc;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -91,6 +95,7 @@ pub enum NotifEvent {
 
 #[derive(Debug)]
 pub enum DndEvent {
+    // TODO: pass x, y as a Point in here, on seperate values :P (also a good test for how much is to refactor a simple event variant now with all the cffi stuff)
     Motion { x: f64, y: f64, item: HoveredItem },
     Drop { x: f64, y: f64, readable: DataReadable },
     Cancel,
@@ -498,14 +503,11 @@ pub struct DataReader {
     backend: backend::DataReaderBackend,
 }
 
-impl AsFd for DataReader {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.backend.as_fd()
-    }
-}
-
-impl io::Read for DataReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+impl DataReader {
+    // fn as_fd(&self) -> BorrowedFd<'_> {
+    //     self.backend.as_fd()
+    // }
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
         self.backend.read(buf)
     }
 }
@@ -514,19 +516,16 @@ pub struct DataWriter {
     backend: backend::DataWriterBackend,
 }
 
-impl AsFd for DataWriter {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        self.backend.as_fd()
-    }
-}
-
-impl io::Write for DataWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+impl DataWriter {
+    // fn as_fd(&self) -> BorrowedFd {
+    //     self.backend.as_fd()
+    // }
+    pub fn write(&mut self, buf: &[u8]) -> Result<usize, ()> {
         self.backend.write(buf)
     }
-    fn flush(&mut self) -> io::Result<()> {
-        self.backend.flush()
-    }
+    // fn flush(&mut self) -> io::Result<()> {
+    //     self.backend.flush()
+    // }
 }
 
 pub struct HoveredItem {
