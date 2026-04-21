@@ -1,16 +1,13 @@
 
 #![allow(unexpected_cfgs)]
 
-#[cfg(target_family = "wasm")] pub mod browser;
-#[cfg(target_family = "wasm")] use browser as backend;
+pub mod ffi;
 
-#[cfg(target_family = "wasm")] pub mod ffi;
+// #[cfg(target_family = "wasm")] pub mod ffi;
+// #[cfg(target_family = "wasm")] use ffi as backend;
 
-#[cfg(lsp)] pub mod browser;
-#[cfg(lsp)] use browser as backend;
+pub mod browser;
 
-#[cfg(lsp)] pub mod ffi;
-
-pub fn block<F: Future>(fut: F) -> F::Output {
-    backend::block(fut)
-}
+// pub fn block<F: Future>(fut: F) -> F::Output {
+//     backend::block(fut)
+// }

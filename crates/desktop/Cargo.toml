@@ -18,6 +18,7 @@ import = []
 
 [dependencies]
 common = { path = "../common" }
+futures = { path = "../futures" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # wayland deps

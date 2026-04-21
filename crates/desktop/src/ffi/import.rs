@@ -22,7 +22,7 @@ pub mod definitions {
 
         pub fn event_loop_poll_rust(
             this0: *const EventLoop,
-            rawcx: EvlPollContextRust,
+            rawcx: RustWaker,
             handlers0: *const EvlHandlers,
             state: *mut void,
         ) -> Poll;
@@ -88,12 +88,12 @@ pub mod definitions {
 pub mod implementation {
 
     use core::{
-        slice, task, mem,
+        slice, task, mem::{self, ManuallyDrop},
         ffi::{CStr, c_void as void},
         ptr::{self, NonNull, null_mut},
     };
 
-    use std::{sync::Arc, ffi::CString};
+    use std::{ffi::CString, sync::Arc};
 
     use common::SmartMutex;
 
@@ -153,18 +153,17 @@ pub mod implementation {
             // If we don't have any events stored, we need
             // to actually poll for more.
 
-            let waker = cx.waker();
+            let waker = ManuallyDrop::new(cx.waker().clone());
+            //                        ^^^ RustWaker consumes an owned `Waker`
 
-            let rawcx = types::EvlPollContextRust {
-                waker: types::EvlPollWakerRust {
-                    state: waker.data().cast(),
-                    vtable: ptr::from_ref(waker.vtable()).cast(),
-                }
+            let rustwk = types::RustWaker {
+                state: waker.data().cast(),
+                vtable: ptr::from_ref(waker.vtable()).cast(),
             };
 
             let state = &mut *guard as *mut EventLoopState;
 
-            let poll = unsafe { event_loop_poll_rust(self.inner, rawcx, &HANDLERS, state.cast()) };
+            let poll = unsafe { event_loop_poll_rust(self.inner, rustwk, &HANDLERS, state.cast()) };
 
             match poll {
 

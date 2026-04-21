@@ -18,6 +18,7 @@ pub enum EvlResult {
     Err
 }
 
+
 /// A convenience interface when using the lib from rust, which
 /// passes through state and vtable pointer directly.
 /// # Safety
@@ -26,12 +27,7 @@ pub enum EvlResult {
 /// the async interface probably won't really change, and if so,
 /// I will notice immediatly when building these crates.
 #[repr(C)]
-pub struct EvlPollContextRust {
-    pub waker: EvlPollWakerRust,
-}
-
-#[repr(C)]
-pub struct EvlPollWakerRust {
+pub struct RustWaker {
     pub state: *const void,
     pub vtable: *const void
 }

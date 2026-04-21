@@ -2,17 +2,18 @@
 pub mod definitions {
 
     use std::ffi::c_void as void;
+    use crate::ffi::types::Waker;
 
     #[repr(C)]
-    pub enum PollResult2 {
+    pub enum PollResult {
         Pending,
         Ready
     }
 
-    pub type PollHandler = unsafe extern "C" fn(fut: *mut void, state: *mut void) -> PollResult2;
+    pub type PollHandler = unsafe extern "C" fn(fut: *mut void, waker: Waker) -> PollResult;
 
     unsafe extern "C" {
-        fn block(fut: *mut void, state: *mut void, handler: PollHandler);
+        fn spawn(fut: *mut void, handler: PollHandler);
     }
 
 }
@@ -24,23 +25,27 @@ pub mod implementation {
 
     pub fn block<F: Future>(fut: F) -> F::Output {
 
-        let state = HandlerState::new(fut);
+        let pinned = Box::pin(fut);
+        let handler = HandlerForFuture::new(pinned);
 
+        todo!()
 
     }
 
-    struct HandlerState<F> {
-        pinned: Pin<Box<F>>
+    struct HandlerForFuture<F> {
+        pinned: Pin<Box<F>>,
     }
 
-    impl<F> HandlerState<F> {
+    impl<F> HandlerForFuture<F> {
 
-        pub fn new(fut: F) -> Self {
-            Self { pinned: Box::pin(fut) }
+        pub fn new(pinned: Pin<Box<F>>) -> Self {
+            Self { pinned }
         }
 
-        pub unsafe extern "C" fn handler(fut0: *mut void, state0: *mut void) -> PollResult2 {
+        pub unsafe extern "C" fn handler(fut0: *mut void, state0: *mut void) -> PollResult {
             let fut = unsafe { &mut *(fut0 as *mut F) };
+            // let state =
+            todo!()
         }
 
     }

@@ -147,6 +147,7 @@ dependencies = [
  "async-signals",
  "bv",
  "common",
+ "futures",
  "futures-lite",
  "nix 0.28.0",
  "wayland-client",
