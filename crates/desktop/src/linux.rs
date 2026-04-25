@@ -29,8 +29,6 @@ impl EventLoopBackend {
     #[track_caller]
     fn new(config: EvlConfig) -> Result<Self, EvlError> {
 
-        println!("hey ho from rust!");
-
         // We do some setup here, which should be nice
         // for the user, since this is a framework after all.
 

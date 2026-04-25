@@ -2,50 +2,54 @@
 pub mod definitions {
 
     use std::ffi::c_void as void;
-    use crate::ffi::types::Waker;
-
-    #[repr(C)]
-    pub enum PollResult {
-        Pending,
-        Ready
-    }
-
-    pub type PollHandler = unsafe extern "C" fn(fut: *mut void, waker: Waker) -> PollResult;
+    use crate::ffi::types::*;
 
     unsafe extern "C" {
-        fn spawn(fut: *mut void, handler: PollHandler);
+        pub fn spawn(fut: *mut void, vtable: FutureVtable);
     }
 
 }
 
 pub mod implementation {
 
-    use std::{ffi::c_void as void, pin::Pin};
-    use super::definitions::*;
+    use std::{ffi::c_void as void, marker::PhantomData, pin::Pin, task};
 
-    pub fn block<F: Future>(fut: F) -> F::Output {
+    use crate::ffi::{import::definitions, types};
 
-        let pinned = Box::pin(fut);
-        let handler = HandlerForFuture::new(pinned);
+    pub fn spawn<F: Future<Output = ()> + 'static>(fut: F) {
 
-        todo!()
+        let ptr = Box::into_raw(Box::new(fut));
+
+        let vtable = types::FutureVtable {
+            poll: SpawnState::<F>::poll,
+            drop: SpawnState::<F>::drop,
+        };
+
+        unsafe { definitions::spawn(ptr.cast(), vtable) };
 
     }
 
-    struct HandlerForFuture<F> {
-        pinned: Pin<Box<F>>,
-    }
+    struct SpawnState<F: Future<Output = ()> + 'static>(PhantomData<F>);
 
-    impl<F> HandlerForFuture<F> {
+    impl<F: Future<Output = ()> + 'static> SpawnState<F> {
 
-        pub fn new(pinned: Pin<Box<F>>) -> Self {
-            Self { pinned }
+        pub unsafe extern "C" fn poll(fut0: *mut void, waker0: types::InternalWaker) -> types::PollResult {
+
+            let result = Future::poll(
+                unsafe { Pin::new_unchecked(&mut *(fut0 as *mut F)) },
+                &mut task::Context::from_waker(&task::Waker::from(waker0))
+            );
+
+            match result {
+                task::Poll::Ready(()) => types::PollResult::Ready,
+                task::Poll::Pending   => types::PollResult::Pending
+            }
+
         }
 
-        pub unsafe extern "C" fn handler(fut0: *mut void, state0: *mut void) -> PollResult {
-            let fut = unsafe { &mut *(fut0 as *mut F) };
-            // let state =
-            todo!()
+        pub unsafe extern "C" fn drop(fut0: *mut void) {
+            let fut = unsafe { Box::from_raw(fut0 as *mut F) };
+            drop(fut);
         }
 
     }

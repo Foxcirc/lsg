@@ -7,6 +7,8 @@ pub use implementation::*;
 pub mod definitions {
 
     use std::ffi::c_void as void;
+    use futures::ffi::types::InternalWaker;
+
     use crate::ffi::types::*;
 
     #[allow(improper_ctypes)]
@@ -20,9 +22,9 @@ pub mod definitions {
             state: *mut void,
         ) -> EvlResult;
 
-        pub fn event_loop_poll_rust(
+        pub fn event_loop_poll(
             this0: *const EventLoop,
-            rawcx: RustWaker,
+            rawcx: InternalWaker,
             handlers0: *const EvlHandlers,
             state: *mut void,
         ) -> Poll;
@@ -96,6 +98,7 @@ pub mod implementation {
     use std::{ffi::CString, sync::Arc};
 
     use common::SmartMutex;
+    use futures::ffi::types::InternalWaker;
 
     use crate::{
         ffi::{types, import::definitions::*},
@@ -154,16 +157,20 @@ pub mod implementation {
             // to actually poll for more.
 
             let waker = ManuallyDrop::new(cx.waker().clone());
-            //                        ^^^ RustWaker consumes an owned `Waker`
+            //                        ^^^ InternalWaker consumes an owned `Waker`
 
-            let rustwk = types::RustWaker {
+            // SAFETY:
+            // We pass through our waker 1-by-1, which may lead to undefined
+            // behaviour if changes are made to the internal representation
+            // of `task::Waker` but this should be obvious to notice.
+            let iwaker = InternalWaker {
                 state: waker.data().cast(),
                 vtable: ptr::from_ref(waker.vtable()).cast(),
             };
 
             let state = &mut *guard as *mut EventLoopState;
 
-            let poll = unsafe { event_loop_poll_rust(self.inner, rustwk, &HANDLERS, state.cast()) };
+            let poll = unsafe { event_loop_poll(self.inner, iwaker, &HANDLERS, state.cast()) };
 
             match poll {
 

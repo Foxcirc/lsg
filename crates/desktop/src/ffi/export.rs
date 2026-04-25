@@ -13,7 +13,7 @@ use std::{sync::Arc, ffi::CString};
 use common::{IsDisplay, IsSurface};
 
 use crate::ffi::types::*;
-use futures::ffi::{types::Waker as FuturesWaker, waker::into_rust_waker};
+use futures::ffi::{types::InternalWaker, waker::waker_clone};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn event_loop_run(config0: EventLoopConfig, handler0: EventLoopHandler, state: *mut void) -> EvlResult {
@@ -98,32 +98,16 @@ pub const extern "C" fn evl_handlers_default() -> EvlHandlers {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_poll_rust(this0: *const EventLoop, rustwk: RustWaker, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
+pub unsafe extern "C" fn event_loop_poll(this0: *const EventLoop, iwaker0: *const InternalWaker, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
 
     let this = unsafe { get_event_loop(this0) };
     let handlers: &EvlHandlers = unsafe { &*handlers0 };
 
-    let waker = unsafe { task::Waker::new(
-        rustwk.state.cast(),
-        &*rustwk.vtable.cast()
-    ) };
-
+    let icloned0 = waker_clone(iwaker0);
+    let waker = task::Waker::from(icloned0);
     let cx = task::Context::from_waker(&waker);
 
     event_loop_poll_inner(&this, cx, handlers, state)
-
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_poll(this0: *const EventLoop, wk: FuturesWaker, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
-
-    let this: &Arc<crate::EventLoop> = unsafe { &*this0.cast() };
-    let handlers: &EvlHandlers = unsafe { &*handlers0 };
-
-    let waker = into_rust_waker(wk);
-    let cx = task::Context::from_waker(&waker);
-
-    event_loop_poll_inner(this, cx, handlers, state)
 
 }
 
@@ -225,8 +209,9 @@ fn event_loop_poll_inner(this: &Arc<crate::EventLoop>, mut cx: task::Context, ha
                 },
 
                 Event::SelectionUpdate { readable } => {
-                    let readable0 = readable.map(|it| Box::into_raw(Box::new(it)).cast())
-                        .unwrap_or(null_mut::<DataReadable>());
+                    let readable0: *mut DataReadable = readable
+                        .map(|it| Box::into_raw(Box::new(it)).cast())
+                        .unwrap_or(null_mut());
                     (handlers.selection_update)(state, readable0)
                 }
 

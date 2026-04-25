@@ -18,20 +18,6 @@ pub enum EvlResult {
     Err
 }
 
-
-/// A convenience interface when using the lib from rust, which
-/// passes through state and vtable pointer directly.
-/// # Safety
-/// This is "unsafe" if the library is compiled with a different
-/// rust compiler then the program that uses it. However in practice
-/// the async interface probably won't really change, and if so,
-/// I will notice immediatly when building these crates.
-#[repr(C)]
-pub struct RustWaker {
-    pub state: *const void,
-    pub vtable: *const void
-}
-
 #[repr(C)]
 pub struct MonitorInfo {
     pub name: *mut i8,

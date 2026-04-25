@@ -1,6 +1,4 @@
 
-#[cfg(feature = "export")] mod export;
-
 use std::{ffi::c_void as void, fmt, ops::{self, Range}, sync::{Mutex, MutexGuard}};
 
 /// A rectangular region on a surface.
