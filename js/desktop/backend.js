@@ -1,15 +1,15 @@
 
 import * as types from "./types.js";
 
-// /** @typedef {{ events: { kind: string }[] }} evlObject */
+/** @typedef {{ events: { kind: string }[] }} EvlObject */
 
-// /** @param {{appidPtr: number, appid: string, intercept: Boolean}} config */
-/** @param {boolean} config */
-/** @param {(evlObject: evlObject)} handler */
+/** @param {any} config */
+/** @param {any} handler */
 export function eventLoopRun(config, handler) {
 
   console.log("event_loop_run encountered", config, handler)
 
+  /** @type {EvlObject} */
   const evlObject = {
     events: { kind: "Resume" }
   };
@@ -20,14 +20,12 @@ export function eventLoopRun(config, handler) {
 
 }
 
-/** @param {evlObject} evlObject */
-/** @param {{statePtr: number, vtablePtr: number}} rawcx */
+/** @param {EvlObject} evlObject */
+/** @param {number} wakerPtr */
 /** @param {number} handlersPtr */
 /** @param {number} statePtr */
-export function eventLoopPollRust(evlObject, rawcx, handlersPtr, statePtr) {
+export function eventLoopPoll(evlObject, wakerPtr, handlersPtr, statePtr) {
 
-  let events = evlObject.events.pop();
-
-
+  // let events = evlObject.events.pop();
 
 }

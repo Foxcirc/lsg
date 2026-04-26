@@ -24,7 +24,7 @@ pub mod definitions {
 
         pub fn event_loop_poll(
             this0: *const EventLoop,
-            rawcx: InternalWaker,
+            iwaker0: *const InternalWaker,
             handlers0: *const EvlHandlers,
             state: *mut void,
         ) -> Poll;
@@ -170,21 +170,20 @@ pub mod implementation {
 
             let state = &mut *guard as *mut EventLoopState;
 
-            let poll = unsafe { event_loop_poll(self.inner, iwaker, &HANDLERS, state.cast()) };
-
+            let poll = unsafe { event_loop_poll(self.inner, &iwaker, &HANDLERS, state.cast()) };
             match poll {
-
                 types::Poll::Err => {
-                    task::Poll::Ready(Err(crate::EvlError::fatal("unknown error")))
+                    let err = crate::EvlError::fatal("unknown error");
+                    task::Poll::Ready(Err(err))
                 },
-
                 types::Poll::Ready => {
+                    // events will be read on the next poll
                     waker.wake_by_ref();
                     task::Poll::Pending
                 },
-
-                types::Poll::Pending => task::Poll::Pending,
-
+                types::Poll::Pending => {
+                    task::Poll::Pending
+                }
             }
 
         }

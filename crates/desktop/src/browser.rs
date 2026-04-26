@@ -2,8 +2,8 @@
 //! When running in the browser, we need some extra
 //! helper functions to make the glue-layer work.
 
-use std::{task, mem::ManuallyDrop, ffi::c_void as void};
-use crate::export::*;
+use std::ffi::c_void as void;
+use crate::ffi::types::*;
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn call_event_loop_handler(
@@ -12,18 +12,6 @@ unsafe extern "C" fn call_event_loop_handler(
     state: *mut void
 ) {
     unsafe { (ptr)(evl, state) }
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn call_poll_context_wake(
-    rawcx0: *const EvlPollContextRust,
-) {
-    let rawcx = unsafe { &*rawcx0 };
-    let waker = unsafe { ManuallyDrop::new(task::Waker::new(
-        rawcx.waker.state.cast(),
-        &*rawcx.waker.vtable.cast()
-    )) };
-    waker.wake_by_ref();
 }
 
 #[unsafe(no_mangle)] unsafe extern "C" fn call_resume               (handlers: *const EvlHandlers, state: *mut void)                            { (unsafe { &*handlers }.resume)(state) }

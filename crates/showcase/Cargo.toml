@@ -1,0 +1,10 @@
+[package]
+name = "showcase"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+desktop = { path = "../desktop", features = ["import"] }
+futures = { path = "../futures" }

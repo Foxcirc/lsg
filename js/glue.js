@@ -8,12 +8,12 @@ export class Glue {
 
   /** @type {WebAssembly.Instance} */ instance;
   /** @type {WebAssembly.Memory} */   memory;
-  environment;
+  /** @type {any} */                  environment;
 
   constructor() {
 
-    this.instance = null;
-    this.memory   = null;
+    this.instance    = null;
+    this.memory      = null;
     this.environment = {};
 
   }
@@ -36,12 +36,22 @@ export class Glue {
     // We use this for debugging purposes.
     obj.kind = kind;
 
-    const handle = this.#nextHandle++;
+    const handle = this.#nextHandle;
+    this.#nextHandle += 1;
     this.#handles.set(handle, obj);
+
     return handle;
 
   }
 
+  /** @param {number} handle  */
+  /** @returns {any}  */
+  getHandle(handle) {
+    return this.#handles[handle];
+  }
+
+  /** @param {number} handle  */
+  /** @returns {void}  */
   freeHandle(handle) {
     this.#handles.delete(handle);
   }
@@ -82,29 +92,32 @@ export class Glue {
   /** @param {number} ptr */
   /** @returns {number} */
   readU8(ptr) {
-    self.refreshMemoryViews();
+    this.refreshMemoryViews();
     return this.viewU8[ptr];
   }
 
   /** @param {number} ptr */
   /** @returns {number} */
   readU16(ptr) {
-    self.refreshMemoryViews();
+    this.refreshMemoryViews();
+    let idx = ptr >>> 1; // = dividing by 2
     return this.viewU16[ptr];
   }
 
   /** @param {number} ptr */
   /** @returns {number} */
   readI16(ptr) {
-    self.refreshMemoryViews();
-    return this.viewI16[ptr];
+    this.refreshMemoryViews();
+    let idx = ptr >>> 1; // = dividing by 2
+    return this.viewI16[idx];
   }
 
   /** @param {number} ptr */
   /** @returns {number} */
   readU32(ptr) {
-    self.refreshMemoryViews();
-    return this.viewU32[ptr];
+    this.refreshMemoryViews();
+    let idx = ptr >>> 2; // = dividing by 4
+    return this.viewU32[idx];
   }
 
   /** @param {number} ptr */
@@ -118,17 +131,17 @@ export class Glue {
   /** @returns {string} */
   readCString(ptr) {
     this.refreshMemoryViews();
-    if (!ptr) throw "readCString called with null pointer";
+    if (!ptr) throw new NullPointerError;
     let start = ptr;
-    while (this.viewU8[end] !== 0) ptr += 1;
+    while (this.viewU8[ptr] !== 0) ptr += 1;
     return decoder.decode(this.viewU8.subarray(start, ptr));
   }
 
 }
 
-export class NulPointerError extends Error {
+export class NullPointerError extends Error {
   constructor() {
-    super("unexpected null pointer");
+    super("unexpected null pointer passed from wasm to javascript");
     this.name = "NulPointerError";
   }
 }

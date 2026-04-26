@@ -1,7 +1,7 @@
 
-// Browser-side JS host which provides the C-Api defined in the `import` module.
-
-import { Glue, NulPointerError } from "../glue";
+import { Glue, NullPointerError } from "../glue.js";
+import * as backend from "./backend.js";
+import * as types from "./types.js"
 
 /** @param {Glue} glue  */
 function newHelpers(glue) {
@@ -21,26 +21,13 @@ function newHelpers(glue) {
 
     // EventLoopConfig
     // +0 appid ptr
-    // +4 intercept bool (can be treated like u32)
+    // +4 intercept bool
     readEventLoopConfig(ptr) {
-      const appidPtr  = glue.readU32(ptr + 0);
+      const appidPtr  = glue.readU32(ptr);
       const appid     = glue.readCString(appidPtr);
       const intercept = glue.readBool(ptr + 4);
       return { appidPtr, appid, intercept };
     },
-
-  //   readPollContextRust(ptr) {
-  //     this.refreshMemoryViews();
-  //     const base = ptr >>> 2; // Convert ptr to index into viewU32.
-
-  //     const statePtr  = this.#viewU32[base + 0];
-  //     const vtablePtr = this.#viewU32[base + 1];
-
-  //     return {
-  //       statePtr,
-  //       vtablePtr
-  //     }
-  //   },
 
   //   // LogicalSize / PhysicalSize
   //   // +0 w u16
@@ -134,6 +121,15 @@ export function newEnv(glue) {
 
   const helpers = newHelpers(glue);
 
+    let currentWakerPtr = 0;
+
+    setInterval(() => {
+      if (currentWakerPtr) {
+        console.log("calling waker_wake, currentWakerPtr =", currentWakerPtr);
+        glue.instance.exports.waker_wake(currentWakerPtr);
+      }
+    }, 1000);
+
   return {
 
     logs(ptr) {
@@ -144,33 +140,54 @@ export function newEnv(glue) {
     // ==========================================
     // EVENT LOOP
     // ==========================================
-    event_loop_run(configPtr, handlerFnPtr, statePtr) {
+    event_loop_run(configPtr, handlerPtr, statePtr) {
 
       const config = helpers.readEventLoopConfig(configPtr);
 
       let handler = function(evlObject) {
 
-        if (!handlerFnPtr) throw NulPointerError;
+        if (!handlerPtr) throw NullPointerError;
 
         // Call the rust callback.
         const evlHandle = glue.allocHandle("EventLoop", evlObject);
-        glue.callEventLoopHandler(handlerFnPtr, evlHandle, statePtr);
+        helpers.callEventLoopHandler(handlerPtr, evlHandle, statePtr);
 
       }
 
       backend.eventLoopRun(config, handler);
+      eventLoopRun
 
       return types.EvlResult.Ok;
     },
 
-    event_loop_poll_rust(evlPtr, rawcxPtr, handlersPtr, statePtr) {
-      const evlObject = handles[evlPtr];
-      const rawcx = glue.readPollContextRust(rawcxPtr);
+    event_loop_poll(evlHandle, wakerPtr, handlersPtr, statePtr) {
+      const evlObject = glue.getHandle(evlHandle);
+      // const result = backend.eventLoopPoll(evlObject, wakerPtr, handlersPtr, statePtr);
 
-      backend.eventLoopPollRust(evlObject, rawcx, handlersPtr, statePtr);
+      console.log("event_loop_poll entry");
+
+      let update = currentWakerPtr == 0 ||
+        glue.instance.exports.waker_equal(wakerPtr, currentWakerPtr) == 0;
+
+      console.log("event_loop_poll wakers need updating retuned:", update);
+      if (update) { // only clone and overwrite if necessarry
+        console.log("event_loop_poll are not equal so we clone");
+        let cloned = glue.instance.exports.waker_clone_heap(wakerPtr);
+        currentWakerPtr = cloned;
+      }
+
+      console.log("event_loop_poll done.");
 
       return types.Poll.Pending;
-    }
+    },
+
+    waker_wake_browser(state) {
+      throw new Error("unimplemented");
+    },
+
+    waker_drop_browser(state) {
+      throw new Error("unimplemented");
+    },
 
   //   event_loop_suspend(thisPtr) {},
   //   event_loop_resume(thisPtr) {},
