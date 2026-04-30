@@ -6,5 +6,5 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-desktop = { path = "../desktop", features = ["import"] }
+# desktop = { path = "../desktop", features = ["import"] }
 futures = { path = "../futures" }

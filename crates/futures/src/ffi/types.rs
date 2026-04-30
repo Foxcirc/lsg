@@ -37,8 +37,11 @@ pub enum PollResult {
     Ready
 }
 
+pub type FutureVTablePollHandler = unsafe extern "C" fn(fut: *mut void, waker: *const InternalWaker) -> PollResult;
+pub type FutureVTableDropHandler = unsafe extern "C" fn(fut: *mut void);
+
 #[repr(C)]
-pub struct FutureVtable {
-    pub poll: unsafe extern "C" fn(fut: *mut void, waker: InternalWaker) -> PollResult,
-    pub drop: unsafe extern "C" fn(fut: *mut void)
+pub struct FutureVTable {
+    pub poll: FutureVTablePollHandler,
+    pub drop: FutureVTableDropHandler
 }

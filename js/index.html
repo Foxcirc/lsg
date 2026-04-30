@@ -1,15 +1,3 @@
 <!doctype html>
 
-<script type="module">
-
-  import { Glue } from "./glue.js";
-  import * as desktop from "./desktop/export.js";
-
-  const glue = new Glue();
-  const desktopEnv = desktop.newEnv(glue);
-  const wasm = await WebAssembly.instantiateStreaming(fetch("showcase.wasm"), { env: desktopEnv } );
-  glue.init(wasm.instance);
-
-  wasm.instance.exports.run();
-
-</script>
+<script type="module" src="main.js"></script>

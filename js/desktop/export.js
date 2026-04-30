@@ -121,14 +121,14 @@ export function newEnv(glue) {
 
   const helpers = newHelpers(glue);
 
-    let currentWakerPtr = 0;
+  let currentWakerPtr = 0;
 
-    setInterval(() => {
-      if (currentWakerPtr) {
-        console.log("calling waker_wake, currentWakerPtr =", currentWakerPtr);
-        glue.instance.exports.waker_wake(currentWakerPtr);
-      }
-    }, 1000);
+  setInterval(() => {
+    if (currentWakerPtr) {
+      console.log("calling waker_wake, currentWakerPtr =", currentWakerPtr);
+      glue.instance.exports.waker_wake(currentWakerPtr);
+    }
+  }, 1000);
 
   return {
 
@@ -158,6 +158,7 @@ export function newEnv(glue) {
       eventLoopRun
 
       return types.EvlResult.Ok;
+
     },
 
     event_loop_poll(evlHandle, wakerPtr, handlersPtr, statePtr) {
@@ -179,14 +180,6 @@ export function newEnv(glue) {
       console.log("event_loop_poll done.");
 
       return types.Poll.Pending;
-    },
-
-    waker_wake_browser(state) {
-      throw new Error("unimplemented");
-    },
-
-    waker_drop_browser(state) {
-      throw new Error("unimplemented");
     },
 
   //   event_loop_suspend(thisPtr) {},
