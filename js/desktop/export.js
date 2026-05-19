@@ -167,8 +167,7 @@ export function newEnv(glue) {
 
       console.log("event_loop_poll entry");
 
-      let update = currentWakerPtr == 0 ||
-        glue.instance.exports.waker_equal(wakerPtr, currentWakerPtr) == 0;
+      let update = glue.instance.exports.waker_equal(wakerPtr, currentWakerPtr) == 0;
 
       console.log("event_loop_poll wakers need updating retuned:", update);
       if (update) { // only clone and overwrite if necessarry

@@ -98,13 +98,13 @@ pub const extern "C" fn evl_handlers_default() -> EvlHandlers {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn event_loop_poll(this0: *const EventLoop, iwaker0: *const InternalWaker, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
+pub unsafe extern "C" fn event_loop_poll(this0: *const EventLoop, waker0: *const InternalWaker, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
 
     let this = unsafe { get_event_loop(this0) };
     let handlers: &EvlHandlers = unsafe { &*handlers0 };
 
-    let icloned0 = waker_clone(iwaker0);
-    let waker = task::Waker::from(icloned0);
+    let cloned0 = unsafe { waker_clone(waker0) };
+    let waker = task::Waker::from(cloned0);
     let cx = task::Context::from_waker(&waker);
 
     event_loop_poll_inner(&this, cx, handlers, state)

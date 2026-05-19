@@ -77,8 +77,13 @@ pub unsafe extern "C" fn waker_equal(
     lhs0: *const types::InternalWaker,
     rhs0: *const types::InternalWaker
 ) -> bool {
-    let lhs = unsafe { &*lhs0 };
-    let rhs = unsafe { &*rhs0 };
-    lhs.state == rhs.state &&
-    lhs.vtable == rhs.vtable
+    // Since duplicating a waker doesn't change the pointer, this should be sufficient.
+    lhs0 == rhs0
+    // Otherwise it would be: (Guarding against null pointers.)
+    // ((lhs0.is_null() || rhs0.is_null()) && lhs0 != rhs0) || {
+    //     let lhs = unsafe { &*lhs0 };
+    //     let rhs = unsafe { &*rhs0 };
+    //     lhs.state == rhs.state &&
+    //     lhs.vtable == rhs.vtable
+    // }
 }
