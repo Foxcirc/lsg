@@ -28,15 +28,15 @@ function newHelpers(glue) {
 
     /** @param {WasmPtr} waker
      *  @returns {WasmPtr} */
-    wakerCloneBoxed(waker) {
+    wakerClone(waker) {
       /** @ts-ignore */
-      return glue.instance.exports.waker_clone_boxed(waker);
+      return glue.instance.exports.waker_clone(waker);
     },
 
     /** @param {WasmPtr} waker */
-    wakerDropBoxed(waker) {
+    wakerDrop(waker) {
       /** @ts-ignore */
-      glue.instance.exports.waker_drop_boxed(waker);
+      glue.instance.exports.waker_drop(waker);
     },
 
     callEventLoopHandler(fnPtr, evlPtr, statePtr) {
@@ -196,7 +196,7 @@ export function newEnv(glue) {
 
       if (currentWakerPtr == 0) {
         console.log("init waker");
-        currentWakerPtr = helpers.wakerCloneBoxed(wakerPtr);
+        currentWakerPtr = helpers.wakerClone(wakerPtr);
       } else {
 
         let update = helpers.wakerWakeSame(wakerPtr, currentWakerPtr) == 0;
@@ -206,8 +206,8 @@ export function newEnv(glue) {
           // Only clone and overwrite if necessarry.
           // Also drop the stored waker correclty!
           console.log("event_loop_poll are not equal so we clone");
-          let cloned = helpers.wakerCloneBoxed(wakerPtr);
-          helpers.wakerDropBoxed(currentWakerPtr);
+          let cloned = helpers.wakerClone(wakerPtr);
+          helpers.wakerDrop(currentWakerPtr);
           currentWakerPtr = cloned;
         }
 

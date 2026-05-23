@@ -58,7 +58,7 @@ export function newEnv(glue) {
 
       // Create a new waker, which is captured by the `pollFn`.
       const taskId = nextTaskId += 1;
-      const wakerPtr = helpers.wakerNewBoxedBrowser(taskId);
+      const wakerPtr = helpers.wakerNewBrowser(taskId);
 
       /** @type {Task} */
       let task = {
@@ -75,7 +75,7 @@ export function newEnv(glue) {
             // The task is done and we forcefully drop all its data.
             // We don't wait until WASM releases all it's clones of the waker, since
             // these clones might only be released when the WASM future is dropped.
-            helpers.wakerDropBoxed(wakerPtr);
+            helpers.wakerDrop(wakerPtr);
             taskMap.delete(taskId);
             helpers.callFutureVTableDrop(vtable.dropFnPtr, futPtr);
             // This is important, so an already dropped task is not polled,
@@ -119,9 +119,9 @@ function newHelpers(glue) {
 
     /** @param {number} state
      *  @returns {WasmPtr} */
-    wakerNewBoxedBrowser(state) {
+    wakerNewBrowser(state) {
       /** @ts-ignore */
-      return glue.instance.exports.waker_new_boxed_browser(state);
+      return glue.instance.exports.waker_new_browser(state);
     },
 
     /** @param {WasmPtr} waker */
@@ -131,7 +131,7 @@ function newHelpers(glue) {
     },
 
     /** @param {WasmPtr} waker */
-    wakerDropBoxed(waker) {
+    wakerDrop(waker) {
       /** @ts-ignore */
       glue.instance.exports.waker_drop_boxed(waker);
     },

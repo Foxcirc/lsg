@@ -1,6 +1,7 @@
 
 use std::ffi::c_void as void;
 use std::ptr::null_mut;
+use std::sync::Arc;
 use std::task::Poll;
 
 use desktop::ffi::import::definitions as defs;
@@ -40,10 +41,15 @@ extern "C" fn handler0(evl0: *const types::EventLoop, state0: *mut void) {
 
     use futures::ffi::import::implementation as fexeci;
 
-    fexeci::spawn(std::future::poll_fn(move |_cx| {
+    fexeci::spawn(std::future::poll_fn(move |cx| {
         println!("should run every sec!");
-        let iwaker0 = InternalWaker::from(_cx.waker().clone());
-        unsafe { defs::event_loop_poll(evl0, &iwaker0, null_mut(), null_mut()) };
+        let waker0 = Arc::new(cx.waker().clone());
+        unsafe { defs::event_loop_poll(
+            evl0,
+            Arc::as_ptr(&waker0).cast(),
+            null_mut(),
+            null_mut()
+        ) };
         Poll::Pending
     }));
 
