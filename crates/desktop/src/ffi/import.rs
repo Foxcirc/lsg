@@ -156,29 +156,31 @@ pub mod implementation {
             // If we don't have any events stored, we need
             // to actually poll for more.
 
-            let waker = ManuallyDrop::new(cx.waker().clone());
-            //                        ^^^ InternalWaker consumes an owned `Waker`
+            // It should be noted that rust-FFI-rust polling is very
+            // inefficient right now, since we clone and allocate the waker.
 
-            // SAFETY:
-            // We pass through our waker 1-by-1, which may lead to undefined
-            // behaviour if changes are made to the internal representation
-            // of `task::Waker` but this should be obvious to notice.
-            let iwaker = InternalWaker {
-                state: waker.data().cast(),
-                vtable: ptr::from_ref(waker.vtable()).cast(),
-            };
+            let waker = Arc::new(cx.waker().clone()); // SAFETY: Unstable-Waker-FFI
+            //                                           ^^^^^^
+            // We pass through our waker Arc 1-by-1, which may lead to undefined
+            // behaviour if changes are made to the internal representation of
+            // `task::Waker` or Arc but this should be obvious to notice.
 
             let state = &mut *guard as *mut EventLoopState;
 
-            let poll = unsafe { event_loop_poll(self.inner, &iwaker, &HANDLERS, state.cast()) };
+            let poll = unsafe { event_loop_poll(
+                self.inner,
+                Arc::as_ptr(&waker).cast(),
+                &HANDLERS,
+                state.cast()
+            ) };
+
             match poll {
                 types::Poll::Err => {
                     let err = crate::EvlError::fatal("unknown error");
                     task::Poll::Ready(Err(err))
                 },
                 types::Poll::Ready => {
-                    // events will be read on the next poll
-                    waker.wake_by_ref();
+                    waker.wake_by_ref(); // Events will be read on the next poll.
                     task::Poll::Pending
                 },
                 types::Poll::Pending => {

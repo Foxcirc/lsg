@@ -101,10 +101,10 @@ pub const extern "C" fn evl_handlers_default() -> EvlHandlers {
 pub unsafe extern "C" fn event_loop_poll(this0: *const EventLoop, waker0: *const InternalWaker, handlers0: *const EvlHandlers, state: *mut void) -> Poll {
 
     let this = unsafe { get_event_loop(this0) };
-    let handlers: &EvlHandlers = unsafe { &*handlers0 };
+    let handlers = unsafe { &*handlers0 };
 
     let cloned0 = unsafe { waker_clone(waker0) };
-    let waker = task::Waker::from(cloned0);
+    let waker = unsafe { Arc::from_raw(cloned0 as *const task::Waker) }; // SAFETY: Unstable-Waker-FFI
     let cx = task::Context::from_waker(&waker);
 
     event_loop_poll_inner(&this, cx, handlers, state)

@@ -9,8 +9,36 @@ function newHelpers(glue) {
   return {
 
     // =====================================================
-    // CALLBACK HELPERS
+    // CALL HELPERS
     // =====================================================
+
+    /** @param {WasmPtr} lhs
+    *   @param {WasmPtr} rhs
+    *   @returns {number} */
+    wakerWakeSame(lhs, rhs) {
+      /** @ts-ignore */
+      return glue.instance.exports.waker_wake_same(lhs, rhs);
+    },
+
+    /** @param {WasmPtr} waker */
+    wakerWake(waker) {
+      /** @ts-ignore */
+      glue.instance.exports.waker_wake(waker);
+    },
+
+    /** @param {WasmPtr} waker
+     *  @returns {WasmPtr} */
+    wakerCloneBoxed(waker) {
+      /** @ts-ignore */
+      return glue.instance.exports.waker_clone_boxed(waker);
+    },
+
+    /** @param {WasmPtr} waker */
+    wakerDropBoxed(waker) {
+      /** @ts-ignore */
+      glue.instance.exports.waker_drop_boxed(waker);
+    },
+
     callEventLoopHandler(fnPtr, evlPtr, statePtr) {
       glue.instance.exports.call_event_loop_handler(fnPtr, evlPtr, statePtr);
     },
@@ -126,7 +154,7 @@ export function newEnv(glue) {
   setInterval(() => {
     if (currentWakerPtr) {
       console.log("calling waker_wake, currentWakerPtr =", currentWakerPtr);
-      glue.instance.exports.waker_wake(currentWakerPtr);
+      helpers.wakerWake(currentWakerPtr);
     }
   }, 1000);
 
@@ -155,7 +183,6 @@ export function newEnv(glue) {
       }
 
       backend.eventLoopRun(config, handler);
-      eventLoopRun
 
       return types.EvlResult.Ok;
 
@@ -165,15 +192,25 @@ export function newEnv(glue) {
       const evlObject = glue.getHandle(evlHandle);
       // const result = backend.eventLoopPoll(evlObject, wakerPtr, handlersPtr, statePtr);
 
-      console.log("event_loop_poll entry");
+      console.log("event_loop_poll entry, wakerPtr =, currentPtr =", wakerPtr, currentWakerPtr);
 
-      let update = glue.instance.exports.waker_equal(wakerPtr, currentWakerPtr) == 0;
+      if (currentWakerPtr == 0) {
+        console.log("init waker");
+        currentWakerPtr = helpers.wakerCloneBoxed(wakerPtr);
+      } else {
 
-      console.log("event_loop_poll wakers need updating retuned:", update);
-      if (update) { // only clone and overwrite if necessarry
-        console.log("event_loop_poll are not equal so we clone");
-        let cloned = glue.instance.exports.waker_clone_heap(wakerPtr);
-        currentWakerPtr = cloned;
+        let update = helpers.wakerWakeSame(wakerPtr, currentWakerPtr) == 0;
+
+        console.log("event_loop_poll wakers need updating retuned:", update);
+        if (update) {
+          // Only clone and overwrite if necessarry.
+          // Also drop the stored waker correclty!
+          console.log("event_loop_poll are not equal so we clone");
+          let cloned = helpers.wakerCloneBoxed(wakerPtr);
+          helpers.wakerDropBoxed(currentWakerPtr);
+          currentWakerPtr = cloned;
+        }
+
       }
 
       console.log("event_loop_poll done.");

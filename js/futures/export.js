@@ -127,13 +127,13 @@ function newHelpers(glue) {
     /** @param {WasmPtr} waker */
     wakerWake(waker) {
       /** @ts-ignore */
-      return glue.instance.exports.waker_wake(waker);
+      glue.instance.exports.waker_wake(waker);
     },
 
     /** @param {WasmPtr} waker */
     wakerDropBoxed(waker) {
       /** @ts-ignore */
-      return glue.instance.exports.waker_drop_boxed(waker);
+      glue.instance.exports.waker_drop_boxed(waker);
     },
 
     /** @param {WasmPtr} fnPtr

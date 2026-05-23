@@ -16,7 +16,7 @@ pub mod implementation {
         fn logs(it: *const i8);
     }
 
-    use std::{ffi::c_void as void, marker::PhantomData, pin::Pin, task};
+    use std::{ffi::c_void as void, marker::PhantomData, pin::Pin, sync::Arc, task};
 
     use crate::ffi::{import::definitions, types, waker};
 
@@ -42,13 +42,13 @@ pub mod implementation {
             unsafe { logs(c"vale".as_ptr()); }
 
             let cloned0 = unsafe { waker::waker_clone(waker0) };
+            let waker = unsafe { Arc::from_raw(cloned0 as *const task::Waker) }; // SAFETY: Unstable-Waker-FFI
 
             unsafe { logs(c"cloned".as_ptr()); }
 
             let result = Future::poll(
                 unsafe { Pin::new_unchecked(&mut *(fut0 as *mut F)) },
-                &mut task::Context::from_waker(&task::Waker::from(cloned0))
-                //           `drop` will be called by the `Waker` ^^^^^^^
+                &mut task::Context::from_waker(&waker)
             );
 
             match result {

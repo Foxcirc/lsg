@@ -2,21 +2,9 @@
 use std::{task, ffi::c_void as void};
 
 /// A type-erased waker which contains
-/// pointer to valid `task::Waker` fields.
+/// a heap allocated valid rust waker internally.
 #[repr(C)]
-pub struct InternalWaker {
-    pub state: *const void,
-    pub vtable: *const void
-}
-
-impl From<InternalWaker> for task::Waker {
-    fn from(it: InternalWaker) -> Self {
-        unsafe { Self::new(
-            it.state.cast(),
-            &*it.vtable.cast()
-        ) }
-    }
-}
+pub struct InternalWaker;
 
 #[repr(C)]
 pub struct ExternWaker {
