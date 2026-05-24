@@ -1,4 +1,15 @@
 
+/** @import { WasmPtr } from "../glue";*/
+
+// =====================================================
+// TYPEDEFS
+// =====================================================
+
+/** @typedef {{appidPtr: WasmPtr, appid: string, intercept: boolean}} EvlConfig */
+
+/** @typedef {{ kind: "EventLoop", events: { kind: string }[] }} EvlObject */
+/** @typedef {{ kind: "Window" }} WindowObject */
+
 // =====================================================
 // ENUMS
 // =====================================================
@@ -7,7 +18,7 @@ export const EvlResult = Object.freeze({
   Err: 1,
 });
 
-export const Poll = Object.freeze({
+export const PollResult = Object.freeze({
   Ready: 0,
   Pending: 1,
   Err: 2,

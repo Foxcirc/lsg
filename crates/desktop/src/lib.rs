@@ -24,13 +24,13 @@ pub struct Id(u32);
 pub enum Event {
     /// Your app was resumed from the background or started and should show it's view.
     Resume,
-    /// Your app's view should be destroyed but it can keep running in the background.
+    /// Your app's view should be destroyed but the process will be kept alive.
     Suspend,
     /// Your app should quit.
     Quit { reason: QuitReason },
     /// A monitor event.
     Monitor { id: Id, event: MonitorEvent },
-    /// An event that belongs to a specific window. (eg. focus change, mouse movement)
+    /// An event that belongs to a specific window. (e.g. Focus change, Mouse movement)
     Window { id: Id, event: WindowEvent },
     /// Requests you sending data to another client.
     DataSource { id: Id, event: DataSourceEvent },

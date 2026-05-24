@@ -10,8 +10,6 @@ const glue = new Glue();
 const desktopEnv = desktop.newEnv(glue);
 const futuresEnv = futures.newEnv(glue);
 
-console.log("init wasm..", futuresEnv);
-
 const wasm = await WebAssembly.instantiateStreaming(fetch("showcase.wasm"), {
   env: { ...desktopEnv, ...futuresEnv }
 } );

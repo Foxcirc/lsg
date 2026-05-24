@@ -2,6 +2,10 @@
 // This module contains common glue code used by the sub-modules
 // to interface with wasm, such as helpers for reading memory.
 
+/** @ts-check */
+
+/** @typedef {number} WasmPtr */
+
 const decoder = new TextDecoder();
 
 export class Glue {
@@ -89,52 +93,53 @@ export class Glue {
   // BASIC HELPERS
   // =====================================================
 
-  /** @param {number} ptr */
-  /** @returns {number} */
+  /** @param   {number} ptr
+    * @returns {number} */
   readU8(ptr) {
     this.refreshMemoryViews();
     return this.viewU8[ptr];
   }
 
-  /** @param {number} ptr */
-  /** @returns {number} */
+  /** @param   {number} ptr
+    * @returns {number} */
   readU16(ptr) {
     this.refreshMemoryViews();
     let idx = ptr >>> 1; // = dividing by 2
     return this.viewU16[ptr];
   }
 
-  /** @param {number} ptr */
-  /** @returns {number} */
+  /** @param   {number} ptr
+    * @returns {number} */
   readI16(ptr) {
     this.refreshMemoryViews();
     let idx = ptr >>> 1; // = dividing by 2
     return this.viewI16[idx];
   }
 
-  /** @param {number} ptr */
-  /** @returns {number} */
+  /** @param   {number} ptr
+    * @returns {number} */
   readU32(ptr) {
     this.refreshMemoryViews();
     let idx = ptr >>> 2; // = dividing by 4
     return this.viewU32[idx];
   }
 
-  /** @param {number} ptr */
-  /** @returns {boolean} */
+  /** @param   {number} ptr
+    * @returns {boolean} */
   readBool(ptr) {
     const v = this.readU8(ptr);
     return v !== 0;
   }
 
-  /** @param {number} ptr */
-  /** @returns {string} */
+  /** @param {number} ptr
+    * @returns {string} */
   readCString(ptr) {
     this.refreshMemoryViews();
     if (!ptr) throw new NullPointerError;
     let start = ptr;
     while (this.viewU8[ptr] !== 0) ptr += 1;
-    return decoder.decode(this.viewU8.subarray(start, ptr));
+    const subView = this.viewU8.subarray(start, ptr);
+    return decoder.decode(subView);
   }
 
 }

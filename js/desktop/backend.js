@@ -1,31 +1,31 @@
 
-import * as types from "./types.js";
+// /** @ts-check */
 
-/** @typedef {{ events: { kind: string }[] }} EvlObject */
+// import * as types from "./types.js";
 
-/** @param {any} config */
-/** @param {any} handler */
-export function eventLoopRun(config, handler) {
+// /** @import { EvlConfig, EvlObject } from "./types.js" */
 
-  console.log("event_loop_run encountered", config, handler)
+// // ==========================================
+// // BACKEND IMPLEMENTATION
+// // ==========================================
 
-  /** @type {EvlObject} */
-  const evlObject = {
-    events: { kind: "Resume" }
-  };
+// /** @param {EvlConfig} config
+//   * @param {(evlObject: EvlObject) => ()} handler */
+// export function eventLoopRun(config, handler) {
 
-  handler(evlObject);
+//   handler(evlObject);
 
-  types.EvlResult.Ok
+//   types.EvlResult.Ok
 
-}
+// }
 
-/** @param {EvlObject} evlObject */
-/** @param {number} wakerPtr */
-/** @param {number} handlersPtr */
-/** @param {number} statePtr */
-export function eventLoopPoll(evlObject, wakerPtr, handlersPtr, statePtr) {
+// /** @param {EvlObject} evlObject
+//   * @param {number} wakerPtr
+//   * @param {number} handlersPtr
+//   * @param {number} statePtr
+//   * @returns {PollResult} */
+// export function eventLoopPoll(evlObject, wakerPtr, handlersPtr, statePtr) {
 
-  // let events = evlObject.events.pop();
+//   // let events = evlObject.events.pop();
 
-}
+// }
