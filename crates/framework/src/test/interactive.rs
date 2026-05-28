@@ -113,13 +113,11 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
                     },
 
-                    WindowEvent::MouseScroll { axis, value } => {
-                        instances.last_mut().map(|it|
-                            match axis {
-                                ScrollAxis::Horizontal => it.pos.x -= value / 10,
-                                ScrollAxis::Vertical => it.pos.y += value / 10
-                            }
-                        );
+                    WindowEvent::MouseScroll { dx, dy } => {
+                        instances.last_mut().map(|it| {
+                            it.pos.x -= dx / 10;
+                            it.pos.y += dy / 10;
+                        });
                         window.redraw();
                     },
 

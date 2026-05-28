@@ -30,8 +30,8 @@ export class Glue {
   // =====================================================
   // HANDLE REGISTRY
   // =====================================================
-  #nextHandle = 0x1000;
-  #handles = new Map();
+  /** @type {number} */           #nextHandle = 0x1000;
+  /** @type {Map<number, any>} */ handles = new Map();
 
   /** @param {string} kind  */
   /** @param {any} obj  */
@@ -42,22 +42,24 @@ export class Glue {
 
     const handle = this.#nextHandle;
     this.#nextHandle += 1;
-    this.#handles.set(handle, obj);
+    this.handles.set(handle, obj);
 
     return handle;
 
   }
 
-  /** @param {number} handle  */
-  /** @returns {any}  */
+  /**
+  * @param {number} handle
+  * @returns {any}
+  */
   getHandle(handle) {
-    return this.#handles[handle];
+    return this.handles.get(handle);
   }
 
   /** @param {number} handle  */
   /** @returns {void}  */
   freeHandle(handle) {
-    this.#handles.delete(handle);
+    this.handles.delete(handle);
   }
 
   // =====================================================
@@ -142,11 +144,28 @@ export class Glue {
     return decoder.decode(subView);
   }
 
+    /**
+     * @param {number} ptr
+     * @param {number} value
+     */
+    writeU16(ptr, value) {
+      this.refreshMemoryViews();
+      let idx = ptr >>> 1; // = dividing by 2
+      this.viewU16[idx] = value;
+    }
+
 }
 
 export class NullPointerError extends Error {
   constructor() {
     super("unexpected null pointer passed from wasm to javascript");
     this.name = "NulPointerError";
+  }
+}
+
+export class UnsupportedError extends Error {
+  constructor() {
+    super("this features is currently not supported in a browser context");
+    this.name = "UnsupportedError";
   }
 }

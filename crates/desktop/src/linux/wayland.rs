@@ -2398,7 +2398,7 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                     BTN_MIDDLE => MouseButton::Middle,
                     BTN_BACK    | BTN_SIDE  => MouseButton::X1,
                     BTN_FORWARD | BTN_EXTRA => MouseButton::X2,
-                    other => MouseButton::Unknown(other),
+                    .. => MouseButton::Unknown,
                 };
 
                 let down = match state {
@@ -2427,21 +2427,27 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
 
             WlPointerEvent::Axis { axis, value, .. } => {
 
-                let axis = match axis {
-                    WEnum::Value(Axis::VerticalScroll) => ScrollAxis::Vertical,
-                    WEnum::Value(Axis::HorizontalScroll) => ScrollAxis::Horizontal,
-                    WEnum::Value(..) => unreachable!(),
-                    WEnum::Unknown(..) => unreachable!()
-                };
-
                 let surface = evl.mouse.focused.as_ref().unwrap();
                 let id = get_object_id(surface);
 
                 let adjusted_value = (value * 1000.0) as i16;
 
+                let vertical = match axis {
+                    WEnum::Value(Axis::VerticalScroll) => true,
+                    WEnum::Value(Axis::HorizontalScroll) => false,
+                    WEnum::Value(..) => unreachable!(),
+                    WEnum::Unknown(..) => unreachable!()
+                };
+
+                let mut dx = 0;
+                let mut dy = 0;
+
+                if vertical { dy = adjusted_value }
+                else        { dx = adjusted_value };
+
                 evl.events.push_back(Event::Window {
                     id: Id(id),
-                    event: WindowEvent::MouseScroll { axis, value: adjusted_value }
+                    event: WindowEvent::MouseScroll { dx, dy }
                 });
 
             },

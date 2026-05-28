@@ -1,7 +1,8 @@
 
 #![allow(unexpected_cfgs)]
 
-#[cfg(all(target_family = "wasm", feature = "import"))] mod browser;
+// #[cfg(all(target_family = "wasm", feature = "import"))] mod browser;
+mod browser;
 
 #[cfg(all(target_os = "linux", not(feature = "import")))] mod linux;
 #[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend;
@@ -63,7 +64,7 @@ pub enum WindowEvent {
     MouseMotion { point: common::LogicalPoint },
     MouseDown { point: common::LogicalPoint, button: MouseButton },
     MouseUp { point: common::LogicalPoint, button: MouseButton },
-    MouseScroll { axis: ScrollAxis, value: i16 },
+    MouseScroll { dx: i16, dy: i16 },
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
     TextInput { chr: char },
@@ -242,7 +243,7 @@ pub enum MouseButton {
     Middle,
     X1,
     X2,
-    Unknown(u32),
+    Unknown,
 }
 
 #[repr(C)]
@@ -264,12 +265,13 @@ impl Default for DataKind {
     }
 }
 
-#[repr(C)]
-#[derive(Debug)]
-pub enum ScrollAxis {
-    Vertical,
-    Horizontal
-}
+// TODO: REMOVED (In favor of dx, dy)
+// #[repr(C)]
+// #[derive(Debug)]
+// pub enum ScrollAxis {
+//     Vertical,
+//     Horizontal
+// }
 
 #[derive(Debug, Default, Clone)]
 pub struct MonitorInfo {
@@ -434,6 +436,10 @@ impl Window {
     }
     pub fn alert(&self, urgency: Urgency) {
         self.backend.alert(urgency);
+    }
+    #[cfg(target_family = "wasm")]
+    pub fn bind(&self, id: &str) {
+        self.backend.bind(id);
     }
 }
 

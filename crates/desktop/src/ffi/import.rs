@@ -83,6 +83,8 @@ pub mod definitions {
         pub fn window_alert(this0: *mut Window, urgency: crate::Urgency);
         pub fn window_ptr(this0: *mut Window) -> *mut void;
         pub fn window_size(this0: *mut Window) -> common::PhysicalSize;
+        #[cfg(target_family = "wasm")]
+        pub fn window_bind(this0: *mut Window, id: *const i8);
     }
 
 }
@@ -90,7 +92,7 @@ pub mod definitions {
 pub mod implementation {
 
     use core::{
-        slice, task, mem::{self, ManuallyDrop},
+        slice, task, mem,
         ffi::{CStr, c_void as void},
         ptr::{self, NonNull, null_mut},
     };
@@ -98,7 +100,6 @@ pub mod implementation {
     use std::{ffi::CString, sync::Arc};
 
     use common::SmartMutex;
-    use futures::ffi::types::InternalWaker;
 
     use crate::{
         ffi::{types, import::definitions::*},
@@ -269,7 +270,6 @@ pub mod implementation {
         pub fn present(&self) {
             unsafe { window_present(self.inner) };
         }
-        #[track_caller]
         pub fn redraw(&self) {
             unsafe { window_redraw(self.inner) };
         }
@@ -279,6 +279,7 @@ pub mod implementation {
         pub fn decorations(&self, value: bool) {
             unsafe { window_decorations(self.inner, value) };
         }
+        #[track_caller]
         pub fn title(&self, text: &str) {
             let text0 = CString::new(text).expect("contains nul");
             unsafe { window_title(self.inner, text0.as_ptr()) };
@@ -313,6 +314,12 @@ pub mod implementation {
         }
         pub fn size(&self) -> common::PhysicalSize {
             unsafe { window_size(self.inner) }
+        }
+        #[track_caller]
+        #[cfg(target_family = "wasm")]
+        pub fn bind(&self, id: &str) {
+            let id0 = CString::new(id).expect("contains nul");
+            unsafe { window_bind(self.inner, id0.as_ptr()) };
         }
     }
 
@@ -506,7 +513,7 @@ pub mod implementation {
         window_mouse_down:   handler!((id: crate::Id, point: common::LogicalPoint, button: crate::MouseButton) => Event::Window { id, event: WindowEvent::MouseDown { point, button } }),
         window_mouse_up:     handler!((id: crate::Id, point: common::LogicalPoint, button: crate::MouseButton) => Event::Window { id, event: WindowEvent::MouseUp { point, button } }),
 
-        window_mouse_scroll: handler!((id: crate::Id, axis: crate::ScrollAxis, value: i16) => Event::Window { id, event: WindowEvent::MouseScroll { axis, value } }),
+        window_mouse_scroll: handler!((id: crate::Id, dx: i16, dy: i16) => Event::Window { id, event: WindowEvent::MouseScroll { dx, dy } }),
 
         window_key_down_unknown: handler!((id: crate::Id, key: u32, repeat: bool)               => Event::Window { id, event: WindowEvent::KeyDown { key: Key::Unknown(key), repeat } }),
         window_key_down_special: handler!((id: crate::Id, key: crate::SpecialKey, repeat: bool) => Event::Window { id, event: WindowEvent::KeyDown { key: Key::Special(key), repeat } }),

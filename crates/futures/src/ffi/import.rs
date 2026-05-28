@@ -12,10 +12,6 @@ pub mod definitions {
 
 pub mod implementation {
 
-    unsafe extern "C" {
-        fn logs(it: *const i8);
-    }
-
     use std::{ffi::c_void as void, marker::PhantomData, pin::Pin, sync::Arc, task};
 
     use crate::ffi::{import::definitions, types, waker};
@@ -39,12 +35,8 @@ pub mod implementation {
 
         pub unsafe extern "C" fn poll(fut0: *mut void, waker0: *const types::InternalWaker) -> types::PollResult {
 
-            unsafe { logs(c"vale".as_ptr()); }
-
             let cloned0 = unsafe { waker::waker_clone(waker0) };
             let waker = unsafe { Arc::from_raw(cloned0 as *const task::Waker) }; // SAFETY: Unstable-Waker-FFI
-
-            unsafe { logs(c"cloned".as_ptr()); }
 
             let result = Future::poll(
                 unsafe { Pin::new_unchecked(&mut *(fut0 as *mut F)) },
@@ -59,7 +51,6 @@ pub mod implementation {
         }
 
         pub unsafe extern "C" fn drop(fut0: *mut void) {
-            unsafe { logs(c"DROP CALLED".as_ptr()); }
             unsafe { drop(Box::from_raw(fut0 as *mut F)) };
         }
 

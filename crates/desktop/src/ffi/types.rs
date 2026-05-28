@@ -90,7 +90,7 @@ pub struct EvlHandlers {
     pub window_mouse_motion: extern "C" fn(*mut void, crate::Id, common::LogicalPoint),
     pub window_mouse_down: extern "C" fn(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
     pub window_mouse_up: extern "C" fn(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
-    pub window_mouse_scroll: extern "C" fn(*mut void, crate::Id, crate::ScrollAxis, i16),
+    pub window_mouse_scroll: extern "C" fn(*mut void, crate::Id, i16, i16),
 
     pub window_key_down_special: extern "C" fn(*mut void, crate::Id, crate::SpecialKey, bool),
     pub window_key_down_char: extern "C" fn(*mut void, crate::Id, u32, bool, bool),

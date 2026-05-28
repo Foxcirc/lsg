@@ -5,10 +5,28 @@
 // TYPEDEFS
 // =====================================================
 
-/** @typedef {{appidPtr: WasmPtr, appid: string, intercept: boolean}} EvlConfig */
+/** @typedef {{
+  appidPtr: WasmPtr,
+  appid: string,
+  intercept: boolean
+}} EvlConfig */
 
-/** @typedef {{ kind: "EventLoop", events: { kind: string }[] }} EvlObject */
-/** @typedef {{ kind: "Window" }} WindowObject */
+/** @typedef {{
+  kind: "EventLoop",
+  helpers: any,
+  events: { kind: string }[],
+  currentWakerPtr: WasmPtr,
+}} EvlObject */
+
+/** @typedef {{
+  kind: "Window",
+  evlObject: EvlObject,
+  target: HTMLElement | null,
+  scale: number,
+  animationFrameRequested: boolean,
+  resizeObserver: ResizeObserver | null,
+  listeners: object,
+}} WindowObject */
 
 // =====================================================
 // ENUMS
@@ -67,6 +85,9 @@ export const MouseButton = Object.freeze({
   Left: 0,
   Right: 1,
   Middle: 2,
+  X1: 3,
+  X2: 4,
+  Unknown: 5,
 });
 
 export const ScrollAxis = Object.freeze({

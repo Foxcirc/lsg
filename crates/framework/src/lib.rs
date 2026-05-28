@@ -5,7 +5,7 @@
 mod test;
 
 use common::{IsSurface, SmartMutex};
-use desktop::{MouseButton, ScrollAxis, Key};
+use desktop::{MouseButton, Key};
 use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
@@ -343,7 +343,7 @@ pub enum Action<'a> {
     MouseMotion { x: u16, y: u16 },
     MouseDown { x: u16, y: u16, button: MouseButton },
     MouseUp { x: u16, y: u16, button: MouseButton },
-    MouseScroll { axis: ScrollAxis, value: i16 },
+    MouseScroll { dx: i16, dy: i16 },
 
     Unhover,
     Unfocus,

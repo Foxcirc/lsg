@@ -69,7 +69,7 @@ pub const extern "C" fn evl_handlers_default() -> EvlHandlers {
         window_mouse_motion: noop!(*mut void, crate::Id, common::LogicalPoint),
         window_mouse_down:   noop!(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
         window_mouse_up:     noop!(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
-        window_mouse_scroll: noop!(*mut void, crate::Id, crate::ScrollAxis, i16),
+        window_mouse_scroll: noop!(*mut void, crate::Id, i16, i16),
 
         window_key_down_special: noop!(*mut void, crate::Id, crate::SpecialKey, bool),
         window_key_down_char:    noop!(*mut void, crate::Id, u32, bool, bool),
@@ -162,7 +162,7 @@ fn event_loop_poll_inner(this: &Arc<crate::EventLoop>, mut cx: task::Context, ha
                     WindowEvent::MouseMotion { point }       => (handlers.window_mouse_motion) (state, id, point),
                     WindowEvent::MouseDown { point, button } => (handlers.window_mouse_down)   (state, id, point, button),
                     WindowEvent::MouseUp { point, button }   => (handlers.window_mouse_up)     (state, id, point, button),
-                    WindowEvent::MouseScroll { axis, value } => (handlers.window_mouse_scroll) (state, id, axis, value),
+                    WindowEvent::MouseScroll { dx, dy } => (handlers.window_mouse_scroll) (state, id, dx, dy),
 
                     WindowEvent::KeyDown { key, repeat } => match key {
                         Key::Special(it)  => (handlers.window_key_down_special) (state, id, it, repeat),
