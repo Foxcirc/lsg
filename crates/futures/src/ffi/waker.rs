@@ -1,5 +1,12 @@
 
 //! Waker-Interop between FFI and Rust.
+//!
+//! # Filename
+//! In the terminology used in the lsg project, this file is essentially
+//! an `export.rs`, since it exports functions to be called by extern code.
+//! However, this file is special, since it is also needed by extern backends,
+//! when implementing the API consumed in `import.rs`, specifically to create an
+//! `InternalWaker`. So it has a special name, even though it exports stuff.
 
 use std::{sync::Arc, task};
 
@@ -10,11 +17,8 @@ const VTABLE: task::RawWakerVTable = task::RawWakerVTable::new(
         let new = unsafe { extern_waker_clone_inner(ptr.cast()) };
         task::RawWaker::new(new.cast(), &VTABLE)
     },
-    |ptr| {
-        unsafe { extern_waker_wake_inner(ptr.cast()); }
-        unsafe { extern_waker_drop_inner(ptr.cast()); }
-        // TODO: test if this behaviour is OK or if RawWaker.drop is called always (double-free?)
-    },
+    |ptr| { unsafe { extern_waker_wake_inner(ptr.cast()); }
+            unsafe { extern_waker_drop_inner(ptr.cast()); } },
     |ptr| unsafe { extern_waker_wake_inner(ptr.cast()) },
     |ptr| unsafe { extern_waker_drop_inner(ptr.cast()) },
 );
