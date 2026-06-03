@@ -2,8 +2,8 @@
 // @ts-check
 
 import { Glue } from "./glue.js";
-import * as desktop from "./desktop/export.js";
-import * as futures from "./futures/export.js";
+import * as desktop from "./desktop.js";
+import * as futures from "./futures.js";
 
 const glue = new Glue();
 

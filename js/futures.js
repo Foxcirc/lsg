@@ -1,7 +1,11 @@
 
 // @ts-check
 
-/** @import {Glue} from "../glue.js" */
+// =====================================================
+// TYPEDEFS
+// =====================================================
+
+/** @import { Glue, WasmPtr } from "./glue.js" */
 
 /** @typedef {number} WasmPtr */
 /** @typedef {ReturnType<typeof newHelpers>} Helpers */
@@ -11,10 +15,18 @@
  *   pollFn: () => void
 }} Task */
 
+// =====================================================
+// ENUMS
+// =====================================================
+
 const PollResult = Object.freeze({
   Pending: 0,
   Ready: 1,
 });
+
+// =====================================================
+// IMPLEMENTATION
+// =====================================================
 
 /** @param {Glue} glue  */
 export function newEnv(glue) {

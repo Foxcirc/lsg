@@ -1,11 +1,107 @@
 
 /** @ts-check */
 
-import { Glue, NullPointerError } from "../glue.js";
-import * as types from "./types.js"
+import { NullPointerError } from "./glue.js";
 
-/** @import { WasmPtr } from "../glue.js" */
-/** @import { EvlConfig, EvlObject, WindowObject } from "./types.js" */
+// =====================================================
+// TYPEDEFS
+// =====================================================
+
+/** @import { Glue, WasmPtr } from "./glue.js" */
+
+/** @typedef {{
+  appidPtr: WasmPtr,
+  appid: string,
+  intercept: boolean
+}} EvlConfig */
+
+/** @typedef {{
+  kind: "EventLoop",
+  helpers: any,
+  events: { kind: string }[],
+  currentWakerPtr: WasmPtr,
+}} EvlObject */
+
+/** @typedef {{
+  kind: "Window",
+  evlObject: EvlObject,
+  target: HTMLElement | null,
+  scale: number,
+  animationFrameRequested: boolean,
+  resizeObserver: ResizeObserver | null,
+  listeners: object,
+}} WindowObject */
+
+// =====================================================
+// ENUMS
+// =====================================================
+
+export const EvlResult = Object.freeze({
+  Ok: 0,
+  Err: 1,
+});
+
+export const PollResult = Object.freeze({
+  Ready: 0,
+  Pending: 1,
+  Err: 2,
+});
+
+export const DataKind = Object.freeze({
+  Text: 0,
+  Xml: 1,
+  Html: 2,
+  Zip: 3,
+  Json: 4,
+  Jpeg: 5,
+  Png: 6,
+  Other: 7,
+});
+
+export const QuitReason = Object.freeze({
+  Program: 0,
+  System: 1,
+  CtrlC: 2,
+});
+
+export const SpecialKey = Object.freeze({
+  Escape: 0,
+  Tab: 1,
+  CapsLock: 2,
+  Shift: 3,
+  Control: 4,
+  Alt: 5,
+  AltGr: 6,
+  Super: 7,
+  AppMenu: 8,
+  Return: 9,
+  Backspace: 10,
+  Space: 11,
+  ArrowUp: 12,
+  ArrowDown: 13,
+  ArrowLeft: 14,
+  ArrowRight: 15,
+  F1: 16, F2: 17, F3: 18, F4: 19, F5: 20, F6: 21,
+  F7: 22, F8: 23, F9: 24, F10: 25, F11: 26, F12: 27,
+});
+
+export const MouseButton = Object.freeze({
+  Left: 0,
+  Right: 1,
+  Middle: 2,
+  X1: 3,
+  X2: 4,
+  Unknown: 5,
+});
+
+export const ScrollAxis = Object.freeze({
+  Vertical: 0,
+  Horizontal: 1,
+});
+
+// =====================================================
+// IMPLEMENTATION
+// =====================================================
 
 /** @param {Glue} glue  */
 export function newEnv(glue) {
