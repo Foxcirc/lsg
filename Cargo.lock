@@ -172,15 +172,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
-name = "egl"
-version = "0.1.0"
-dependencies = [
- "common",
- "khronos-egl",
- "wayland-egl",
-]
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -261,6 +252,8 @@ version = "0.1.0"
 dependencies = [
  "common",
  "gl 0.14.0",
+ "khronos-egl",
+ "wayland-egl",
 ]
 
 [[package]]
@@ -281,6 +274,14 @@ dependencies = [
  "khronos_api",
  "log",
  "xml-rs",
+]
+
+[[package]]
+name = "graphics"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "gl 0.1.0",
 ]
 
 [[package]]
@@ -340,9 +341,7 @@ dependencies = [
  "async-executor",
  "common",
  "desktop",
- "egl",
  "futures-lite",
- "gl 0.1.0",
  "render",
  "text",
  "widget",
@@ -497,7 +496,6 @@ version = "0.1.0"
 dependencies = [
  "bv",
  "common",
- "egl",
  "gl 0.1.0",
 ]
 
@@ -631,9 +629,9 @@ dependencies = [
 
 [[package]]
 name = "wayland-egl"
-version = "0.32.8"
+version = "0.32.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d36232ee23ba3ea34a6835d68ca1af91d3ca3d6eddcf9c7147c4e0e66901b9fd"
+checksum = "9b97bdb7c49e5bd9b7562f38ff84f0dad47079fdc9e926f691a787f6dbc05451"
 dependencies = [
  "wayland-backend",
  "wayland-sys",

@@ -17,7 +17,7 @@ impl GlRenderStorage {
 
         gl.ctx.bind(&gl.instance, None);
 
-        let framebuffer = gl::gen_frame_buffer();
+        let fbo = gl::gen_frame_buffer();
         let texture = gl::gen_texture(gl::TextureType::Basic2D);
 
         gl::tex_image_2d(
@@ -29,11 +29,11 @@ impl GlRenderStorage {
         );
 
         gl::tex_sensible_defaults(&texture); // important, so it can be sampeled
-        gl::frame_buffer_texture_2d(&framebuffer, gl::AttachmentPoint::Color0, &texture);
+        gl::frame_buffer_texture_2d(&fbo, gl::AttachmentPoint::Color0, &texture);
 
         Self {
             size,
-            fbo: framebuffer,
+            fbo,
             texture
         }
 
@@ -76,7 +76,7 @@ impl GlRenderStorage {
 /// You can copy pixels from a [`GlRenderStorage`]
 /// directly into a surface to update it.
 pub struct GlSurface {
-    inner: egl::Surface,
+    inner: gl::load::Surface,
     // fbo: gl::FrameBuffer,
     // rbo: gl::RenderBuffer,
 }
@@ -85,9 +85,9 @@ impl GlSurface {
 
     pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Self {
 
-        let inner = egl::Surface::new(
+        let inner = gl::load::Surface::new(
             &gl.instance, &gl.config, window, window.size(),
-        ).expect("cannot create egl surface");
+        ).expect("cannot create gl::load surface");
 
         // // Bind a context for initialization.
         // gl.ctx.bind(&gl.instance, Some(&surface));
@@ -332,6 +332,8 @@ impl GlTextureAtlas {
     /// There is no concept of releasing a single image inside an atlas,
     /// so if you want to release memory you have to drop the whole atlas.
     ///
+    /// However, you can update a texture once uploaded. See [`GlTextureAtlas::update`].
+    ///
     /// # Panic
     /// Panics if data length and `size` don't match up.
     #[track_caller]
@@ -426,13 +428,14 @@ impl GlTextureAtlas {
 
         let x_range = 0f64 .. self.layout.size.w as f64;
         let y_range = 0f64 .. self.layout.size.w as f64;
-        let target_range = 0f64 .. 5000f64;
+
+        const TARGET_RANGE: Range<f64> = 0f64 .. 5000f64;
 
         PhysicalRect::new2(
-            maprange(orig.pos.x  as f64, x_range.clone(), target_range.clone()) as i16,
-            maprange(orig.pos.y  as f64, y_range.clone(), target_range.clone()) as i16,
-            maprange(orig.size.w as f64, x_range.clone(), target_range.clone()) as u16,
-            maprange(orig.size.h as f64, y_range.clone(), target_range.clone()) as u16
+            maprange(orig.pos.x  as f64, x_range.clone(), TARGET_RANGE) as i16,
+            maprange(orig.pos.y  as f64, y_range.clone(), TARGET_RANGE) as i16,
+            maprange(orig.size.w as f64, x_range.clone(), TARGET_RANGE) as u16,
+            maprange(orig.size.h as f64, y_range.clone(), TARGET_RANGE) as u16
         )
 
     }
@@ -501,7 +504,7 @@ impl GlTextureAtlas {
 }
 
 pub trait GlWriteToAtlas {
-    /// The OpenGL context will be bounds.
+    /// The OpenGL context will be bound.
     fn write(&self, target: &gl::Texture, rect: PhysicalRect);
 }
 
@@ -583,9 +586,9 @@ pub struct DrawableGeometry<'a> {
 }
 
 pub struct GlRenderer {
-    instance: egl::Instance,
-    ctx: egl::Context,
-    config: egl::Config,
+    instance: gl::load::Instance,
+    ctx: gl::load::Context,
+    config: gl::load::Config,
     shape: ShapeRenderer,
 }
 
@@ -593,22 +596,22 @@ impl GlRenderer {
 
     pub fn new<D: common::IsDisplay>(display: &D) -> Result<Self, RenderError> {
 
-        let instance = egl::Instance::new(display)?;
-        gl::load_with(|name| instance.get_proc_address(name))?;
+        let instance = gl::load::Instance::new(display)?;
+        gl::initialize(|name| instance.get_proc_address(name))?;
 
         #[cfg(debug_assertions)]
-        let config = egl::Config::build()
-            .api(egl::Api::Es3)
+        let config = gl::load::Config::build()
+            .api(gl::load::Api::Es3)
             .version(3, 3)
             .finish(&instance)?;
 
         #[cfg(not(debug_assertions))]
-        let config = egl::Config::build()
-            .api(egl::Api::Es3)
+        let config = gl::load::Config::build()
+            .api(gl::load::Api::Es3)
             .version(3, 0)
             .finish(&instance)?;
 
-        let ctx = egl::Context::new(&instance, &config)?;
+        let ctx = gl::load::Context::new(&instance, &config)?;
 
         // bind for initialization
         ctx.bind(&instance, None);
@@ -625,21 +628,14 @@ impl GlRenderer {
     }
 
     pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, atlas: &GlTextureAtlas, storage: &GlRenderStorage) {
-
         self.ctx.bind(&self.instance, None);
-
         gl::resize_viewport(storage.size);
-
         self.shape.draw(&storage.fbo, geometry, atlas, storage.size);
-
     }
 
     pub fn clear(&mut self, source: &GlRenderStorage) {
-
         self.ctx.bind(&self.instance, None);
-
         gl::clear(&source.fbo, 0f32, 0f32, 0f32, 1f32);
-
     }
 
     /// Blit all contents from the render storage onto the surface.
@@ -659,75 +655,7 @@ impl GlRenderer {
     /// Actually make all changes visible to the user.
     pub fn swap(&mut self, surface: &GlSurface) {
 
-        self.ctx.swap(&surface.inner, egl::Damage::all());
-
-    }
-
-}
-
-struct CompositeRenderer {
-    // _vao: gl::VertexArray,
-    // _vbo: gl::Buffer,
-    // _program: gl::LinkedProgram,
-}
-impl CompositeRenderer {
-
-    pub fn new() -> Result<Self, RenderError> {
-
-        // let program = {
-
-        //     const VERT: &str = include_str!("shader/composite.vert");
-        //     const FRAG: &str = include_str!("shader/composite.frag");
-
-        //     // compile the shader program
-
-        //     let vert = gl::create_shader(gl::ShaderType::Vertex,   VERT)?;
-        //     let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG)?;
-
-        //     let mut builder = gl::create_program();
-        //     gl::attach_shader(&mut builder, vert);
-        //     gl::attach_shader(&mut builder, frag);
-        //     let program = gl::link_program(builder)?;
-
-        //     let texture = gl::uniform_location(&program, "texture")?;
-        //     gl::uniform_1i(&program, texture, 0);
-
-        //     program
-
-        // };
-
-        // let (vao, vbo) = {
-
-        //     let vao = gl::gen_vertex_array();
-        //     let vbo = gl::gen_buffer(gl::BufferType::Array);
-
-        //     let f = size_of::<f32>();
-        //     gl::vertex_attrib_pointer(&vao, &vbo, gl::AttribLocation::new(0), 2, gl::DataType::F32, false, 2*f, 0);
-
-        //    // a single full screen rect
-        //     let vertices: [f32; 12] = [
-        //         -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, // upper left triangle
-        //         1.0, 1.0, 1.0, -1.0, -1.0, -1.0, // lower right triangle
-        //     ];
-
-        //     gl::buffer_data(&vbo, &vertices, gl::DrawHint::Static);
-
-        //     (vao, vbo)
-
-        // };
-
-        Ok(Self {
-            // _vao: vao,
-            // _vbo: vbo,
-            // _program: program,
-        })
-
-    }
-
-    pub fn draw(&mut self, source: &gl::FrameBuffer, target: &gl::FrameBuffer, size: PhysicalSize) {
-
-        let rect = PhysicalRect::new(PhysicalPoint::ZERO, size);
-        gl::blit_frame_buffer((target, rect), (source, rect), gl::TexValue::Nearest);
+        self.ctx.swap(&surface.inner, gl::load::Damage::all());
 
     }
 
@@ -1065,8 +993,8 @@ impl fmt::Display for RenderError {
 
 impl StdError for RenderError {}
 
-impl From<egl::EglError> for RenderError {
-    fn from(value: egl::EglError) -> Self {
+impl From<gl::load::LoadError> for RenderError {
+    fn from(value: gl::load::LoadError) -> Self {
         Self::new(format!("egl call failed, {}", value))
     }
 }

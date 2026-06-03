@@ -8,8 +8,8 @@ members = [
     "crates/common",
     "crates/futures",
     "crates/desktop",
-    "crates/egl",
     "crates/gl",
+    "crates/graphics",
     "crates/render",
     "crates/text",
 ]

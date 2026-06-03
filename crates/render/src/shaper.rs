@@ -75,17 +75,6 @@ pub struct InstancedData {
     pub commands:  Vec<gl::DrawArraysIndirectCommand>,
 }
 
-struct CurvesState<'a> {
-    removed: &'a mut BitVec,
-    out: &'a mut Vec<PartialVertex>,
-}
-
-struct TriangulationState<'a> {
-    removed: &'a mut BitVec,
-    ears: &'a mut BitVec,
-    out: &'a mut Vec<PartialVertex>,
-}
-
 pub struct GeometryShaper {
     lower: LoweringPass,
     trig: TriangulationPass,

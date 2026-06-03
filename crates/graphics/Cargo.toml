@@ -1,12 +1,10 @@
 [package]
-name = "render"
+name = "graphics"
+
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-# lsg-family dependencies
 common = { path = "../common" }
 gl = { path = "../gl", features = ["load"] }
-# bitvecs
-bv = "0.11.1"

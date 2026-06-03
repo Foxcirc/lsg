@@ -31,13 +31,15 @@
 /// Right now, not all functions are implemented and many enums are incomplete,
 /// but adding more is really easy and often a matter of minutes.
 
+#[cfg(feature = "load")] pub mod load;
+
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
 use common::{PhysicalPoint, PhysicalRect, PhysicalSize};
 
 #[derive(Debug)]
 pub struct FnsUnknown;
 
-pub fn load_with<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: F) -> Result<(), FnsUnknown> {
+pub fn initialize<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: F) -> Result<(), FnsUnknown> {
 
     let mut result = Ok(());
 
