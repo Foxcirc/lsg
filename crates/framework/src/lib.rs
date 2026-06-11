@@ -71,8 +71,9 @@ impl App {
                     Ok(result)
                 });
 
-                let futures = eventloop.or(main)
-                    .or(this.executor.run(pending()));
+                let futures = this.executor.run(pending())
+                    .or(eventloop)
+                    .or(main);
 
                 block_on(futures)
 
@@ -96,7 +97,7 @@ impl App {
                     // Foreward the event to the window, if it wasn't dropped yet.
                     this.windows.lock().get(&id)
                         .and_then(Weak::upgrade)
-                        .expect("window removed prematurely")
+                        .expect("new event after drop")
                         .handle(event)?
                 },
 
@@ -814,12 +815,10 @@ impl<'a, T: Clone> Future for &mut BroadcastFuture<'a, T> {
             this.tick = it.tick;
             it.pending -= 1;
 
-            let expired = it.pending == 0;
-
             let result = it.value.clone();
 
-            if expired {
-                // remove the event if it was consumed by all listeners
+            // remove the event if it was consumed by all listeners
+            if it.pending == 0 {
                 drop(inner.events.pop_front());
             }
 
@@ -847,7 +846,7 @@ impl<'a, T: Clone> Future for &mut BroadcastFuture<'a, T> {
 }
 
 #[test]
-fn channels() {
+fn event_broadcaster() {
 
     use futures_lite::future::block_on;
 
