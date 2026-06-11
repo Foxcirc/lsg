@@ -6,7 +6,7 @@ mod test;
 
 use common::{IsSurface, SmartMutex};
 use desktop::{MouseButton, Key};
-use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, pin::Pin, sync::{Arc, Weak}, task};
+use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, future::pending, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
 pub struct Config {
@@ -59,7 +59,7 @@ impl App {
                 let this3 = Arc::clone(&this);
 
                 // This task will pump the event-loop. Any errors are
-                // treated as fatal and forewarded immediatly.
+                // treated as fatal and make `App::run` return.
                 let eventloop = this.executor.spawn(async move {
                     let result = Self::eventloop(this2).await;
                     Err(result.unwrap_err())
@@ -71,9 +71,10 @@ impl App {
                     Ok(result)
                 });
 
-                block_on(this.executor.run(
-                    eventloop.or(main)
-                ))
+                let futures = eventloop.or(main)
+                    .or(this.executor.run(pending()));
+
+                block_on(futures)
 
             }).and_then(identity)
 
@@ -374,7 +375,7 @@ struct WindowRenderState {
     geometries: RenderStateGeometries,
     vertices: RenderStateVertices,
     curves: RenderStateCurves,
-    // Surface/Storage:
+    // Intermediate Texture and Surface:
     texture: graphics::Texture,
     surface: graphics::Surface,
 }

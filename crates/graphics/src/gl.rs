@@ -60,9 +60,14 @@ impl ProgramBackend {
     #[cfg(target_os = "linux")]
     #[track_caller]
     pub fn uniformloc(&self, gp: &crate::Graphics, name: &str) -> crate::Location {
+
+        gp.backend.ctx.bind(None);
+
         let gl::UniformLocation { index } = gl::uniform_location(&self.program, name)
             .expect("uniform not present in shader (unused uniforms are optimized away)");
+
         crate::Location(index as usize)
+
     }
 }
 
@@ -350,10 +355,4 @@ impl crate::Attrib {
     pub fn size(&self) -> usize {
         self.kind.togl().size() * self.count
     }
-}
-
-struct TextureLayoutInternal {
-    unit: u32,
-    sampler: u32,
-    texture: u32
 }

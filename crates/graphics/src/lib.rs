@@ -12,19 +12,24 @@ use gl as backend;
 // #[cfg(feature = "import")] use ffi::import as backend;
 
 use common::*;
-use std::fmt;
+use std::{fmt, marker::PhantomData};
 
 pub struct Graphics {
     backend: backend::GraphicsBackend,
+    _marker: PhantomData<*const ()> // We need !Send.
 }
+
+// TODO: If this is not a huge inconvenience (e.g. with async-executors that require their future to be Send),
+//       I want it to make so "Graphics" binds a single context when it is created. This is why I made it !Send for now,
+//       since it would need to bind again when on a different thread...
 
 impl Graphics {
     pub fn new<D: IsDisplay>(display: &D) -> Result<Self, GraphicsError> {
-        Ok(Self { backend: backend::GraphicsBackend::new(display)? })
+        Ok(Self {
+            backend: backend::GraphicsBackend::new(display)?,
+            _marker: PhantomData
+        })
     }
-    // pub fn draw(&self, set: DrawSet, target: impl IsRenderTarget) {
-    //     todo!()
-    // }
 }
 
 pub struct Program {
