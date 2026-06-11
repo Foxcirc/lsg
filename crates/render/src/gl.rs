@@ -1,137 +1,7 @@
 
-use std::{error::Error as StdError, fmt, iter::{repeat, zip}, ops::Range};
+use std::{cmp::Ordering::Greater, error::Error as StdError, fmt, iter::{repeat, zip}, ops::Range};
 
 use common::*;
-
-/// A render storage backed by a texture,
-/// which can be rendered to.
-pub struct GlRenderStorage {
-    size: PhysicalSize,
-    fbo: gl::FrameBuffer,
-    texture: gl::Texture,
-}
-
-impl GlRenderStorage {
-
-    pub fn new(gl: &GlRenderer, size: PhysicalSize) -> Self {
-
-        gl.ctx.bind(&gl.instance, None);
-
-        let fbo = gl::gen_frame_buffer();
-        let texture = gl::gen_texture(gl::TextureType::Basic2D);
-
-        gl::tex_image_2d(
-            &texture, size,
-            gl::GpuColorFormat::Rgba8,
-            gl::ColorFormat::Rgba,
-            gl::DataType::U8,
-            None
-        );
-
-        gl::tex_sensible_defaults(&texture); // important, so it can be sampeled
-        gl::frame_buffer_texture_2d(&fbo, gl::AttachmentPoint::Color0, &texture);
-
-        Self {
-            size,
-            fbo,
-            texture
-        }
-
-    }
-
-    pub fn resize(&mut self, gl: &GlRenderer, size: PhysicalSize) {
-
-        gl.ctx.bind(&gl.instance, None);
-
-        self.size = size;
-
-        gl::tex_image_2d(
-            &self.texture, self.size,
-            gl::GpuColorFormat::Rgba8,
-            gl::ColorFormat::Rgba,
-            gl::DataType::U8,
-            None
-        );
-
-    }
-
-    /// Copy the data from the GPU over to the CPU.
-    ///
-    /// The color format is RGBA-8.
-    pub fn inspect(&self) -> Vec<u8> {
-
-        unsafe { gl::read_pixels(
-            &self.fbo,
-            PhysicalRect::new(PhysicalPoint::ZERO, self.size),
-            gl::ColorFormat::Rgba, gl::DataType::U8
-        ) }
-
-    }
-
-}
-
-/// A "physcial" surface, backed by an actual
-/// region which could be on screen, like a window.
-///
-/// You can copy pixels from a [`GlRenderStorage`]
-/// directly into a surface to update it.
-pub struct GlSurface {
-    inner: gl::load::Surface,
-    // fbo: gl::FrameBuffer,
-    // rbo: gl::RenderBuffer,
-}
-
-impl GlSurface {
-
-    pub fn new<W: common::IsSurface>(gl: &GlRenderer, window: &W) -> Self {
-
-        let inner = gl::load::Surface::new(
-            &gl.instance, &gl.config, window, window.size(),
-        ).expect("cannot create gl::load surface");
-
-        // // Bind a context for initialization.
-        // gl.ctx.bind(&gl.instance, Some(&surface));
-
-        // let fbo = gl::gen_frame_buffer();
-        // let rbo = gl::gen_render_buffer();
-
-        // // IMPORTANT: call `render_buffer_storage` before `frame_buffer_render_buffer` (i hate opengl)
-        // gl::render_buffer_storage(&rbo, gl::GpuColorFormat::Rgba8, window.size());
-        // gl::frame_buffer_render_buffer(&fbo, gl::AttachmentPoint::Color0, &rbo);
-
-        Self {
-            inner,
-            // fbo,
-            // rbo
-        }
-
-    }
-
-    pub fn resize(&mut self, _gl: &GlRenderer, size: PhysicalSize) {
-        //                   ^^^ we keep this for consistency with the `resize` methods
-
-        self.inner.resize(size);
-
-        // gl.ctx.bind(&gl.instance, Some(&self.inner));
-
-        // gl::render_buffer_storage(&self.rbo, gl::GpuColorFormat::Rgba8, size);
-
-        /*
-
-        For a texture it would look like this:
-
-        let texture = gl::gen_texture(gl::TextureType::Basic2D);
-        gl::tex_image_2d(&texture, 0, gl::ColorFormat::Rgba8, size, gl::PixelFormat::Rgba, gl::DataType::UByte);
-        gl::tex_parameter_i(&texture, gl::TextureProperty::MagFilter, gl::TexturePropertyValue::Linear);
-        gl::tex_parameter_i(&texture, gl::TextureProperty::MinFilter, gl::TexturePropertyValue::Linear);
-
-        gl::frame_buffer_texture_2d(&self.fbo, gl::AttachmentPoint::Color0, &texture, 0);
-
-        */
-
-    }
-
-}
 
 /// Contains the layouting algorithm for the texture atlas,
 /// so it can be seperate from the actual GPU calls.
@@ -255,14 +125,12 @@ fn atlas_layout() {
 
     // 3. large bar, above the squares at y=70 (20+50)
 
-    println!("KEK1\n");
     let pt6 = layout.advance(PhysicalSize::new(100, 20)).unwrap();
     assert_eq!(pt6.y, 70);
     assert_eq!(pt6.x, 0);
 
     // 4. something that shouldn't fit :b
 
-    println!("KEKW\n");
     let inv7 = layout.advance(PhysicalSize::new(55, 15));
     assert_eq!(inv7, Err(5), "large object should not fit");
 
@@ -282,13 +150,13 @@ fn atlas_layout() {
 ///
 /// Before using a texture with the renderer you have to upload it
 /// through this interface.
-pub struct GlTextureAtlas {
+pub struct TextureAtlas {
     /// A 2D texture storing the images.
-    texture: gl::Texture,
+    texture: graphics::Texture,
     /// The current layout, used to place new slots.
     layout: AtlasLayout,
-    /// Which size we can't exceed.
-    maxsize: PhysicalSize,
+    /// Which size (as a quad) we can't exceed.
+    maxsize: u16,
     /// Which images we are currently storing.
     entries: Vec<TextureEntry>,
     /// This associates a `TextureIndex` with an actual
@@ -297,31 +165,21 @@ pub struct GlTextureAtlas {
     mapping: Vec<u16>,
 }
 
-impl GlTextureAtlas {
+impl TextureAtlas {
 
     const MININCR: u16 = 256;
 
-    pub fn new(renderer: &GlRenderer) -> Self {
-
-        renderer.ctx.bind(&renderer.instance, None);
-
-        let maxsize = gl::get_integer_v(
-            gl::Property::MaxTextureSize
-        ) as u16;
+    pub fn new(renderer: &Renderer) -> Self {
 
         let mut this = Self {
-            texture: gl::Texture::invalid(),
             layout: AtlasLayout::new(PhysicalSize::MIN),
-            maxsize: PhysicalSize::quad(maxsize),
+            texture: graphics::Texture::new(&renderer.gp, PhysicalSize::quad(1), None),
+            maxsize: graphics::Texture::maxsize(&renderer.gp) as u16,
             entries: Vec::new(),
             mapping: Vec::new(),
         };
 
-        // We initiized with an invalid texture, however we need
-        // to always be able to bind the texture during rendering
-        // so we initialize it with a minimal size here.
-
-        this.upsize(Self::MININCR);
+        this.upsize(renderer, Self::MININCR);
 
         this
 
@@ -337,18 +195,16 @@ impl GlTextureAtlas {
     /// # Panic
     /// Panics if data length and `size` don't match up.
     #[track_caller]
-    pub fn upload(&mut self, renderer: &GlRenderer, source: impl GlWriteToAtlas, size: PhysicalSize) -> TextureIndex  {
+    pub fn upload(&mut self, renderer: &Renderer, source: &impl GlWriteToAtlas, size: PhysicalSize) -> TextureIndex  {
 
-        renderer.ctx.bind(&renderer.instance, None);
-
-        let (index, rect) = self.alloc(size);
-        source.write(&self.texture, rect);
+        let (index, rect) = self.alloc(renderer, size);
+        source.write(&renderer.gp, &mut self.texture, rect);
 
         index
 
     }
 
-    fn alloc(&mut self, size: PhysicalSize) -> (TextureIndex, PhysicalRect)  {
+    fn alloc(&mut self, renderer: &Renderer, size: PhysicalSize) -> (TextureIndex, PhysicalRect)  {
 
         // Find a slot or return an error.
 
@@ -357,11 +213,11 @@ impl GlTextureAtlas {
                 Ok(slot) => break slot,
                 Err(overshoot) => {
                     let incr = overshoot.max(Self::MININCR);
-                    if self.layout.size.w + incr > self.maxsize.w &&
-                       self.layout.size.h + incr > self.maxsize.h {
-                        return (TextureIndex::ERR, PhysicalRect::ZERO)
+                    if self.layout.size.w + incr > self.maxsize ||
+                       self.layout.size.h + incr > self.maxsize {
+                        panic!("texture atlas is full")
                    } else {
-                       self.upsize(incr);
+                       self.upsize(renderer, incr);
                    }
                 }
             }
@@ -386,28 +242,18 @@ impl GlTextureAtlas {
 
     /// Overwrite the same texture with a new image of the same size.
     #[track_caller]
-    pub fn update(&self, renderer: &GlRenderer, index: TextureIndex, source: impl GlWriteToAtlas) {
-
-        renderer.ctx.bind(&renderer.instance, None);
+    pub fn update(&mut self, renderer: &Renderer, index: TextureIndex, source: impl GlWriteToAtlas) {
 
         let orig = self.entries[self.mapping[index.inner as usize] as usize].rect;
-        source.write(&self.texture, orig);
+        source.write(&renderer.gp, &mut self.texture, orig);
 
     }
 
     /// Copy the atlas' texture from the GPU over to the CPU.
     ///
     /// The color format is RGBA-8.
-    pub fn inspect(&self) -> Vec<u8> {
-
-        let fbo = gl::gen_frame_buffer();
-        gl::frame_buffer_texture_2d(&fbo, gl::AttachmentPoint::Color0, &self.texture);
-
-        unsafe { gl::read_pixels(
-            &fbo, PhysicalRect::new(PhysicalPoint::ZERO, self.layout.size),
-            gl::ColorFormat::Rgba, gl::DataType::U8
-        ) }
-
+    pub fn inspect(&mut self, renderer: &Renderer) -> Vec<u8> {
+        self.texture.inspect(&renderer.gp)
     }
 
     /// Get the texture coordinates for a specific index relative
@@ -417,12 +263,6 @@ impl GlTextureAtlas {
     /// Also: Why the FUCK are "clipspace" and "texture" coordinates
     /// using two different coordinate systems.
     pub(crate) fn get(&self, index: TextureIndex) -> PhysicalRect {
-
-        if index == TextureIndex::ERR {
-            return PhysicalRect::ZERO
-        } else if index == TextureIndex::INSPECT {
-            return PhysicalRect::new2(0, 0, 5000, 5000)
-        }
 
         let orig = self.entries[self.mapping[index.inner as usize] as usize].rect;
 
@@ -440,7 +280,7 @@ impl GlTextureAtlas {
 
     }
 
-    fn upsize(&mut self, incr: u16) {
+    fn upsize(&mut self, renderer: &Renderer, incr: u16) {
 
         // Create a new, bigger texture.
 
@@ -449,19 +289,7 @@ impl GlTextureAtlas {
             self.layout.size.h + incr,
         ));
 
-        let new = gl::gen_texture(gl::TextureType::Basic2D);
-
-        // important, so it can be sampeled
-        gl::tex_sensible_defaults(&new);
-
-        gl::tex_image_2d(
-            &new,
-            layout.size,
-            gl::GpuColorFormat::Rgba8,
-            gl::ColorFormat::Rgba,
-            gl::DataType::U8,
-            None
-        );
+        let mut new = graphics::Texture::new(&renderer.gp, layout.size, None);
 
         // We use this chance to sort the entries, for a more
         // efficient spacial layout. We also need to update the mapping.
@@ -478,16 +306,11 @@ impl GlTextureAtlas {
 
         // Copy over the old images to the new texture.
 
-        let srcbuf = gl::gen_frame_buffer();
-
-        gl::frame_buffer_texture_2d(&srcbuf, gl::AttachmentPoint::Color0, &self.texture);
-
         for entry in self.entries.iter_mut() {
             let newpos = layout.advance(entry.rect.size)
                 .expect("layout must be valid, since the new entry was not added yet");
-            // Copy from the original rect, still stored in the rect
-            //  to the new position `newpos`.
-            gl::copy_tex_sub_image_2d((&srcbuf, entry.rect.pos), (&new, newpos), entry.rect.size);
+            // Copy from the original rect, still stored in the rect to the new position `newpos`.
+            new.fromtex(&renderer.gp, &self.texture, entry.rect, PhysicalRect::new(newpos, entry.rect.size));
             // Make sure to update the position of the entry accordingly.
             entry.rect.pos = newpos;
         }
@@ -505,27 +328,22 @@ impl GlTextureAtlas {
 
 pub trait GlWriteToAtlas {
     /// The OpenGL context will be bound.
-    fn write(&self, target: &gl::Texture, rect: PhysicalRect);
+    fn write(&self, gp: &graphics::Graphics, target: &mut graphics::Texture, dstrect: PhysicalRect);
 }
 
-impl GlWriteToAtlas for &[u8] {
+impl GlWriteToAtlas for [u8] {
     #[track_caller]
-    fn write(&self, target: &gl::Texture, rect: PhysicalRect) {
-
-        gl::tex_sub_image_2d(
-            &target, rect, gl::ColorFormat::Rgba, gl::DataType::U8, self
-        );
-
+    fn write(&self, gp: &graphics::Graphics, target: &mut graphics::Texture, dstrect: PhysicalRect) {
+        // Write ourself to the texture at `dstrect`.
+        target.frombuf(gp, self, dstrect);
     }
 }
 
-impl GlWriteToAtlas for &GlRenderStorage {
+impl GlWriteToAtlas for graphics::Texture {
     #[track_caller]
-    fn write(&self, target: &gl::Texture, rect: PhysicalRect) {
-
-        assert_eq!(rect.size, self.size, "the entries' sizes must match");
-        gl::copy_tex_sub_image_2d((&self.fbo, PhysicalPoint::ZERO), (&target, rect.pos), rect.size);
-
+        fn write(&self, gp: &graphics::Graphics, target: &mut graphics::Texture, dstrect: PhysicalRect) {
+        target.fromtex(gp, self, PhysicalRect::new(PhysicalPoint::ZERO, dstrect.size), dstrect);
+        // original: gl::copy_tex_sub_image_2d((&self.fbo, PhysicalPoint::ZERO), (&target, rect.pos), rect.size);
     }
 }
 
@@ -547,8 +365,8 @@ pub struct Instance {
 struct TextureEntry {
     /// The position inside the atlas texture.
     pub rect: PhysicalRect,
-    /// Index into `mapping`. Used to update the mapping
-    /// accordingly after sorting the entries.
+    /// Which `mapping` stores our index. Used to update
+    /// the mapping accordingly after sorting the entries.
     pub mapping: u16,
 }
 
@@ -563,11 +381,6 @@ pub enum TextureKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureIndex {
     inner: u16,
-}
-
-impl TextureIndex {
-    pub const ERR:     Self = Self { inner: u16::MAX };
-    pub const INSPECT: Self = Self { inner: u16::MAX - 1 };
 }
 
 #[derive(Debug, Clone)]
@@ -585,132 +398,71 @@ pub struct DrawableGeometry<'a> {
     pub instances: &'a [Instance],
 }
 
-pub struct GlRenderer {
-    instance: gl::load::Instance,
-    ctx: gl::load::Context,
-    config: gl::load::Config,
-    shape: ShapeRenderer,
-}
-
-impl GlRenderer {
-
-    pub fn new<D: common::IsDisplay>(display: &D) -> Result<Self, RenderError> {
-
-        let instance = gl::load::Instance::new(display)?;
-        gl::initialize(|name| instance.get_proc_address(name))?;
-
-        #[cfg(debug_assertions)]
-        let config = gl::load::Config::build()
-            .api(gl::load::Api::Es3)
-            .version(3, 3)
-            .finish(&instance)?;
-
-        #[cfg(not(debug_assertions))]
-        let config = gl::load::Config::build()
-            .api(gl::load::Api::Es3)
-            .version(3, 0)
-            .finish(&instance)?;
-
-        let ctx = gl::load::Context::new(&instance, &config)?;
-
-        // bind for initialization
-        ctx.bind(&instance, None);
-
-        let shape = ShapeRenderer::new()?;
-
-        Ok(Self {
-            instance,
-            config,
-            ctx,
-            shape,
-        })
-
-    }
-
-    pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, atlas: &GlTextureAtlas, storage: &GlRenderStorage) {
-        self.ctx.bind(&self.instance, None);
-        gl::resize_viewport(storage.size);
-        self.shape.draw(&storage.fbo, geometry, atlas, storage.size);
-    }
-
-    pub fn clear(&mut self, source: &GlRenderStorage) {
-        self.ctx.bind(&self.instance, None);
-        gl::clear(&source.fbo, 0f32, 0f32, 0f32, 1f32);
-    }
-
-    /// Blit all contents from the render storage onto the surface.
-    ///
-    /// The content will be scaled if sized don't match.
-    pub fn blit(&mut self, surface: &GlSurface, source: &GlRenderStorage) {
-
-        self.ctx.bind(&self.instance, Some(&surface.inner));
-
-        let target = (&gl::FrameBuffer::default(), PhysicalRect::MAX);
-        let source = (&source.fbo, PhysicalRect::MAX);
-
-        gl::blit_frame_buffer(target, source, gl::TexValue::Linear);
-
-    }
-
-    /// Actually make all changes visible to the user.
-    pub fn swap(&mut self, surface: &GlSurface) {
-
-        self.ctx.swap(&surface.inner, gl::load::Damage::all());
-
-    }
-
-}
-
 struct SingularData {
-    vao: gl::VertexArray,
-    vdata: gl::Buffer,
+    vbuf: graphics::VertexBuffer,
 }
 
-struct InstancedData {
-    vao: gl::VertexArray,
-    vdata: gl::Buffer, // per-vertex data
-    idata: gl::Buffer, // per-instance
-    commands: gl::Buffer, // the draw commands
-}
+// struct InstancedData {
+//     vao: gl::VertexArray,
+//     vdata: gl::Buffer, // per-vertex data
+//     idata: gl::Buffer, // per-instance
+//     commands: gl::Buffer, // the draw commands
+// }
 
 /// The builtin curve renderer.
-struct ShapeRenderer {
-    prepared: PreparedGeometry,
-    singular: SingularData,
-    instanced: InstancedData,
-    sampler: gl::UniformLocation,
-    program: gl::LinkedProgram,
+pub struct Renderer {
+    pub gp: graphics::Graphics,
+    vbuf: graphics::VertexBuffer,
+    vraw: Vec<u8>,
+    program: graphics::Program,
+    #[cfg(target_os = "linux")]
+    samplerloc: graphics::Location
+    // instanced: InstancedData,
+    // sampler: gl::UniformLocation,
+    // program: gl::LinkedProgram,
 }
 
-impl ShapeRenderer {
+impl Renderer {
 
-    pub fn new() -> Result<Self, RenderError> {
+    pub fn new<D: IsDisplay>(display: &D) -> Result<Self, RenderError> {
+
+        let gp = graphics::Graphics::new(display)?;
 
         const VERT: &str = include_str!("shader/curve.vert");
         const FRAG: &str = include_str!("shader/curve.frag");
 
-        let vert = gl::create_shader(gl::ShaderType::Vertex, VERT).unwrap();
-        let frag = gl::create_shader(gl::ShaderType::Fragment, FRAG).unwrap();
+        let program  = graphics::Program::new(&gp, &[
+            graphics::Source { kind: graphics::SourceKind::Vertex,   data: VERT },
+            graphics::Source { kind: graphics::SourceKind::Fragment, data: FRAG },
+        ]).expect("shader compilation failed");
 
-        let mut builder = gl::create_program();
-        gl::attach_shader(&mut builder, vert);
-        gl::attach_shader(&mut builder, frag);
-        let program = gl::link_program(builder).unwrap(); // TODO: compile shaders to binary in a build.rs script
+        let vbuf = graphics::VertexBuffer::new(&gp, &[
+            graphics::Attrib { kind: graphics::AttribKind::U16, ..Default::default() },
+            graphics::Attrib { kind: graphics::AttribKind::I32, ..Default::default() },
+            graphics::Attrib { kind: graphics::AttribKind::U32, ..Default::default() },
+        ]);
 
-        let singular = {
-            let vdata = gl::gen_buffer(gl::BufferType::Array);
-            let vao = gl::gen_vertex_array();
-            gl::vertex_attrib_pointer(&vao, &vdata, 0, 1, gl::DataType::U16, false, 10, 0); // FLAGS
-            gl::vertex_attrib_pointer(&vao, &vdata, 1, 1, gl::DataType::I32, false, 10, 2); // x, y
-            gl::vertex_attrib_pointer(&vao, &vdata, 2, 1, gl::DataType::U32, false, 10, 6); // u, v, l (texture coords)
-            SingularData { vao, vdata }
-        };
+        let samplerloc = program.uniformloc(&gp, "atlas");
 
-        let instanced = {
-            let vdata = gl::gen_buffer(gl::BufferType::Array);
-            let idata = gl::gen_buffer(gl::BufferType::Array);
-            let commands = gl::gen_buffer(gl::BufferType::DrawIndirect);
-            let vao = gl::gen_vertex_array();
+        // let singular = {
+        //     let vdata = gl::gen_buffer(gl::BufferType::Array);
+        //     let vao = gl::gen_vertex_array();
+        //     gl::vertex_attrib_pointer(&vao, &vdata, 0, 1, gl::DataType::U16, false, 10, 0); // FLAGS
+        //     gl::vertex_attrib_pointer(&vao, &vdata, 1, 1, gl::DataType::I32, false, 10, 2); // x, y
+        //     gl::vertex_attrib_pointer(&vao, &vdata, 2, 1, gl::DataType::U32, false, 10, 6); // u, v, l (texture coords)
+        //     // let buf = graphics::VertexBuffer::new([
+        //     //     graphcis::Attrib::PerVertex(graphics::DataType::U16, 1),
+        //     //     graphcis::Attrib::PerVertex(graphics::DataType::I32, 1),
+        //     //     graphcis::Attrib::PerVertex(graphics::DataType::U32, 1),
+        //     // ]);
+        //     SingularData { vao, vdata }
+        // };
+
+        // let instanced = {
+        //     let vdata = gl::gen_buffer(gl::BufferType::Array);
+        //     let idata = gl::gen_buffer(gl::BufferType::Array);
+        //     let commands = gl::gen_buffer(gl::BufferType::DrawIndirect);
+        //     let vao = gl::gen_vertex_array();
             // let f = size_of::<f32>();
             // // vertex data
             // gl::vertex_attrib_pointer(&vao, &vdata, 0, 2, gl::DataType::F32, false, 5*f, 0*f); // x, y
@@ -725,24 +477,28 @@ impl ShapeRenderer {
             // // this is used to distingluish between an instanced and non instanced call in the vertex shader
             // gl::vertex_attrib_3f(&vao, 4, -1.0, -1.0, -1.0);
             // gl::vertex_attrib_3f(&vao, 5, -1.0, -1.0, -1.0);
-            InstancedData { vao, vdata, idata, commands }
-        };
+        //     InstancedData { vao, vdata, idata, commands }
+        // };
 
-        let sampler = gl::uniform_location(&program, "atlas")
-            .expect("cannot find `atlas` uniform");
+        // let sampler = gl::uniform_location(&program, "atlas")
+        //     .expect("cannot find `atlas` uniform");
 
         Ok(Self {
-            prepared: PreparedGeometry::default(),
-            singular,
-            instanced,
-            sampler,
+            gp,
+            vbuf,
+            vraw: Vec::with_capacity(1024),
             program,
+            samplerloc
+            // singular,
+            // instanced,
+            // sampler,
+            // program,
         })
 
     }
 
     /// Convert geometry into internal representation.
-    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, atlas: &GlTextureAtlas, size: PhysicalSize) {
+    fn prepare<'b>(&mut self, geometry: &DrawableGeometry<'b>, atlas: &TextureAtlas, size: PhysicalSize) {
 
         // The layout is packed heavily to minimize memory usage.
         //
@@ -755,7 +511,7 @@ impl ShapeRenderer {
         // FILLED/CONVEX/CONCAVE   INSTANCED/NORMAL   VERTEX INDEX   OUTER EDGES
         // 2 bit                   1 bit              2 bit          3 bit
 
-        self.prepared.clear();
+        self.vraw.clear();
 
         for instance in geometry.instances {
 
@@ -839,9 +595,9 @@ impl ShapeRenderer {
                     ((curve & 0b011) << 6) |
                     ((isatlas as u16 & 0b001) << 8);
 
-                self.prepared.singular.vertices.extend_u16([flags]);
-                self.prepared.singular.vertices.extend_i([packed_pos]);
-                self.prepared.singular.vertices.extend_u([packed_texture]);
+                self.vraw.extend(flags.to_ne_bytes());
+                self.vraw.extend(packed_pos.to_ne_bytes());
+                self.vraw.extend(packed_texture.to_ne_bytes());
 
                 /*
                 self.prepared.singular.vertices.extend_f(pos); // XY
@@ -857,27 +613,47 @@ impl ShapeRenderer {
 
     }
 
-    pub fn draw(&mut self, target: &gl::FrameBuffer, geometry: &DrawableGeometry, atlas: &GlTextureAtlas, size: PhysicalSize) {
+    pub fn draw<'b>(&mut self, geometry: &DrawableGeometry<'b>, atlas: &TextureAtlas, target: &mut graphics::Texture) {
 
-        self.prepare(geometry, atlas, size);
+        self.prepare(geometry, atlas, target.size());
 
-        // Setup blending.
-        gl::enable(gl::Capability::Blend);
-        gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
+        // // Setup blending.
+        // gl::enable(gl::Capability::Blend);
+        // gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
 
-        // Make atlas texture accessible, even if the atlas was not used
-        // it will be correctly initialized to a minimal size.
-        gl::active_texture(0);
-        gl::uniform_1i(&self.program, self.sampler, 0);
-        gl::bind_texture(&atlas.texture);
+        // // Make atlas texture accessible. It must always be initialized to a valid texture.
+        // gl::active_texture(0);
+        // gl::uniform_1i(&self.program, self.sampler, 0);
+        // gl::bind_texture(&atlas.texture);
 
-        // Render all non-instanced shapes.
-        let r = &self.prepared.singular;
-        let len = r.vertices.inner.len();
-        if len > 0 {
-            gl::buffer_data(&self.singular.vdata, &r.vertices.inner, gl::DrawHint::Dynamic);
-            gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 10);
-        }
+        // // Render all non-instanced shapes.
+        // let r = &self.prepared.singular;
+        // let len = r.vertices.inner.len();
+        // if len > 0 {
+        //     gl::buffer_data(&self.singular.vdata, &r.vertices.inner, gl::DrawHint::Dynamic);
+        //     gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 10);
+        // }
+
+        self.vbuf.frombuf(&self.gp, &self.vraw);
+
+        let options = graphics::DrawOptions {
+            primitive: graphics::Primitive::Triangles,
+            blend: graphics::BlendMode::OrderedTransparency,
+            polygon: graphics::PolygonMode::Filled
+        };
+
+        let textures = [
+            graphics::TextureAttrib { src: &atlas.texture, sampler: self.samplerloc }
+        ];
+
+        let cmd = graphics::DrawCommand {
+            src: &self.vbuf,
+            program: &self.program,
+            textures: &textures,
+            options: &options
+        };
+
+        target.draw(&self.gp, cmd);
 
         // // render all instanced shapes
         // let r = &result.instanced;
@@ -943,32 +719,32 @@ scene.gl(renderfn, pixels);
 
  */
 
-/// Vertex data which is ready to be rendered.
-#[derive(Default)]
-struct PreparedGeometry {
-    pub singular: SingularPreparedGeometry,
-    pub instanced: InstancedPreparedGeometry,
-}
-impl PreparedGeometry {
-    fn clear(&mut self) {
-        self.singular.vertices.inner.clear();
-        self.instanced.vertices.inner.clear();
-        self.instanced.instances.inner.clear();
-        self.instanced.commands.clear();
-    }
-}
+// /// Vertex data which is ready to be rendered.
+// #[derive(Default)]
+// struct PreparedGeometry {
+//     pub singular: SingularPreparedGeometry,
+//     // pub instanced: InstancedPreparedGeometry,
+// }
+// impl PreparedGeometry {
+//     fn clear(&mut self) {
+//         self.singular.vertices.clear();
+//         // self.instanced.vertices.inner.clear();
+//         // self.instanced.instances.inner.clear();
+//         // self.instanced.commands.clear();
+//     }
+// }
 
-#[derive(Default)]
-struct SingularPreparedGeometry {
-    pub vertices: gl::AttribVec,
-}
+// #[derive(Default)]
+// struct SingularPreparedGeometry {
+//     pub vertices: Vec<u8>,
+// }
 
-#[derive(Default)]
-struct InstancedPreparedGeometry {
-    pub vertices:  gl::AttribVec,
-    pub instances: gl::AttribVec,
-    pub commands:  Vec<gl::DrawArraysIndirectCommand>,
-}
+// #[derive(Default)]
+// struct InstancedPreparedGeometry {
+//     pub vertices:  gl::AttribVec,
+//     pub instances: gl::AttribVec,
+//     pub commands:  Vec<gl::DrawArraysIndirectCommand>,
+// }
 
 /// An error that occured when rendering.
 ///
@@ -993,32 +769,8 @@ impl fmt::Display for RenderError {
 
 impl StdError for RenderError {}
 
-impl From<gl::load::LoadError> for RenderError {
-    fn from(value: gl::load::LoadError) -> Self {
-        Self::new(format!("egl call failed, {}", value))
-    }
-}
-
-impl From<gl::ShaderError> for RenderError {
-    fn from(value: gl::ShaderError) -> Self {
-        Self::new(format!("compiling shader failed, {}", value))
-    }
-}
-
-impl From<gl::LinkError> for RenderError {
-    fn from(value: gl::LinkError) -> Self {
-        Self::new(format!("linking shader program failed, {}", value))
-    }
-}
-
-impl From<gl::UniformUnknown> for RenderError {
-    fn from(_: gl::UniformUnknown) -> Self {
-        Self::new(format!("cannot query uniform"))
-    }
-}
-
-impl From<gl::FnsUnknown> for RenderError {
-    fn from(_: gl::FnsUnknown) -> Self {
-        Self::new(format!("cannot load gl functions"))
+impl From<graphics::GraphicsError> for RenderError {
+    fn from(value: graphics::GraphicsError) -> Self {
+        Self::new(format!("gpu error, {}", value))
     }
 }

@@ -26,10 +26,10 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     window.title(APPID);
     window.transparency(true);
 
-    let mut renderer = render::GlRenderer::new(&*evl)?;
-    let mut storage = render::GlRenderStorage::new(&renderer, window.size());
-    let mut surface = render::GlSurface::new(&renderer, &window);
-    let atlas = render::GlTextureAtlas::new(&renderer);
+    let mut renderer = render::Renderer::new(&*evl)?;
+    let mut storage = graphics::Texture::new(&renderer.gp, window.size(), None);
+    let mut surface = graphics::Surface::new(&renderer.gp, &window);
+    let atlas = render::TextureAtlas::new(&renderer);
 
     let mut geometry = shaper::CurveGeometry::new();
     let mut shaper = shaper::GeometryShaper::new();
@@ -69,20 +69,20 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             instances: &instances,
                         };
 
-                        renderer.clear(&storage);
+                        storage.clear(&renderer.gp, [0.0, 0.0, 0.0, 1.0]);
 
                         window.present();
-                        renderer.draw(&drawable, &atlas, &storage);
+                        renderer.draw(&drawable, &atlas, &mut storage);
 
-                        renderer.blit(&surface, &storage);
-                        renderer.swap(&surface);
+                        surface.blit(&renderer.gp, &mut storage);
+                        surface.swap(&renderer.gp);
 
                     },
 
                     WindowEvent::Resize { size, .. } => {
                         println!("got resize event: new size = {size:?}");
-                        storage.resize(&renderer, size);
-                        surface.resize(&renderer, size);
+                        storage.resize(&renderer.gp, size, None);
+                        surface.resize(&renderer.gp, size);
                     },
 
                     WindowEvent::MouseMotion { point } => {

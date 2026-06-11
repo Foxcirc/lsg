@@ -172,6 +172,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "egl"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "khronos-egl",
+ "wayland-egl",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -252,8 +261,6 @@ version = "0.1.0"
 dependencies = [
  "common",
  "gl 0.14.0",
- "khronos-egl",
- "wayland-egl",
 ]
 
 [[package]]
@@ -281,6 +288,7 @@ name = "graphics"
 version = "0.1.0"
 dependencies = [
  "common",
+ "egl",
  "gl 0.1.0",
 ]
 
@@ -342,6 +350,7 @@ dependencies = [
  "common",
  "desktop",
  "futures-lite",
+ "graphics",
  "render",
  "text",
  "widget",
@@ -496,7 +505,7 @@ version = "0.1.0"
 dependencies = [
  "bv",
  "common",
- "gl 0.1.0",
+ "graphics",
 ]
 
 [[package]]

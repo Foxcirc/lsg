@@ -1,37 +1,35 @@
 
-/// Simple wrapper around `gl` that improves ergonomics.
-///
-/// # Why use this
-///
-/// This crate aims to take the pain out of the old and clumbersome api, while
-/// being only a small wrapper without huge runtime cost.
-///
-/// 1. All functions are safe
-/// 2. Strong typing for all kinds of handles
-/// 3. Automatic binding (the bind functions are only provided for special use cases)
-/// 4. Resource cleanup on drop
-///
-/// This library does not deal with context creation, for that you should
-/// use platform specific libraries like `wgl` or `egl`.
-///
-/// # Initialization
-/// 1. bind a context
-/// 2. use [`load_with`] to load all functions that are present
-///
-/// # Debug messages
-/// The easiest way to receive debug messages is `gl::debug_message_callback(gl::debug_message_default_handler)`
-/// Note that debug messages are only supported in gl version 4.0 and onwards.
-///
-/// # Sharing objects
-/// Most structs simply contain an `id: u32`. However because the resource is
-/// cleaned up on drop, you still can't just clone it. To share e.g. a [`Buffer`] between
-/// mutliple places in your code you should use an [`Rc`](std::rc::Rc).
-///
-/// # Completeness
-/// Right now, not all functions are implemented and many enums are incomplete,
-/// but adding more is really easy and often a matter of minutes.
-
-#[cfg(feature = "load")] pub mod load;
+//! Simple wrapper around `gl` that improves ergonomics.
+//!
+//! # Why use this
+//!
+//! This crate aims to take the pain out of the old and clumbersome api, while
+//! being only a small wrapper without huge runtime cost.
+//!
+//! 1. All functions are safe
+//! 2. Strong typing for all kinds of handles
+//! 3. Automatic binding (the bind functions are only provided for special use cases)
+//! 4. Resource cleanup on drop
+//!
+//! This library does not deal with context creation, for that you should
+//! use platform specific libraries like `wgl` or `egl`.
+//!
+//! # Initialization
+//! 1. bind a context
+//! 2. use [`load_with`] to load all functions that are present
+//!
+//! # Debug messages
+//! The easiest way to receive debug messages is `gl::debug_message_callback(gl::debug_message_default_handler)`
+//! Note that debug messages are only supported in gl version 4.0 and onwards.
+//!
+//! # Sharing objects
+//! Most structs simply contain an `id: u32`. However because the resource is
+//! cleaned up on drop, you still can't just clone it. To share e.g. a [`Buffer`] between
+//! mutliple places in your code you should use an [`Rc`](std::rc::Rc).
+//!
+//! # Completeness
+//! Right now, not all functions are implemented and many enums are incomplete,
+//! but adding more is really easy and often a matter of minutes.
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
 use common::{PhysicalPoint, PhysicalRect, PhysicalSize};
@@ -39,7 +37,7 @@ use common::{PhysicalPoint, PhysicalRect, PhysicalSize};
 #[derive(Debug)]
 pub struct FnsUnknown;
 
-pub fn initialize<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: F) -> Result<(), FnsUnknown> {
+pub fn load_with<F: FnMut(&'static str) -> Option<extern "system" fn()>>(mut f: F) -> Result<(), FnsUnknown> {
 
     let mut result = Ok(());
 
@@ -98,7 +96,7 @@ fn check_error() {
     // We treat all errors as fatal.
     match get_error() {
         Ok(()) => (),
-        Err(err) => panic!("OpenGL Hard-Error: {:?}", err),
+        Err(err) => panic!("OpenGL Error: {:?}", err),
     }
 }
 
@@ -720,45 +718,40 @@ impl Buffer {
     }
 }
 
-// TODO: add a "vertex layout specification" mechanism that allows:
-// - auto-generating the aproapriate vertex-attrib_... calls from the spec
-// - verifying that the correct data is passed when using VertexStorage
-// in that way a "renderer" can assure that the vertex data it gets is in the correct layout, a clean cooperation between shaper and renderer
+// /// This utility type acts as a buffer to store your vertex data. This should
+// /// make appending vertex attributes with multiple different types easier.
+// #[derive(Debug, Default)]
+// pub struct AttribVec {
+//     pub inner: Vec<u8>,
+// }
 
-/// This utility type acts as a buffer to store your vertex data. This should
-/// make appending vertex attributes with multiple different types easier.
-#[derive(Debug, Default)]
-pub struct AttribVec {
-    pub inner: Vec<u8>,
-}
+// impl AttribVec {
 
-impl AttribVec {
+//     pub fn new() -> Self {
+//         Self { inner: Vec::new() }
+//     }
 
-    pub fn new() -> Self {
-        Self { inner: Vec::new() }
-    }
+//     pub fn extend_f<const N: usize>(&mut self, vals: [f32; N]) {
+//         self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+//     }
 
-    pub fn extend_f<const N: usize>(&mut self, vals: [f32; N]) {
-        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
-    }
+//     pub fn extend_i<const N: usize>(&mut self, vals: [i32; N]) {
+//         self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+//     }
 
-    pub fn extend_i<const N: usize>(&mut self, vals: [i32; N]) {
-        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
-    }
+//     pub fn extend_u<const N: usize>(&mut self, vals: [u32; N]) {
+//         self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+//     }
 
-    pub fn extend_u<const N: usize>(&mut self, vals: [u32; N]) {
-        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
-    }
+//     pub fn extend_u16<const N: usize>(&mut self, vals: [u16; N]) {
+//         self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+//     }
 
-    pub fn extend_u16<const N: usize>(&mut self, vals: [u16; N]) {
-        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
-    }
+//     pub fn extend_i16<const N: usize>(&mut self, vals: [i16; N]) {
+//         self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
+//     }
 
-    pub fn extend_i16<const N: usize>(&mut self, vals: [i16; N]) {
-        self.inner.extend(vals.map(|it| it.to_ne_bytes()).as_flattened());
-    }
-
-}
+// }
 
 #[track_caller]
 pub fn vertex_attrib_1f(vao: &VertexArray, loc: impl Into<AttribLocation>, x: f32) {
@@ -1369,10 +1362,11 @@ pub fn pixel_store_i(texture: &Texture, param: TexParam, value: i32) {
 /// Will also bind the texture!
 /// A location of `0` corresponds to `TEXTURE0`.
 #[track_caller]
-pub fn active_texture(location: usize) {
+pub fn active_texture(texture: &Texture, location: usize) {
     debug_assert!(location < 32, "should not bind more then 32 textures");
     let param = gl::TEXTURE0 + location as u32;
     unsafe { gl::ActiveTexture(param) };
+    bind_texture(texture); // This bind the texture to the activated unit.
     check_error();
 }
 
@@ -1387,8 +1381,9 @@ pub enum DataType {
     I16 = gl::SHORT,
     U8 = gl::UNSIGNED_BYTE,
     I8 = gl::BYTE,
-    // IMPORTANT: When adding a new data type remember that all types except f32
-    //            are using the integer vertex_attrib_ipointer variant right now.
+    // IMPORTANT:
+    // When adding a new data type remember that all types except f32
+    // are using the integer vertex_attrib_ipointer variant right now.
 }
 
 impl DataType {
@@ -1614,9 +1609,9 @@ pub enum Primitive {
 }
 
 #[track_caller]
-pub fn clear(fbo: &FrameBuffer, r: f32, g: f32, b: f32, alpha: f32) {
+pub fn clear(fbo: &FrameBuffer, [r, g, b, a]: [f32; 4]) {
     bind_frame_buffer(fbo);
-    unsafe { gl::ClearColor(r, g, b, alpha) };
+    unsafe { gl::ClearColor(r, g, b, a) };
     unsafe { gl::Clear(gl::COLOR_BUFFER_BIT) };
     check_error();
     check_error();

@@ -31,9 +31,10 @@ pub struct LogicalSize {
 }
 
 impl LogicalSize {
+    pub const ZERO: Self = Self::new(0, 0);
     pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
     pub const FULL: Self = Self::new(5000, 5000);
-    pub const ZERO: Self = Self::new(0, 0);
+    pub const MIN: Self = Self::new(0, 0);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
     pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
     pub const fn scale(&self, scale: f32) -> PhysicalSize {
@@ -61,6 +62,7 @@ pub struct PhysicalSize {
 }
 
 impl PhysicalSize {
+    pub const ZERO: Self = Self::new(0, 0);
     pub const MAX: Self = Self::new(u16::MAX, u16::MAX);
     pub const MIN: Self = Self::new(0, 0);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
@@ -82,8 +84,8 @@ pub struct LogicalPoint {
 }
 
 impl LogicalPoint {
-    pub const ZERO: Self = Self::new(0, 0);
     pub const FULL: Self = Self::new(10000, 10000);
+    pub const ZERO: Self = Self::new(0, 0);
     pub const MAX: Self = Self::new(i16::MAX, i16::MAX);
     pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
     pub const fn new(x: i16, y: i16) -> Self {

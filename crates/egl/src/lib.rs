@@ -1,19 +1,16 @@
 
-/*
-TODO: verify thread safety and add more constraints
-     - right now you can share an instance between threads and concurrently create contexts
-     - eglCreateContext may not be thread-safe (more research needed)
-     - in egl, it is safe to bind two different contexts, to two different surfaces on two different threads
-     - some other functions also seem to be safe, like get-proc-addrs
-     - how is this in lsg, can you render from multiple threads using this in theory rn, at least if you implement your own renderer
- */
-
  //! This file implements functionality for creating an OpenGL context
- //! and loading OpenGL functions on native platforms. It uses "EGL" as
+ //! and loading OpenGL functions on native platforms. It uses EGL as
  //! a backend, which works on Linux, Windows and Android.
+ //!
+ //! # Concurrency
+ //! Objects can generally be accessed from multiple threads, however
+ //! they need to be behind a lock (as their methods require `&mut self`)
+ //! and it is to keep in mind that **a `Context` or `Surface` can only ever
+ //! be bound on one thread at a time.**
 
- use common::{LogicalSize, PhysicalSize, PhysicalRect};
- use std::{ffi::c_void as void, fmt, mem, sync::Arc, error::Error as StdError};
+ use common::{PhysicalRect, PhysicalSize, SmartMutex};
+ use std::{error::Error as StdError, ffi::c_void as void, fmt, mem, sync::{Arc, Mutex}};
 
  pub struct LoadError {
      msg: String
@@ -52,22 +49,28 @@ TODO: verify thread safety and add more constraints
      egl::Int
  ) -> egl::Int;
 
- #[derive(Clone)]
+ /// This type should be treated as a singleton.
  pub struct Instance {
-     lib: Arc<egl::DynamicInstance<egl::EGL1_5>>,
+     inner: SmartMutex<InstanceInner>
+ }
+
+struct InstanceInner {
+     lib: egl::DynamicInstance<egl::EGL1_5>,
      swap_buffers_with_damage: Option<FnSwapBuffersWithDamage>,
      display: egl::Display,
  }
 
+ // SAFETY: Internal `Mutex` is used.
+ unsafe impl Send for Instance {}
+ unsafe impl Sync for Instance {}
+
  impl Instance {
 
-     /// Should be only be called once.
-     pub fn new<D: common::IsDisplay>(display: &D) -> Result<Self, LoadError> {
+     pub fn new<D: common::IsDisplay>(display: &D) -> Result<Arc<Self>, LoadError> {
 
          let lib = unsafe {
-             let loaded = egl::DynamicInstance::<egl::EGL1_5>::load_required()
-                 .map_err(|_| "failed to load egl 1.5")?; // NOTE: don't forget to update egl version in error message
-             Arc::new(loaded)
+             egl::DynamicInstance::<egl::EGL1_5>::load_required()
+                 .map_err(|_| "failed to load egl 1.5")? // NOTE: don't forget to update egl version in error message
          };
 
          let egl_display = unsafe {
@@ -81,16 +84,19 @@ TODO: verify thread safety and add more constraints
          let swap_buffers_with_damage: Option<FnSwapBuffersWithDamage> =
              unsafe { mem::transmute(func) };
 
-         Ok(Self {
-             lib,
-             swap_buffers_with_damage,
-             display: egl_display,
-         })
+         Ok(Arc::new(Self {
+             inner: SmartMutex::new(InstanceInner {
+                 lib,
+                 swap_buffers_with_damage,
+                 display: egl_display,
+             })
+         }))
 
      }
 
      pub fn get_proc_address(&self, name: &str) -> Option<extern "system" fn()> {
-         self.lib.get_proc_address(name)
+         let instance = self.inner.lock();
+         instance.lib.get_proc_address(name)
      }
 
  }
@@ -150,12 +156,9 @@ TODO: verify thread safety and add more constraints
          self
      }
 
-     pub fn finish(self, instance: &Instance) -> Result<Config, LoadError> {
+     pub fn finish(self, locked: &Instance) -> Result<Config, LoadError> {
 
-         // egl::RENDERABLE_TYPE, match self.api {
-         //     Api::OpenGl => egl::OPENGL_BIT,
-         //     Api::Es3    => egl::OPENGL_ES3_BIT,
-         // },
+         let instance = locked.inner.lock();
 
          let attribs = match self.api {
              Api::OpenGl => vec![
@@ -213,31 +216,42 @@ TODO: verify thread safety and add more constraints
  }
 
  pub struct Config {
-     inner: egl::Config,
+     inner: egl::Config, // NOTE: seems it does not need `drop`
      context_attrs: Vec<i32>,
      surface_attrs: Vec<i32>,
      api: Api,
  }
 
- impl Config {
+  // SAFETY: EGL generally does not mutate this after creation.
+  unsafe impl Send for Config {}
+  unsafe impl Sync for Config {}
 
+ impl Config {
      pub fn build() -> ConfigBuilder {
          ConfigBuilder::default()
      }
-
  }
 
  pub struct Context {
-     instance: Instance,
+     inner: SmartMutex<ContextInner>
+ }
+
+struct ContextInner {
+     instance: Arc<Instance>,
      inner: egl::Context,
-     // only here to amortize some allocations, used in `resize`
+     // Here to amortize some allocations. Used when swapping buffers.
      damage_rects: Vec<PhysicalRect>,
  }
 
- impl Drop for Context {
+ // SAFETY: Internal `Mutex` is used.
+ unsafe impl Send for Context {}
+ unsafe impl Sync for Context {}
+
+ impl Drop for ContextInner {
      fn drop(&mut self) {
-         self.instance.lib.destroy_context(
-             self.instance.display,
+         let instance = self.instance.inner.lock();
+         instance.lib.destroy_context(
+             instance.display,
              self.inner
          ).expect("failed to destroy egl context");
      }
@@ -245,7 +259,9 @@ TODO: verify thread safety and add more constraints
 
  impl Context {
 
-     pub fn new(instance: &Instance, config: &Config) -> Result<Self, LoadError> {
+     pub fn new(locked: &Arc<Instance>, config: &Config) -> Result<Self, LoadError> {
+
+         let instance = locked.inner.lock();
 
          // opengl (and related) has the by far worst api i've seen... ever
          // like what the fuck is this, why is this not part of the attributes?!
@@ -263,9 +279,11 @@ TODO: verify thread safety and add more constraints
          )?;
 
          Ok(Self {
-             instance: instance.clone(),
-             inner: context,
-             damage_rects: Vec::new(),
+             inner: SmartMutex::new(ContextInner {
+                 instance: Arc::clone(locked),
+                 inner: context,
+                 damage_rects: Vec::new(),
+             })
          })
 
      }
@@ -275,16 +293,20 @@ TODO: verify thread safety and add more constraints
      /// # Panic
      /// This may panic if binding fails which could be, for example because
      /// - The GPU ran out of memory for allocating auxillary buffers
-     /// - Accessed from a different thread then the one creating it
+     /// - Bound on two different threads at the same time
      /// - Context was lost due to driver crash or hardware failure
      #[track_caller]
-     pub fn bind(&self, instance: &Instance, surface: Option<&Surface>) {
+     pub fn bind(&self, surface: Option<&Surface>) {
 
-         self.instance.lib.make_current(
-             self.instance.display,
-             surface.map(|it| it.inner), // NOTE: it is an error to only specify one of the two (read/draw) surfaces
-             surface.map(|it| it.inner),
-             Some(self.inner)
+         let context = self.inner.lock();
+         let instance = context.instance.inner.lock();
+
+         instance.lib.make_current(
+             instance.display,
+             // NOTE: it is an error to only specify one of the two (read/draw) surfaces
+             surface.map(|it| it.inner.lock().inner),
+             surface.map(|it| it.inner.lock().inner),
+             Some(context.inner)
          ).unwrap();
 
          if surface.is_some() {
@@ -299,38 +321,50 @@ TODO: verify thread safety and add more constraints
      }
 
      /// Clear the current context.
-     pub fn unbind(&self) -> Result<(), LoadError> {
-         self.instance.lib.make_current(
-             self.instance.display,
+     #[track_caller]
+     pub fn unbind(&self) {
+
+         let context = self.inner.lock();
+         let instance = context.instance.inner.lock();
+
+         instance.lib.make_current(
+             instance.display,
              None, None, None
-         )?;
-         Ok(())
+         ).unwrap();
+
      }
 
      /// Swap the back and front buffers.
      ///
      /// `surface` must be the same surface that was specifified in `bind`.
      /// If `damage` is an empty slice, everything will be redrawn.
-     pub fn swap(&mut self, surface: &Surface, damage: Damage) {
+     #[track_caller]
+     pub fn swap(&self, locked: &Surface, damage: Damage) {
+
+         let ContextInner { ref instance, ref mut damage_rects, .. } = *self.inner.lock();
+         // ^^^^ I destructure here cause of borrow checker issues.
+
+         let surface = locked.inner.lock();
+         let instance = instance.inner.lock();
 
          // recalculate the origin of the rects to be in the top left
-         self.damage_rects.clear();
-         self.damage_rects.extend_from_slice(damage.rects);
-         for rect in self.damage_rects.iter_mut() {
+         damage_rects.clear();
+         damage_rects.extend_from_slice(damage.rects);
+         for rect in damage_rects.iter_mut() {
              rect.pos.y = (surface.size.h as isize - rect.pos.y as isize - rect.size.h as isize) as i16;
          }
 
-         if let Some(func) = self.instance.swap_buffers_with_damage {
+         if let Some(func) = instance.swap_buffers_with_damage {
              // swap with damage, if the fn could be found
              (func)(
-                 self.instance.display.as_ptr(),
+                 instance.display.as_ptr(),
                  surface.inner.as_ptr(),
-                 self.damage_rects.as_ptr().cast(),
+                 damage_rects.as_ptr().cast(),
                  damage.rects.len() as i32
              );
          } else {
              // normal swap (if the extension is unsupported)
-             self.instance.lib.swap_buffers(self.instance.display, surface.inner)
+             instance.lib.swap_buffers(instance.display, surface.inner)
                  .unwrap();
          }
 
@@ -338,19 +372,29 @@ TODO: verify thread safety and add more constraints
 
  }
 
+pub struct Surface {
+    inner: SmartMutex<SurfaceInner>
+}
+
  /// A double-buffered window surface.
- pub struct Surface {
+ struct SurfaceInner {
      inner: egl::Surface,
      size: PhysicalSize,
-     #[cfg(unix)]
+     #[cfg(target_os = "linux")]
      wl_egl_surface: wayland_egl::WlEglSurface,
  }
 
+  // SAFETY: Internal `Mutex` is used.
+  unsafe impl Send for Surface {}
+  unsafe impl Sync for Surface {}
+
  impl Surface {
 
-     pub fn new<I: common::IsSurface>(instance: &Instance, config: &Config, inner: &I, size: PhysicalSize) -> Result<Self, LoadError> {
+     pub fn new<I: common::IsSurface>(locked: &Instance, config: &Config, inner: &I, size: PhysicalSize) -> Result<Self, LoadError> {
 
-         #[cfg(unix)] // unix means wayland, as far as we are concerned
+         let instance = locked.inner.lock();
+
+         #[cfg(target_os = "linux")] // linux means wayland, as far as we are concerned
          let wl_egl_surface = unsafe {
              wayland_egl::WlEglSurface::new_from_raw(
                  inner.ptr().cast(),
@@ -359,10 +403,10 @@ TODO: verify thread safety and add more constraints
              ).map_err(|_| "cannot create WlEglSurface")?
          };
 
-         #[cfg(unix)]
+         #[cfg(target_os = "linux")]
          let target = wl_egl_surface.ptr().cast_mut();
 
-         #[cfg(not(unix))]
+         #[cfg(not(target_os = "linux"))]
          let target = inner.ptr();
 
          let surface = unsafe {
@@ -375,22 +419,32 @@ TODO: verify thread safety and add more constraints
          };
 
          Ok(Self {
-             inner: surface,
-             size,
-             #[cfg(unix)]
-             wl_egl_surface
+             inner: SmartMutex::new(SurfaceInner {
+                 inner: surface,
+                 size,
+                 #[cfg(target_os = "linux")]
+                 wl_egl_surface
+             })
          })
 
      }
 
-     pub fn resize(&mut self, size: PhysicalSize) {
-         self.size = size;
-         let (w, h) = (size.w as i32, size.h as i32);
-         self.wl_egl_surface.resize(w, h, 0, 0);
+     pub fn resize(&self, size: PhysicalSize) {
+
+         let mut surface = self.inner.lock();
+
+         surface.size = size;
+
+         #[cfg(target_os = "linux")] {
+             let (w, h) = (size.w as i32, size.h as i32);
+             surface.wl_egl_surface.resize(w, h, 0, 0);
+         }
+
      }
 
      pub fn size(&self) -> PhysicalSize {
-         self.size
+         let surface = self.inner.lock();
+         surface.size
      }
 
  }

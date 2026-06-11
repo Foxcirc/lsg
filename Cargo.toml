@@ -9,6 +9,7 @@ members = [
     "crates/futures",
     "crates/desktop",
     "crates/gl",
+    "crates/egl",
     "crates/graphics",
     "crates/render",
     "crates/text",

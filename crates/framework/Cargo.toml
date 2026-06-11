@@ -11,8 +11,9 @@ edition.workspace = true
 common = { path = "../common" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-desktop = { path = "../desktop", features = ["import"] }
+desktop = { path = "../desktop" }
 render = { path = "../render" }
+graphics = { path = "../graphics" }
 text = { path = "../text" }
 widget = { path = "../widget" }
 

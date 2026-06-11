@@ -2398,7 +2398,7 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                     BTN_MIDDLE => MouseButton::Middle,
                     BTN_BACK    | BTN_SIDE  => MouseButton::X1,
                     BTN_FORWARD | BTN_EXTRA => MouseButton::X2,
-                    .. => MouseButton::Unknown,
+                    _ => MouseButton::Unknown,
                 };
 
                 let down = match state {

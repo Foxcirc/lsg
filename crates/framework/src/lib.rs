@@ -38,12 +38,12 @@ impl App {
 
             desktop::EventLoop::run(config2, |eventloop| {
 
-                let renderer = render::GlRenderer::new(&*eventloop)
+                let renderer = render::Renderer::new(&*eventloop)
                     .map_err(desktop::EvlError::anyerror)?;
 
                 let renderstate = AppRenderState {
                     shaper: render::GeometryShaper::new(),
-                    atlas: render::GlTextureAtlas::new(&renderer),
+                    atlas: render::TextureAtlas::new(&renderer),
                     renderer,
                 };
 
@@ -199,8 +199,8 @@ impl Window {
             geometries: Default::default(),
             vertices: Default::default(),
             curves: Default::default(),
-            storage: render::GlRenderStorage::new(renderer, inner.size()),
-            surface: render::GlSurface::new(renderer, &inner),
+            texture: graphics::Texture::new(&renderer.gp, inner.size(), None),
+            surface: graphics::Surface::new(&renderer.gp, &inner),
         });
 
         let this = Arc::new(Self {
@@ -237,7 +237,7 @@ impl Window {
             // Special events.
 
             WindowEvent::Resize { size, .. } => {
-                windowstate.surface.resize(&appstate.renderer, size);
+                windowstate.surface.resize(&appstate.renderer.gp, size);
             },
 
             WindowEvent::Redraw => {
@@ -269,15 +269,21 @@ impl Window {
                 let curves = &windowstate.curves.data;
                 let vertices = shaper.process(curves);
 
-                let drawable = render::DrawableGeometry {
-                    source: &[vertices],
-                    instances: &windowstate.curves.instances,
-                };
+                {
+                    // TODO: Ugly code cuase it need &mut texture rn. Make it just take &texture.
+                    let WindowRenderState { ref curves, ref mut surface, ref mut texture, .. } = *windowstate;
 
-                renderer.draw(&drawable, &atlas, &windowstate.storage);
+                    let drawable = render::DrawableGeometry {
+                        source: &[vertices],
+                        instances: &curves.instances,
+                    };
 
-                renderer.blit(&windowstate.surface, &windowstate.storage);
-                renderer.swap(&windowstate.surface);
+                    renderer.draw(&drawable, &atlas, texture);
+
+                    surface.blit(&renderer.gp, texture);
+                    surface.swap(&renderer.gp);
+
+                }
 
             },
 
@@ -359,8 +365,8 @@ pub enum Action<'a> {
 
 struct AppRenderState {
     shaper: render::GeometryShaper,
-    renderer: render::GlRenderer,
-    atlas: render::GlTextureAtlas,
+    renderer: render::Renderer,
+    atlas: render::TextureAtlas,
 }
 
 struct WindowRenderState {
@@ -369,8 +375,8 @@ struct WindowRenderState {
     vertices: RenderStateVertices,
     curves: RenderStateCurves,
     // Surface/Storage:
-    storage: render::GlRenderStorage,
-    surface: render::GlSurface,
+    texture: graphics::Texture,
+    surface: graphics::Surface,
 }
 
 impl WindowRenderState {

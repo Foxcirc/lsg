@@ -2,13 +2,16 @@
 #![allow(unexpected_cfgs)]
 
 // #[cfg(all(target_family = "wasm", feature = "import"))] mod browser;
-mod browser;
+// mod browser;
 
-#[cfg(all(target_os = "linux", not(feature = "import")))] mod linux;
-#[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend;
+// #[cfg(all(target_os = "linux", not(feature = "import")))] mod linux;
+// #[cfg(all(target_os = "linux", not(feature = "import")))] use linux as backend;
 
-#[cfg(any(feature = "import", feature = "export"))] pub mod ffi;
-#[cfg(feature = "import")] use ffi::backend as backend;
+mod linux;
+use linux as backend;
+
+// #[cfg(any(feature = "import", feature = "export"))] pub mod ffi;
+// #[cfg(feature = "import")] use ffi::import as backend;
 
 // For rust-analyzer compatibility while developing:
 // #[cfg(lsp)] mod linux; TODO: make the backends "self contained" so that they dont rely on the fact the "backend" is themselves.

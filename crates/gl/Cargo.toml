@@ -5,13 +5,6 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
-[features]
-load = ["wayland-egl", "egl"]
-
 [dependencies]
 common = { path = "../common" }
 gl = "0.14.0"
-
-# EGL Libraries:
-wayland-egl = { version = "0.32.0", optional = true } # TODO: make optional, only needed on linux (wayland)
-egl = { package = "khronos-egl", version = "6.0.0", features = ["dynamic"], optional = true } # TODO: static vs dynamic?

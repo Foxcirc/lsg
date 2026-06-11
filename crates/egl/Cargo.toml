@@ -1,0 +1,16 @@
+[package]
+name = "egl"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+
+# Base EGL libraries:
+egl = { package = "khronos-egl", version = "6.0.0", features = ["dynamic"] }
+
+# On Linux, we aditionally need to include the wayland bridge:
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-egl = { version = "0.32.0" }

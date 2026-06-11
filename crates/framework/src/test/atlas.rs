@@ -1,4 +1,5 @@
 
+/*
 use common::{IsSurface, LogicalPoint, LogicalSize, PhysicalPoint, PhysicalSize, Shape};
 use desktop::{Event, WindowEvent};
 use futures_lite::future::block_on;
@@ -16,8 +17,8 @@ pub fn atlas() -> Result<(), Box<dyn std::error::Error>> {
 
 fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
-    let mut renderer = render::GlRenderer::new(&*evl)?;
-    let mut atlas = render::GlTextureAtlas::new(&renderer);
+    let mut renderer = render::Renderer::new(&*evl)?;
+    let mut atlas = render::TextureAtlas::new(&renderer);
 
     let window = desktop::Window::new(&evl);
     window.sizehint(PhysicalSize::quad(250));
@@ -83,3 +84,4 @@ fn app(evl: Arc<desktop::EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 
 }
+*/

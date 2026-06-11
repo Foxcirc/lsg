@@ -7,6 +7,7 @@ edition.workspace = true
 [dependencies]
 # lsg-family dependencies
 common = { path = "../common" }
-gl = { path = "../gl", features = ["load"] }
+# gl = { path = "../gl" }
+graphics = { path = "../graphics" }
 # bitvecs
 bv = "0.11.1"

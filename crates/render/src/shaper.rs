@@ -65,15 +65,15 @@ impl VertexGeometry {
     }
 }
 
-pub struct SingularData {
-    pub vertices: gl::AttribVec,
-}
+// pub struct SingularData {
+//     pub vertices: Vec<u8>,
+// }
 
-pub struct InstancedData {
-    pub vertices:  gl::AttribVec,
-    pub instances: gl::AttribVec,
-    pub commands:  Vec<gl::DrawArraysIndirectCommand>,
-}
+// pub struct InstancedData {
+//     pub vertices:  gl::AttribVec,
+//     pub instances: gl::AttribVec,
+//     pub commands:  Vec<gl::DrawArraysIndirectCommand>,
+// }
 
 pub struct GeometryShaper {
     lower: LoweringPass,
