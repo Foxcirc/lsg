@@ -11,10 +11,8 @@ pub mod definitions {
 
     use crate::ffi::types::*;
 
-    #[allow(improper_ctypes)]
+    #[allow(improper_ctypes)] // We use zero sized structs behind pointers which is fine.
     unsafe extern "C" {
-
-        // pub fn evl_handlers_default() -> EvlHandlers;
 
         pub fn event_loop_run(
             config0: EventLoopConfig,

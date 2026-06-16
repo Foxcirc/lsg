@@ -12,23 +12,19 @@ use gl as backend;
 // #[cfg(feature = "import")] use ffi::import as backend;
 
 use common::*;
-use std::{fmt, marker::PhantomData};
+use std::{fmt, marker::PhantomData, rc::Rc};
 
 pub struct Graphics {
     backend: backend::GraphicsBackend,
     _marker: PhantomData<*const ()> // We need !Send.
 }
 
-// TODO: If this is not a huge inconvenience (e.g. with async-executors that require their future to be Send),
-//       I want it to make so "Graphics" binds a single context when it is created. This is why I made it !Send for now,
-//       since it would need to bind again when on a different thread...
-
 impl Graphics {
-    pub fn new<D: IsDisplay>(display: &D) -> Result<Self, GraphicsError> {
-        Ok(Self {
+    pub fn new<D: IsDisplay>(display: &D) -> Result<Rc<Self>, GraphicsError> {
+        Ok(Rc::new(Self {
             backend: backend::GraphicsBackend::new(display)?,
             _marker: PhantomData
-        })
+        }))
     }
 }
 
@@ -37,13 +33,14 @@ pub struct Program {
 }
 
 impl Program {
-    pub fn new(gp: &Graphics, shaders: &[Source]) -> Result<Self, GraphicsError> {
-        Ok(Self { backend: backend::ProgramBackend::new(&gp, shaders)? })
-    }
-    #[cfg(target_os = "linux")]
     #[track_caller]
-    pub fn uniformloc(&self, gp: &crate::Graphics, name: &str) -> crate::Location {
-        self.backend.uniformloc(gp, name)
+    pub fn new(gp: &Graphics, shaders: &[Source]) -> Self {
+        Self { backend: backend::ProgramBackend::new(&gp, shaders) }
+    }
+    #[cfg(any(target_os = "linux", target_family = "wasm"))]
+    #[track_caller]
+    pub fn uniformloc(&mut self, name: &str) -> crate::Location {
+        self.backend.uniformloc(name)
     }
 }
 
@@ -57,12 +54,16 @@ pub struct Surface {
 
 impl Surface {
 
-    pub fn new<S: IsSurface>(gp: &Graphics, window: &S) -> Self {
+    pub fn new<S: IsSurface>(gp: &Rc<Graphics>, window: &S) -> Self {
         Self { backend: backend::SurfaceBackend::new(&gp, window )}
     }
 
-    pub fn resize(&mut self, gp: &Graphics, size: PhysicalSize) {
-        self.backend.resize(&gp, size);
+    pub fn resize(&mut self, size: PhysicalSize) {
+        self.backend.resize(size);
+    }
+
+    pub fn draw<'a>(&mut self, cmd: crate::DrawCommand<'a>) {
+        self.backend.draw(cmd);
     }
 
     /// Blit all contents from the texture onto the surface.
@@ -70,41 +71,16 @@ impl Surface {
     /// # Panics
     /// The sizes of the `Texture` and `self` have to be equal.
     #[track_caller]
-    pub fn blit(&mut self, gp: &Graphics, texture: &Texture) {
-        self.backend.blit(gp, texture);
+    pub fn blit(&mut self, texture: &Texture) {
+        self.backend.blit(texture);
     }
 
     /// Swap the buffers and make changes visible to the user.
-    pub fn swap(&mut self, gp: &crate::Graphics) {
-        self.backend.swap(gp);
+    pub fn swap(&mut self) {
+        self.backend.swap();
     }
 
 }
-
-// /// An "offscreen" render storage backed by a texture, which can be rendered to.
-// pub struct RenderStorage {
-//     backend: backend::RenderStorageBackend
-// }
-
-// impl RenderStorage {
-//     pub fn new(i: &Graphics, size: PhysicalSize) -> Self {
-//         Self { backend: backend::RenderStorageBackend::new(&i, size) }
-//     }
-//     pub fn texture(&self) -> &Texture {
-//         self.backend.texture()
-//     }
-//     pub fn resize(&mut self, gp: &Graphics, size: PhysicalSize) {
-//         self.backend.resize(&gp, size);
-//     }
-//     pub fn clear(&mut self, gp: &Graphics, values: [f32; 4]) {
-//         self.backend.clear(gp, values);
-//     }
-//     /// Copy the data from the GPU over to the CPU.
-//     /// The color format is RGBA-8.
-//     pub fn inspect(&mut self, gp: &Graphics) -> Vec<u8> {
-//         self.backend.inspect(&gp)
-//     }
-// }
 
 /// A 2D, RGBA-8 texture.
 pub struct Texture {
@@ -116,31 +92,31 @@ impl Texture {
         backend::TextureBackend::maxsize(&gp)
     }
     /// You can provide `None` for `data`, if you only want to define and allocate the texture.
-    pub fn new(gp: &Graphics, size: PhysicalSize, data: Option<&[u8]>) -> Self {
+    pub fn new(gp: &Rc<Graphics>, size: PhysicalSize, data: Option<&[u8]>) -> Self {
         Self { backend: backend::TextureBackend::new(&gp, size, data) }
     }
     pub fn size(&self) -> PhysicalSize {
         self.backend.size()
     }
-    pub fn resize(&mut self, gp: &Graphics, size: PhysicalSize, data: Option<&[u8]>) {
-        self.backend.resize(&gp, size, data)
+    pub fn resize(&mut self, size: PhysicalSize, data: Option<&[u8]>) {
+        self.backend.resize(size, data)
     }
-    pub fn clear(&mut self, gp: &crate::Graphics, values: [f32; 4]) {
-        self.backend.clear(gp, values)
+    pub fn clear(&mut self, values: [f32; 4]) {
+        self.backend.clear(values)
     }
-    pub fn inspect(&mut self, gp: &Graphics) -> Vec<u8> {
-        self.backend.inspect(&gp)
-    }
-    #[track_caller]
-    pub fn frombuf(&mut self, gp: &Graphics, src: &[u8], dstrect: PhysicalRect) {
-        self.backend.frombuf(&gp, src, dstrect)
+    pub fn inspect(&mut self) -> Vec<u8> {
+        self.backend.inspect()
     }
     #[track_caller]
-    pub fn fromtex(&mut self, gp: &Graphics, src: &Texture, srcrect: PhysicalRect, destrect: PhysicalRect) {
-        self.backend.fromtex(&gp, &src.backend, srcrect, destrect)
+    pub fn frombuf(&mut self, src: &[u8], dstrect: PhysicalRect) {
+        self.backend.frombuf(src, dstrect)
     }
-    pub fn draw(&mut self, gp: &Graphics, cmd: DrawCommand) {
-        self.backend.draw(gp, cmd)
+    #[track_caller]
+    pub fn fromtex(&mut self, src: &Texture, srcrect: PhysicalRect, destrect: PhysicalRect) {
+        self.backend.fromtex(&src.backend, srcrect, destrect)
+    }
+    pub fn draw(&mut self, cmd: DrawCommand) {
+        self.backend.draw(cmd)
     }
 }
 
@@ -149,19 +125,18 @@ pub struct VertexBuffer {
 }
 
 impl VertexBuffer {
-    pub fn new(gp: &Graphics, layout: &[Attrib]) -> Self {
+    pub fn new(gp: &Graphics, layout: &[VertexAttrib]) -> Self {
         Self { backend: backend::VertexBufferBackend::new(gp, layout) }
     }
-    pub fn frombuf(&mut self, gp: &Graphics, src: &[u8]) {
-        self.backend.frombuf(gp, src);
-    }
-
-    fn vertsize(&self) -> usize {
-        self.backend.vertsize()
+    #[track_caller]
+    pub fn frombuf(&mut self, src: &[u8]) {
+        self.backend.frombuf(src);
     }
 }
 
-pub struct Attrib {
+#[derive(Clone)]
+#[repr(C)]
+pub struct VertexAttrib {
     pub kind: AttribKind,
     pub count: usize,
     pub divisor: Divisor,
@@ -169,16 +144,18 @@ pub struct Attrib {
 }
 
 /// The default attrib is a `F32, count(1), per-vertex, location(0)`.
-impl Default for Attrib {
+impl Default for VertexAttrib {
     fn default() -> Self {
         Self { kind: AttribKind::F32, count: 1, divisor: Divisor::PERVERTEX, loc: Location(0) }
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Location(pub usize);
 
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Divisor(pub usize);
 
 impl Divisor {
@@ -186,6 +163,8 @@ impl Divisor {
     pub const PERINSTANCE: Self = Self(1);
 }
 
+#[derive(Clone, Copy)]
+#[repr(u8)]
 pub enum AttribKind {
     F32,
     U32,
@@ -196,45 +175,54 @@ pub enum AttribKind {
     I8
 }
 
+#[derive(Clone, Copy)]
 pub struct Source<'a> {
     pub kind: SourceKind,
     pub data: &'a str,
 }
 
+#[derive(Clone, Copy)]
+#[repr(u8)]
 pub enum SourceKind {
     Vertex,
     Fragment
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
+#[repr(C)]
 pub struct DrawOptions {
     pub primitive: Primitive,
     pub blend: BlendMode,
     pub polygon: PolygonMode
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
+#[repr(u8)]
 pub enum Primitive {
     Triangles
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
+#[repr(u8)]
 pub enum BlendMode {
     None,
     OrderedTransparency
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
+#[repr(u8)]
 pub enum PolygonMode {
     Filled,
     Outline
 }
 
+#[derive(Clone, Copy)]
 pub struct TextureAttrib<'a> {
     pub src: &'a Texture,
     pub sampler: crate::Location,
 }
 
+#[derive(Clone, Copy)]
 pub struct DrawCommand<'a> {
     pub src: &'a VertexBuffer,
     pub program: &'a Program,
@@ -242,7 +230,7 @@ pub struct DrawCommand<'a> {
     pub options: &'a DrawOptions
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GraphicsError {
     msg: String,
 }
@@ -258,17 +246,5 @@ impl std::error::Error for GraphicsError {}
 impl From<egl::LoadError> for GraphicsError {
     fn from(value: egl::LoadError) -> Self {
         Self { msg: format!("egl call failed, {}", value) }
-    }
-}
-
-impl From<::gl::ShaderError> for GraphicsError {
-    fn from(value: ::gl::ShaderError) -> Self {
-        Self { msg: format!("gl shader compilation failed, {}", value) }
-    }
-}
-
-impl From<::gl::LinkError> for GraphicsError {
-    fn from(value: ::gl::LinkError) -> Self {
-        Self { msg: format!("gl program linking failed, {}", value) }
     }
 }

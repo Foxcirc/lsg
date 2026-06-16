@@ -4,14 +4,18 @@
 import { Glue } from "./glue.js";
 import * as desktop from "./desktop.js";
 import * as futures from "./futures.js";
+import * as graphics from "./graphics.js";
+
+const mainWindow = document.getElementById("mainWindow");
 
 const glue = new Glue();
 
-const desktopEnv = desktop.newEnv(glue);
-const futuresEnv = futures.newEnv(glue);
-
 const wasm = await WebAssembly.instantiateStreaming(fetch("showcase.wasm"), {
-  env: { ...desktopEnv, ...futuresEnv }
+  env: {
+    ...desktop.newEnv(glue, mainWindow),
+    ...futures.newEnv(glue),
+    ...graphics.newEnv(glue)
+  }
 } );
 
 glue.init(wasm.instance);

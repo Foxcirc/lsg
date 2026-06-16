@@ -1,5 +1,5 @@
 
-use std::{cmp::Ordering::Greater, error::Error as StdError, fmt, iter::{repeat, zip}, ops::Range};
+use std::{error::Error as StdError, fmt, iter::{repeat, zip}, ops::Range, rc::Rc};
 
 use common::*;
 
@@ -198,7 +198,7 @@ impl TextureAtlas {
     pub fn upload(&mut self, renderer: &Renderer, source: &impl GlWriteToAtlas, size: PhysicalSize) -> TextureIndex  {
 
         let (index, rect) = self.alloc(renderer, size);
-        source.write(&renderer.gp, &mut self.texture, rect);
+        source.write(&mut self.texture, rect);
 
         index
 
@@ -242,18 +242,18 @@ impl TextureAtlas {
 
     /// Overwrite the same texture with a new image of the same size.
     #[track_caller]
-    pub fn update(&mut self, renderer: &Renderer, index: TextureIndex, source: impl GlWriteToAtlas) {
+    pub fn update(&mut self, index: TextureIndex, source: impl GlWriteToAtlas) {
 
         let orig = self.entries[self.mapping[index.inner as usize] as usize].rect;
-        source.write(&renderer.gp, &mut self.texture, orig);
+        source.write(&mut self.texture, orig);
 
     }
 
     /// Copy the atlas' texture from the GPU over to the CPU.
     ///
     /// The color format is RGBA-8.
-    pub fn inspect(&mut self, renderer: &Renderer) -> Vec<u8> {
-        self.texture.inspect(&renderer.gp)
+    pub fn inspect(&mut self) -> Vec<u8> {
+        self.texture.inspect()
     }
 
     /// Get the texture coordinates for a specific index relative
@@ -310,7 +310,7 @@ impl TextureAtlas {
             let newpos = layout.advance(entry.rect.size)
                 .expect("layout must be valid, since the new entry was not added yet");
             // Copy from the original rect, still stored in the rect to the new position `newpos`.
-            new.fromtex(&renderer.gp, &self.texture, entry.rect, PhysicalRect::new(newpos, entry.rect.size));
+            new.fromtex(&self.texture, entry.rect, PhysicalRect::new(newpos, entry.rect.size));
             // Make sure to update the position of the entry accordingly.
             entry.rect.pos = newpos;
         }
@@ -328,21 +328,21 @@ impl TextureAtlas {
 
 pub trait GlWriteToAtlas {
     /// The OpenGL context will be bound.
-    fn write(&self, gp: &graphics::Graphics, target: &mut graphics::Texture, dstrect: PhysicalRect);
+    fn write(&self, target: &mut graphics::Texture, dstrect: PhysicalRect);
 }
 
 impl GlWriteToAtlas for [u8] {
     #[track_caller]
-    fn write(&self, gp: &graphics::Graphics, target: &mut graphics::Texture, dstrect: PhysicalRect) {
+    fn write(&self, target: &mut graphics::Texture, dstrect: PhysicalRect) {
         // Write ourself to the texture at `dstrect`.
-        target.frombuf(gp, self, dstrect);
+        target.frombuf(self, dstrect);
     }
 }
 
 impl GlWriteToAtlas for graphics::Texture {
     #[track_caller]
-        fn write(&self, gp: &graphics::Graphics, target: &mut graphics::Texture, dstrect: PhysicalRect) {
-        target.fromtex(gp, self, PhysicalRect::new(PhysicalPoint::ZERO, dstrect.size), dstrect);
+        fn write(&self, target: &mut graphics::Texture, dstrect: PhysicalRect) {
+        target.fromtex(self, PhysicalRect::new(PhysicalPoint::ZERO, dstrect.size), dstrect);
         // original: gl::copy_tex_sub_image_2d((&self.fbo, PhysicalPoint::ZERO), (&target, rect.pos), rect.size);
     }
 }
@@ -398,9 +398,9 @@ pub struct DrawableGeometry<'a> {
     pub instances: &'a [Instance],
 }
 
-struct SingularData {
-    vbuf: graphics::VertexBuffer,
-}
+// struct SingularData {
+//     vbuf: graphics::VertexBuffer,
+// }
 
 // struct InstancedData {
 //     vao: gl::VertexArray,
@@ -411,7 +411,7 @@ struct SingularData {
 
 /// The builtin curve renderer.
 pub struct Renderer {
-    pub gp: graphics::Graphics,
+    pub gp: Rc<graphics::Graphics>,
     vbuf: graphics::VertexBuffer,
     vraw: Vec<u8>,
     program: graphics::Program,
@@ -431,18 +431,18 @@ impl Renderer {
         const VERT: &str = include_str!("shader/curve.vert");
         const FRAG: &str = include_str!("shader/curve.frag");
 
-        let program  = graphics::Program::new(&gp, &[
+        let mut program  = graphics::Program::new(&gp, &[
             graphics::Source { kind: graphics::SourceKind::Vertex,   data: VERT },
             graphics::Source { kind: graphics::SourceKind::Fragment, data: FRAG },
-        ]).expect("shader compilation failed");
-
-        let vbuf = graphics::VertexBuffer::new(&gp, &[
-            graphics::Attrib { kind: graphics::AttribKind::U16, ..Default::default() },
-            graphics::Attrib { kind: graphics::AttribKind::I32, ..Default::default() },
-            graphics::Attrib { kind: graphics::AttribKind::U32, ..Default::default() },
         ]);
 
-        let samplerloc = program.uniformloc(&gp, "atlas");
+        let vbuf = graphics::VertexBuffer::new(&gp, &[
+            graphics::VertexAttrib { kind: graphics::AttribKind::U16, ..Default::default() },
+            graphics::VertexAttrib { kind: graphics::AttribKind::I32, ..Default::default() },
+            graphics::VertexAttrib { kind: graphics::AttribKind::U32, ..Default::default() },
+        ]);
+
+        let samplerloc = program.uniformloc("atlas");
 
         // let singular = {
         //     let vdata = gl::gen_buffer(gl::BufferType::Array);
@@ -634,7 +634,7 @@ impl Renderer {
         //     gl::draw_arrays(target, &self.program, &self.singular.vao, gl::Primitive::Triangles, 0, len / 10);
         // }
 
-        self.vbuf.frombuf(&self.gp, &self.vraw);
+        self.vbuf.frombuf(&self.vraw);
 
         let options = graphics::DrawOptions {
             primitive: graphics::Primitive::Triangles,
@@ -653,7 +653,7 @@ impl Renderer {
             options: &options
         };
 
-        target.draw(&self.gp, cmd);
+        target.draw(cmd);
 
         // // render all instanced shapes
         // let r = &result.instanced;

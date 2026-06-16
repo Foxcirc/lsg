@@ -20,16 +20,16 @@ import { NullPointerError } from "./glue.js";
   helpers: any,
   events: { kind: string }[],
   currentWakerPtr: WasmPtr,
+  canvas: HTMLCanvasElement,
 }} EvlObject */
 
 /** @typedef {{
   kind: "Window",
   evlObject: EvlObject,
-  target: HTMLElement | null,
+  targetElement: HTMLElement,
   scale: number,
   animationFrameRequested: boolean,
-  resizeObserver: ResizeObserver | null,
-  listeners: object,
+  resizeObserver: ResizeObserver,
 }} WindowObject */
 
 // =====================================================
@@ -104,8 +104,9 @@ export const ScrollAxis = Object.freeze({
 // =====================================================
 
 /** @param {Glue} glue  */
-export function newEnv(glue) {
+export function newEnv(glue, targetElement) {
 
+  const alreadyInitialized = Symbol(); // Used on `targetElement`
   const helpers = newHelpers(glue);
 
   return {
@@ -132,14 +133,13 @@ export function newEnv(glue) {
         currentWakerPtr: null,
       };
 
-      // Enqueue initial event handlers.
+      // Setup event handlers for global events.
       addEventListener("visibilitychange", () => {
         const hidden = document.hidden;
-        if (hidden) pushEvent(evlObject, { kind: "Suspend" });
-        else        pushEvent(evlObject, { kind: "Resume"  });
+        if (hidden) newEvent(evlObject, { kind: "Suspend" });
+        else        newEvent(evlObject, { kind: "Resume"  });
       });
 
-      // Allocate a handle to our object.
       const evlHandle = glue.allocHandle("EventLoop", evlObject);
 
       // Call the rust callback.
@@ -221,19 +221,19 @@ export function newEnv(glue) {
     event_loop_suspend(evlHandle) {
       /** @type {EvlObject} */
       const evlObject = glue.getHandle(evlHandle);
-      pushEvent(evlObject, { kind: "Suspend" });
+      newEvent(evlObject, { kind: "Suspend" });
     },
 
     event_loop_resume(evlHandle) {
       /** @type {EvlObject} */
       const evlObject = glue.getHandle(evlHandle);
-      pushEvent(evlObject, { kind: "Resume" });
+      newEvent(evlObject, { kind: "Resume" });
     },
 
     event_loop_quit(evlHandle) {
       /** @type {EvlObject} */
       const evlObject = glue.getHandle(evlHandle);
-      pushEvent(evlObject, {
+      newEvent(evlObject, {
         kind: "Quit",
         reason: types.QuitReason.Program
       });
@@ -364,105 +364,23 @@ export function newEnv(glue) {
     },
 
     window_new(evlHandle) {
-      /** @type {evlObject} */
+
+      /** @type {EvlObject} */
       const evlObject = glue.getHandle(evlHandle);
-      return glue.allocHandle("Window", {
-        evlObject,
-        target: null,
-        animationFrameRequested: false,
-        resizeObserver: null,
-        listeners: {},
-      });
-    },
 
-    // This function sets the target element for this window.
-    window_bind(wndHandle, textPtr) {
-
-      /** @type {WindowObject} */
-      const wndObject = glue.getHandle(wndHandle);
-      const evlObject = wndObject.evlObject;
-
-      const targetId = glue.readCString(textPtr);
-      const targetElement = document.getElementById(targetId);
-      if (!targetElement) throw new Error("Invalid element ID provided.");
-
-      // Possibly clean up the old element, remove our logic from it.
-
-      const ls = wndObject.listeners;
-      let target = wndObject.target;
-
-      if (target) {
-        target.removeEventListener("focus", ls.focusListener);
-        target.removeEventListener("blur",  ls.blurListener);
-        target.removeEventListener("mouseenter", ls.mouseEnterListener);
-        target.removeEventListener("mouseleave", ls.mouseLeaveListener);
-        target.removeEventListener("mousemove",  ls.mouseMoveListener);
-        target.removeEventListener("mousedown",  ls.mouseDownListener);
-        target.removeEventListener("mouseup",    ls.mouseUpListener);
-        target.removeEventListener("wheel",      ls.mouseScrollListener);
-        target.removeEventListener("keydown",    ls.keyDownListener);
-        target.removeEventListener("keyup",      ls.keyUpListener);
+      // Prevent this being called twice:
+      if (targetElement[alreadyInitialized]) {
+        throw new Error("`Window` can only be created once");
+      } else {
+        targetElement[alreadyInitialized] = true;
       }
 
-      // Setup the new element.
+      // Setup our `targetElement` for rendering and events.
 
-      wndObject.target = targetElement; // Transitively updates `target`.
-      target = wndObject.target;
-
-      // This makes `target` focusable and able to receive key events.
-      if (!target.tabIndex) {
-        target.tabIndex = 0
-      }
-
-      // We track keyboard focus.
-      ls.evntFocusListener = () => pushEvent(evlObject, { kind: "WindowEnter", wndHandle });
-      ls.evntBlurListener  = () => pushEvent(evlObject, { kind: "WindowLeave", wndHandle });
-      target.addEventListener("focus", ls.focusListener);
-      target.addEventListener("blur",  ls.blurListener);
-
-      // We track mouse focus.
-      ls.mouseEnterListener = () => pushEvent(evlObject, { kind: "WindowMouseEnter", wndHandle });
-      ls.mouseLeaveListener = () => pushEvent(evlObject, { kind: "WindowMouseLeave", wndHandle });
-      target.addEventListener("mouseenter", ls.mouseEnterListener);
-      target.addEventListener("mouseleave", ls.mouseLeaveListener);
-
-      // We track mouse movement, buttons and scrolling.
-      ls.mouseMoveListener   = (event) => pushEvent(evlObject, newMouseMotionEvent(wndHandle, event));
-      ls.mouseDownListener   = (event) => pushEvent(evlObject, newMouseButtonEvent(wndHandle, event, "Down"));
-      ls.mouseUpListener     = (event) => pushEvent(evlObject, newMouseButtonEvent(wndHandle, event, "Up"));
-      ls.mouseScrollListener = (event) => pushEvent(evlObject, newMouseScrollEvent(wndHandle, event));
-      target.addEventListener("mousemove", ls.mouseMoveListener);
-      target.addEventListener("mousedown", ls.mouseDownListener);
-      target.addEventListener("mouseup", ls.mouseUpListener);
-      target.addEventListener("wheel", ls.mouseScrollListener);
-
-      // We track key events.
-      target.keyDownListener = (event) => pushEvent(evlObject, newKeyDownEvent(wndHandle, event));
-      target.keyUpListener   = (event) => pushEvent(evlObject, newKeyUpEvent(wndHandle, event));
-      target.addEventListener("keydown", ls.keyDownListener);
-      target.addEventListener("keyup",   ls.keyUpListener);
-
-      // We listen for resize of the element.
-      wndObject.resizeObserver = new ResizeObserver((entries) => {
-        console.assert(entries.length === 1);
-        const [entry] = entries;
-        // React to resize.
-        const fullscreen = document.fullscreenElement === entry.target;
-        const w = entry.contentRect.width;
-        const h = entry.contentRect.height;
-        pushEvent(evlObject, { kind: "WindowResize", wndHandle, w, h, fullscreen });
-        // React to scale change. (Will be consumed before the resize event!)
-        const scale = window.devicePixelRatio;
-        if (wndObject.scale !== scale) {
-          wndObject.scale = scale;
-          pushEvent(evlObject, { kind: "WindowRescale", wndHandle, scale });
-        }
-      });
-
-      wndObject.resizeObserver.observe(wndObject.target);
-
-      // We never use decorations on WASM.
-      pushEvent(evlObject, { kind: "WindowDecorations", enabled: false });
+      return glue.allocHandle(
+        "Window",
+        setupWindowForElement(glue, evlObject, targetElement)
+      );
 
     },
 
@@ -854,10 +772,83 @@ function newKeyDownEvent(wndHandle, event) {
  * @param {EvlObject} evlObject
  * @param {any} event
  */
-function pushEvent(evlObject, event) {
+function newEvent(evlObject, event) {
   evlObject.events.push(event);
   // We might push an event before the event loop has be polled
   // for the first time. In this case there is nothing to wake.
   if (evlObject.currentWakerPtr)
     evlObject.helpers.wakerWake(evlObject.currentWakerPtr);
+}
+
+/**
+ * @param {Glue} glue
+ * @param {EvlObject} evlObject
+ * @param {HTMLDivElement} targetElement
+ * @returns {WindowObject}
+ */
+function setupWindowForElement(glue, evlObject, targetElement) {
+  // TODO: maybe remove glue   ^^^^
+
+  const wndObject = {
+    evlObject,
+    targetElement,
+    scale: 1.0,
+    animationFrameRequested: false,
+    // resizeObserver: filled in later,
+  };
+
+  // Setup the target element.
+
+  wndObject.targetElement = targetElement;
+  const el = wndObject.targetElement;
+
+  // This makes `target` focusable and able to receive key events.
+  if (!el.tabIndex) {
+    el.tabIndex = 0
+  }
+
+  // We track keyboard focus.
+  el.addEventListener("focus", () => newEvent(evlObject, { kind: "WindowEnter", wndHandle }));
+  el.addEventListener("blur",  () => newEvent(evlObject, { kind: "WindowLeave", wndHandle }));
+
+  // We track mouse focus.
+  el.addEventListener("mouseenter", () => newEvent(evlObject, { kind: "WindowMouseEnter", wndHandle }));
+  el.addEventListener("mouseleave", () => newEvent(evlObject, { kind: "WindowMouseLeave", wndHandle }));
+
+  // We track mouse movement, buttons and scrolling.
+  el.addEventListener("mousemove", (event) => newEvent(evlObject, newMouseMotionEvent(wndHandle, event)));
+  el.addEventListener("mousedown", (event) => newEvent(evlObject, newMouseButtonEvent(wndHandle, event, "Down")));
+  el.addEventListener("mouseup",   (event) => newEvent(evlObject, newMouseButtonEvent(wndHandle, event, "Up")));
+  el.addEventListener("wheel",     (event) => newEvent(evlObject, newMouseScrollEvent(wndHandle, event)));
+
+  // We track key events.
+  el.addEventListener("keydown", (event) => newEvent(evlObject, newKeyDownEvent (wndHandle, event)));
+  el.addEventListener("keyup",   (event) => newEvent(evlObject, newKeyUpEvent   (wndHandle, event)));
+
+  // We listen for resize of the element.
+  wndObject.resizeObserver = new ResizeObserver((entries) => {
+
+    const [entry] = entries;
+
+    // Resize our canvas and emit an event.
+    const fullscreen = document.fullscreenElement === entry.target;
+    const w = entry.contentRect.width;
+    const h = entry.contentRect.height;
+    evlObject.canvas.width  = w;
+    evlObject.canvas.height = h;
+    newEvent(evlObject, { kind: "WindowResize", wndHandle, w, h, fullscreen });
+
+    // React to scale change. (Will be consumed before the resize event!)
+    const scale = window.devicePixelRatio;
+    if (wndObject.scale !== scale) {
+      wndObject.scale = scale;
+      newEvent(evlObject, { kind: "WindowRescale", wndHandle, scale });
+    }
+  });
+
+  wndObject.resizeObserver.observe(wndObject.targetElement);
+
+  // We never use decorations on WASM.
+  newEvent(evlObject, { kind: "WindowDecorations", enabled: false });
+
 }

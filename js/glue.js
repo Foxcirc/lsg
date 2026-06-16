@@ -95,45 +95,45 @@ export class Glue {
   // BASIC HELPERS
   // =====================================================
 
-  /** @param   {number} ptr
-    * @returns {number} */
+  /** @param   {WasmPtr} ptr
+    * @returns {WasmPtr} */
   readU8(ptr) {
     this.refreshMemoryViews();
     return this.viewU8[ptr];
   }
 
-  /** @param   {number} ptr
-    * @returns {number} */
+  /** @param   {WasmPtr} ptr
+    * @returns {WasmPtr} */
   readU16(ptr) {
     this.refreshMemoryViews();
     let idx = ptr >>> 1; // = dividing by 2
     return this.viewU16[ptr];
   }
 
-  /** @param   {number} ptr
-    * @returns {number} */
+  /** @param   {WasmPtr} ptr
+    * @returns {WasmPtr} */
   readI16(ptr) {
     this.refreshMemoryViews();
     let idx = ptr >>> 1; // = dividing by 2
     return this.viewI16[idx];
   }
 
-  /** @param   {number} ptr
-    * @returns {number} */
+  /** @param   {WasmPtr} ptr
+    * @returns {WasmPtr} */
   readU32(ptr) {
     this.refreshMemoryViews();
     let idx = ptr >>> 2; // = dividing by 4
     return this.viewU32[idx];
   }
 
-  /** @param   {number} ptr
+  /** @param   {WasmPtr} ptr
     * @returns {boolean} */
   readBool(ptr) {
     const v = this.readU8(ptr);
     return v !== 0;
   }
 
-  /** @param {number} ptr
+  /** @param {WasmPtr} ptr
     * @returns {string} */
   readCString(ptr) {
     this.refreshMemoryViews();
@@ -144,15 +144,41 @@ export class Glue {
     return decoder.decode(subView);
   }
 
-    /**
-     * @param {number} ptr
-     * @param {number} value
-     */
-    writeU16(ptr, value) {
-      this.refreshMemoryViews();
-      let idx = ptr >>> 1; // = dividing by 2
-      this.viewU16[idx] = value;
+  /**
+   * @param {WasmPtr} ptr
+   * @returns {{ ptr: WasmPtr, len: number }}
+   */
+  readSliceHeader(ptr) {
+      // We expect all slice structs have a layout like this:
+      const ptr = this.readU32(ptr + 0); // "ptr" field (*const T)
+      const len = this.readU32(ptr + 4); // "len" field (usize)
+      return { ptr, len };
+  }
+
+  /**
+   * @param {WasmPtr} ptr
+   * @param {(WasmPtr) => any} readElem
+   * @param {number} elemSize
+   * @returns {any[]}
+   */
+  readSliceOf(ptr, readElem, elemSize) {
+    const header = this.readSliceHeader(ptr);
+    let buf = [];
+    for (let offset = 0; offset <= header.len * elemSize; offset += elemSize) {
+      buf.push(readElem(ptr + offset));
     }
+    return buf
+  }
+
+  /**
+    * @param {number} ptr
+    * @param {number} value
+    */
+  writeU16(ptr, value) {
+    this.refreshMemoryViews();
+    let idx = ptr >>> 1; // = dividing by 2
+    this.viewU16[idx] = value;
+  }
 
 }
 

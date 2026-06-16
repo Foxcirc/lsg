@@ -69,20 +69,20 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             instances: &instances,
                         };
 
-                        storage.clear(&renderer.gp, [0.0, 0.0, 0.0, 1.0]);
+                        storage.clear([0.0, 0.0, 0.0, 1.0]);
 
                         window.present();
                         renderer.draw(&drawable, &atlas, &mut storage);
 
-                        surface.blit(&renderer.gp, &mut storage);
-                        surface.swap(&renderer.gp);
+                        surface.blit(&mut storage);
+                        surface.swap();
 
                     },
 
                     WindowEvent::Resize { size, .. } => {
                         println!("got resize event: new size = {size:?}");
-                        storage.resize(&renderer.gp, size, None);
-                        surface.resize(&renderer.gp, size);
+                        storage.resize(size, None);
+                        surface.resize(size);
                     },
 
                     WindowEvent::MouseMotion { point } => {

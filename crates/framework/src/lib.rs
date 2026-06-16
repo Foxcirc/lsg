@@ -239,7 +239,8 @@ impl Window {
             // Special events.
 
             WindowEvent::Resize { size, .. } => {
-                windowstate.surface.resize(&appstate.renderer.gp, size);
+                windowstate.surface.resize(size);
+                windowstate.texture.resize(size, None);
             },
 
             WindowEvent::Redraw => {
@@ -282,8 +283,8 @@ impl Window {
 
                     renderer.draw(&drawable, &atlas, texture);
 
-                    surface.blit(&renderer.gp, texture);
-                    surface.swap(&renderer.gp);
+                    surface.blit(texture);
+                    surface.swap();
 
                 }
 
