@@ -141,7 +141,7 @@ struct KeymapSpecificData {
 
 struct PressedKeys {
     min: u32,
-    keys: bv::BitVec,
+    keys: Vec<bool>
 }
 
 impl PressedKeys {
@@ -150,8 +150,8 @@ impl PressedKeys {
         let min = keymap.min_keycode();
         let max = keymap.max_keycode();
         let len = max.raw() - min.raw();
-        let mut keys = bv::BitVec::new();
-        keys.resize(len as u64, false);
+        let mut keys = Vec::new();
+        keys.resize(len as usize, false);
         Self {
             min: min.raw(),
             keys,
@@ -161,7 +161,7 @@ impl PressedKeys {
     pub fn update_key_state(&mut self, key: xkb::Keycode, state: KeyState) {
         let pressed = state == KeyState::Pressed;
         let idx = key.raw() - self.min;
-        self.keys.set(idx as u64, pressed);
+        self.keys[idx as usize] = pressed;
     }
 
     pub fn write_currently_pressed(&self, out: &mut [xkb::Keycode]) -> usize {
@@ -169,7 +169,7 @@ impl PressedKeys {
         let mut written = 0;
 
         for idx in 0..self.keys.len() {
-            if self.keys.get(idx) == true {
+            if self.keys[idx] == true {
                 let keycode = xkb::Keycode::from(self.min + idx as u32);
                 out[written] = keycode;
                 written += 1;

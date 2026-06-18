@@ -6,13 +6,12 @@ authors.workspace = true
 edition.workspace = true
 
 [features]
-export = []
-import = []
+default = []
+import  = []
+browser = ["import"]
+gl      = ["dep:gl", "dep:egl"]
 
 [dependencies]
 common = { path = "../common" }
-gl = { path = "../gl" }
-
-# On following platforms EGL is used to load OpenGL: Linux, Windows, Android
-[target.'cfg(all(not(feature = "import"), any(target_os = "linux", target_os = "windows", target_os = "android")))'.dependencies]
-egl = { path = "../egl" }
+gl = { path = "../gl", optional = true }
+egl = { path = "../egl", optional = true }

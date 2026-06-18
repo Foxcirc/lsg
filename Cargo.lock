@@ -145,7 +145,6 @@ version = "0.1.0"
 dependencies = [
  "async-io",
  "async-signals",
- "bv",
  "common",
  "futures",
  "futures-lite",

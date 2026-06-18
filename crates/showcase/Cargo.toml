@@ -5,6 +5,10 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+browser = ["desktop/browser"]
+
 [dependencies]
-desktop = { path = "../desktop", features = ["import"] }
+desktop = { path = "../desktop" }
 futures = { path = "../futures" }

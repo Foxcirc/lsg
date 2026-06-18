@@ -7,6 +7,14 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+linux = [
+    "desktop/linux",
+    "render/gl",
+    "graphics/gl",
+]
+
 [dependencies]
 common = { path = "../common" }
 
@@ -19,6 +27,3 @@ widget = { path = "../widget" }
 
 futures-lite = "2.6.1"
 async-executor = "1.13.3"
-
-[target.'cfg(target_family = "wasm")'.dependencies]
-desktop = { path = "../desktop", features = ["import"] }

@@ -1,48 +1,48 @@
 
-// @ts-check
+import type { Glue, WasmPtr } from "./glue";
 
 // =====================================================
 // TYPEDEFS
 // =====================================================
 
-/** @import { Glue, WasmPtr } from "./glue.js" */
+export interface Task {
+  shouldBeQueued: boolean;
+  wasDropped: boolean;
+  pollFn: () => void;
+}
 
-/** @typedef {number} WasmPtr */
-/** @typedef {ReturnType<typeof newHelpers>} Helpers */
-/** @typedef {{
- *   shouldBeQueued: boolean,
- *   wasDropped: boolean,
- *   pollFn: () => void
-}} Task */
+export interface FutureVTable {
+  pollFnPtr: WasmPtr;
+  dropFnPtr: WasmPtr;
+}
 
 // =====================================================
 // ENUMS
 // =====================================================
 
-const PollResult = Object.freeze({
-  Pending: 0,
-  Ready: 1,
-});
+export enum PollResult {
+  Pending = 0,
+  Ready = 1,
+}
 
 // =====================================================
 // IMPLEMENTATION
 // =====================================================
 
-/** @param {Glue} glue  */
-export function newEnv(glue) {
+export function newEnv(glue: Glue) {
 
-  /** @type {Helpers} */ const helpers = newHelpers(glue);
+  const helpers = newHelpers(glue);
 
-  /** @type {Map<number, Task>} */ const taskMap = new Map();
-  /** @type {number} */            let nextTaskId = 0x1000;
+  const taskMap = new Map<number, Task>();
+  let nextTaskId = 0x1000;
 
   return {
 
-    /** @param {number} state  */
-    waker_wake_browser_handler(state) {
+    waker_wake_browser_handler(state: number) {
       // Get the handler associated with this task's id.
       const task = taskMap.get(state);
       if (!task) throw new Error("invalid taskId");
+
       // Queue it as a microtask to avoid
       // infinitely looping on wakeup inside poll.
       if (task.shouldBeQueued) {
@@ -56,15 +56,12 @@ export function newEnv(glue) {
       }
     },
 
-    /** @param {number} state  */
-    waker_drop_browser_handler(state) {
-      // Cleanup is done immediatly when a
+    waker_drop_browser_handler(_state: number) {
+      // Cleanup is done immediately when a
       // task completes, so this is empty.
     },
 
-    /** @param {WasmPtr} futPtr
-    *  @param {WasmPtr} vtablePtr */
-    spawn(futPtr, vtablePtr) {
+    spawn(futPtr: WasmPtr, vtablePtr: WasmPtr) {
 
       const vtable = helpers.readFutureVTable(vtablePtr);
 
@@ -72,8 +69,7 @@ export function newEnv(glue) {
       const taskId = nextTaskId += 1;
       const wakerPtr = helpers.wakerNewBrowser(taskId);
 
-      /** @type {Task} */
-      let task = {
+      const task: Task = {
 
         shouldBeQueued: true,
         wasDropped: false,
@@ -85,32 +81,29 @@ export function newEnv(glue) {
 
           if (pollResult === PollResult.Ready) {
             // The task is done and we forcefully drop all its data.
-            // We don't wait until WASM releases all it's clones of the waker, since
+            // We don't wait until WASM releases all its clones of the waker, since
             // these clones might only be released when the WASM future is dropped.
             helpers.wakerDrop(wakerPtr);
             taskMap.delete(taskId);
             helpers.callFutureVTableDrop(vtable.dropFnPtr, futPtr);
+
             // This is important, so an already dropped task is not polled,
             // even if it woke itself up in the last poll.
-            this.wasDropped = true;
+            task.wasDropped = true; // Fixed: strictly bound to the closure's `task` reference
           }
-
         }
 
       };
 
-      // Insert and wake up to shedule it.
+      // Store and shedule the task.
       taskMap.set(taskId, task);
       helpers.wakerWake(wakerPtr);
 
     },
-
-  }
-
+  };
 }
 
-/** @param {Glue} glue  */
-function newHelpers(glue) {
+function newHelpers(glue: Glue) {
 
   return {
 
@@ -118,53 +111,35 @@ function newHelpers(glue) {
     // STRUCT READERS
     // =====================================================
 
-    /** @param {WasmPtr} ptr  */
-    readFutureVTable(ptr) {
+    readFutureVTable(ptr: WasmPtr): FutureVTable {
       const pollFnPtr = glue.readU32(ptr + 0);
       const dropFnPtr = glue.readU32(ptr + 4);
-      return { pollFnPtr, dropFnPtr }
+      return { pollFnPtr, dropFnPtr };
     },
 
     // =====================================================
     // CALL HELPERS
     // =====================================================
 
-    /** @param {number} state
-     *  @returns {WasmPtr} */
-    wakerNewBrowser(state) {
-      /** @ts-ignore */
-      return glue.instance.exports.waker_new_browser(state);
+    wakerNewBrowser(state: number): WasmPtr {
+      return glue.exports.waker_new_browser(state);
     },
 
-    /** @param {WasmPtr} waker */
-    wakerWake(waker) {
-      /** @ts-ignore */
-      glue.instance.exports.waker_wake(waker);
+    wakerWake(waker: WasmPtr): void {
+      glue.exports.waker_wake(waker);
     },
 
-    /** @param {WasmPtr} waker */
-    wakerDrop(waker) {
-      /** @ts-ignore */
-      glue.instance.exports.waker_drop_boxed(waker);
+    wakerDrop(waker: WasmPtr): void {
+      glue.exports.waker_drop(waker);
     },
 
-    /** @param {WasmPtr} fnPtr
-    /** @param {WasmPtr} futPtr
-     *  @param {WasmPtr} wakerPtr
-     *  @returns {number} */
-    callFutureVTablePoll(fnPtr, futPtr, wakerPtr) {
-      /** @ts-ignore */
-      return glue.instance.exports.call_future_vtable_poll(fnPtr, futPtr, wakerPtr);
+    callFutureVTablePoll(fnPtr: WasmPtr, futPtr: WasmPtr, wakerPtr: WasmPtr): PollResult {
+      return glue.exports.call_future_vtable_poll(fnPtr, futPtr, wakerPtr) as PollResult;
     },
 
-    /** @param {WasmPtr} fnPtr
-    /** @param {WasmPtr} futPtr
-     *  @returns {number} */
-    callFutureVTableDrop(fnPtr, futPtr) {
-      /** @ts-ignore */
-      return glue.instance.exports.call_future_vtable_drop(fnPtr, futPtr);
+    callFutureVTableDrop(fnPtr: WasmPtr, futPtr: WasmPtr): void {
+      glue.exports.call_future_vtable_drop(fnPtr, futPtr);
     },
-
-  }
+  };
 
 }

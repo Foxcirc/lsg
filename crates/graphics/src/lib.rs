@@ -2,19 +2,20 @@
 //! This crate provides a cross platform native rendering API,
 //! similar to OpenGL but in a more functional style, without binding.
 
-mod gl;
-use gl as backend;
+#[cfg(not(any(feature = "import", feature = "gl")))] mod dummy;
+#[cfg(not(any(feature = "import", feature = "gl")))] use dummy as backend;
 
-// #[cfg(all(target_os = "linux", not(feature = "import")))] mod gl;
-// #[cfg(all(target_os = "linux", not(feature = "import")))] use gl as backend;
+#[cfg(feature = "gl")] mod gl;
+#[cfg(feature = "gl")] use gl as backend;
 
-// #[cfg(any(feature = "import", feature = "export"))] pub mod ffi;
-// #[cfg(feature = "import")] use ffi::import as backend;
+#[cfg(feature = "import")] pub mod ffi;
+#[cfg(feature = "import")] use ffi::import as backend;
 
 use common::*;
 use std::{fmt, marker::PhantomData, rc::Rc};
 
 pub struct Graphics {
+    #[allow(unused)] // On dummy target it is unused.
     backend: backend::GraphicsBackend,
     _marker: PhantomData<*const ()> // We need !Send.
 }
@@ -37,7 +38,6 @@ impl Program {
     pub fn new(gp: &Graphics, shaders: &[Source]) -> Self {
         Self { backend: backend::ProgramBackend::new(&gp, shaders) }
     }
-    #[cfg(any(target_os = "linux", target_family = "wasm"))]
     #[track_caller]
     pub fn uniformloc(&mut self, name: &str) -> crate::Location {
         self.backend.uniformloc(name)
@@ -113,7 +113,7 @@ impl Texture {
     }
     #[track_caller]
     pub fn fromtex(&mut self, src: &Texture, srcrect: PhysicalRect, destrect: PhysicalRect) {
-        self.backend.fromtex(&src.backend, srcrect, destrect)
+        self.backend.fromtex(&src, srcrect, destrect)
     }
     pub fn draw(&mut self, cmd: DrawCommand) {
         self.backend.draw(cmd)
@@ -242,9 +242,3 @@ impl fmt::Display for GraphicsError {
 }
 
 impl std::error::Error for GraphicsError {}
-
-impl From<egl::LoadError> for GraphicsError {
-    fn from(value: egl::LoadError) -> Self {
-        Self { msg: format!("egl call failed, {}", value) }
-    }
-}

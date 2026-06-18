@@ -9,23 +9,53 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 default = []
+
 export = []
-import = []
+import = [
+    "dep:futures",
+]
+
+dummy = []
+
+linux = [
+    "dep:wayland-client",
+    "dep:wayland-protocols",
+    "dep:wayland-protocols-wlr",
+    "dep:xkbcommon",
+    "dep:nix",
+    "dep:futures-lite",
+    "dep:async-io",
+    "dep:async-signals",
+]
+
+browser = [
+    "import",
+]
 
 [dependencies]
-common = { path = "../common" }
-futures = { path = "../futures" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# wayland deps
-wayland-client = { version = "0.31.14", features = ["system"] }
-wayland-protocols = { version = "0.31.2", features = ["client", "staging", "unstable"] }
-wayland-protocols-wlr = { version = "0.2.0", features = ["client", "wayland-client"] }
-xkbcommon = { version = "0.7.0", features = ["wayland"]}
-# other
-nix = { version = "0.28.0", features = ["mman", "fs", "process"] }
-bv = "0.11.1" # bitvecs
-# async/futures deps
-futures-lite = "2.3.0"
-async-io = "2.3.2"
-async-signals = { version = "0.4.0" }
+common = { path = "../common" }
+
+# ==========================
+# BROWSER DEPENDENCIES
+# =========================
+
+futures = { path = "../futures", optional = true }
+
+# ==========================
+# LINUX DEPENDENCIES
+# =========================
+
+# WAYLAND
+wayland-client        = { version = "0.31.14", optional = true, features = ["system"] }
+wayland-protocols     = { version = "0.31.2",  optional = true, features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.2.0",   optional = true, features = ["client", "wayland-client"] }
+xkbcommon             = { version = "0.7.0",   optional = true, features = ["wayland"] }
+
+# UNIX SHIT
+nix = { version = "0.28.0", optional = true, features = ["mman", "fs", "process"] }
+
+# ASYNC ECOSYSTEM
+futures-lite  = { version = "2.3.0", optional = true }
+async-io      = { version = "2.3.2", optional = true }
+async-signals = { version = "0.4.0", optional = true }

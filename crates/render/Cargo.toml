@@ -1,13 +1,18 @@
 [package]
 name = "render"
+
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+browser = ["graphics/browser"]
+gl      = ["graphics/gl"]
+
 [dependencies]
-# lsg-family dependencies
 common = { path = "../common" }
-# gl = { path = "../gl" }
 graphics = { path = "../graphics" }
+
 # bitvecs
 bv = "0.11.1"

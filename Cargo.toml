@@ -3,7 +3,6 @@
 resolver = "3"
 members = [
     "crates/xtask",
-    "crates/showcase",
     "crates/framework",
     "crates/common",
     "crates/futures",
@@ -13,6 +12,7 @@ members = [
     "crates/graphics",
     "crates/render",
     "crates/text",
+    "crates/showcase",
 ]
 
 [workspace.package]

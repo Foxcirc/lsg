@@ -59,7 +59,7 @@ impl ProgramBackend {
         Self { program }
 
     }
-    #[cfg(any(target_os = "linux", target_family = "wasm"))]
+
     #[track_caller]
     pub fn uniformloc(&mut self, name: &str) -> crate::Location {
 
@@ -206,12 +206,12 @@ impl TextureBackend {
     /// # Panics
     /// The regions have to be the same size.
     #[track_caller]
-    pub fn fromtex(&mut self, src: &TextureBackend, srcrect: PhysicalRect, dstrect: PhysicalRect) {
+    pub fn fromtex(&mut self, src: &crate::Texture, srcrect: PhysicalRect, dstrect: PhysicalRect) {
 
         assert!(srcrect.size == dstrect.size, "src and dest size must be equal");
 
         // Read from `src.texture`.
-        gl::frame_buffer_texture_2d(&self.gp.backend.scratch, gl::AttachmentPoint::Color0, &src.texture);
+        gl::frame_buffer_texture_2d(&self.gp.backend.scratch, gl::AttachmentPoint::Color0, &src.backend.texture);
         gl::copy_tex_sub_image_2d((&self.gp.backend.scratch, srcrect.pos), (&self.texture, dstrect.pos), srcrect.size);
 
     }
@@ -332,5 +332,11 @@ impl crate::AttribKind {
 impl crate::VertexAttrib {
     fn size(&self) -> usize {
         self.kind.togl().size() * self.count
+    }
+}
+
+impl From<egl::LoadError> for crate::GraphicsError {
+    fn from(value: egl::LoadError) -> Self {
+        Self { msg: format!("egl call failed, {}", value) }
     }
 }

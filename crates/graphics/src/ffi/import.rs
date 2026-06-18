@@ -207,7 +207,7 @@ pub mod implementation {
             // Since we know the format is RGBA-8 right
             // now, we can predict the needed size easily:
             let size = self.size();
-            out.resize(size.w * size.h * 4, 0);
+            out.resize(size.w as usize * size.h as usize * 4, 0);
 
             let slice0 = types::ByteSlice {
                 ptr: out.as_ptr(),
