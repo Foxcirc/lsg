@@ -39,9 +39,6 @@ extern "C" fn run() {
             #[allow(unused)]
             let window = desktop::Window::new(&evl);
 
-            #[cfg(target_family = "wasm")]
-            window.bind("mainWindow");
-
             loop {
                 log("Waiting for next event...");
                 let event = evl.next().await.expect("Next event.");

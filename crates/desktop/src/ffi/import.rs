@@ -81,8 +81,6 @@ pub mod definitions {
         pub fn window_alert(this0: *mut Window, urgency: crate::Urgency);
         pub fn window_ptr(this0: *mut Window) -> *mut void;
         pub fn window_size(this0: *mut Window) -> common::PhysicalSize;
-        #[cfg(target_family = "wasm")]
-        pub fn window_bind(this0: *mut Window, id: *const i8);
     }
 
 }
@@ -312,12 +310,6 @@ pub mod implementation {
         }
         pub fn size(&self) -> common::PhysicalSize {
             unsafe { window_size(self.inner) }
-        }
-        #[track_caller]
-        #[cfg(target_family = "wasm")]
-        pub fn bind(&self, id: &str) {
-            let id0 = CString::new(id).expect("contains nul");
-            unsafe { window_bind(self.inner, id0.as_ptr()) };
         }
     }
 

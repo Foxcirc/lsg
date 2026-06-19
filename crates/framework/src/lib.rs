@@ -245,7 +245,7 @@ impl Window {
 
             WindowEvent::Redraw => {
 
-                // Rendering a widget looks as follors.
+                // Rendering a widget looks as follows.
                 // 1. Clear old data and create a blank `Space`.
                 // 2. Let the widget tree render into the `Space`.
                 // 3. Read the data and render it onto the window.

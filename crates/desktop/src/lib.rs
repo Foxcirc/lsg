@@ -244,7 +244,7 @@ pub enum MouseButton {
     Unknown,
 }
 
-#[repr(C)]
+#[repr(C)] // TODO: make it e.g. repr(u8) to actually define the layout
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataKind {
     Text,
@@ -435,10 +435,6 @@ impl Window {
     pub fn alert(&self, urgency: Urgency) {
         self.backend.alert(urgency);
     }
-    #[cfg(target_family = "wasm")]
-    pub fn bind(&self, id: &str) {
-        self.backend.bind(id);
-    }
 }
 
 unsafe impl common::IsSurface for Window {
@@ -454,7 +450,7 @@ pub struct Monitor {
     backend: backend::MonitorBackend,
 }
 
-pub struct DataReadable {
+pub struct DataReadable { // TODO: some structs are missing a Debug implementation which causes weird behaviour cause Event actually DOES implement debug even though this doesnt and it is part of even........ sus
     backend: backend::DataReadableBackend,
 }
 

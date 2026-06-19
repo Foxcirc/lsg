@@ -215,7 +215,7 @@ impl TextureAtlas {
                     let incr = overshoot.max(Self::MININCR);
                     if self.layout.size.w + incr > self.maxsize ||
                        self.layout.size.h + incr > self.maxsize {
-                        panic!("texture atlas is full")
+                        panic!("The texture-atlas is full.")
                    } else {
                        self.upsize(renderer, incr);
                    }
@@ -415,7 +415,6 @@ pub struct Renderer {
     vbuf: graphics::VertexBuffer,
     vraw: Vec<u8>,
     program: graphics::Program,
-    #[cfg(target_os = "linux")]
     samplerloc: graphics::Location
     // instanced: InstancedData,
     // sampler: gl::UniformLocation,
@@ -488,7 +487,7 @@ impl Renderer {
             vbuf,
             vraw: Vec::with_capacity(1024),
             program,
-            samplerloc
+            samplerloc,
             // singular,
             // instanced,
             // sampler,
@@ -529,8 +528,10 @@ impl Renderer {
                 let physical_x = vertex_x as f64 * (instance.size.w as f64 / 5000.0);
                 let physical_y = vertex_y as f64 * (instance.size.h as f64 / 5000.0);
                 //                                                              / ^^^^^^
-                //      This is the scaling where 5000 means a 1.0 scale. So for a
-                //      filled rect a scale of 5000 would be a 5000x5000 rect.
+                //      This is the scaling where 5000 means a 1.0 scale. So if...
+                //          1. SHAPE = 5000x5000 filled rect
+                //          2. INSTANCE.SCALE = 100 = (0.02x)
+                //      ...then you will get a 100x100 pixel filled rect.
 
                 let scaled_x = (physical_x * 5000.0) / size.w as f64;
                 let scaled_y = (physical_y * 5000.0) / size.h as f64;
@@ -562,14 +563,15 @@ impl Renderer {
 
                         let coords = atlas.get(index);
 
+                        // Project the vertex' position inside the shape onto the texture:
                         let x_low  = coords.pos.x as f64;
                         let x_high = coords.size.w as f64 + x_low;
                         let y_low  = coords.pos.y as f64;
                         let y_high = coords.size.h as f64 + y_low;
-
                         let x = maprange(vertex_x as f64, 0f64..5000f64, x_low..x_high);
                         let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);
 
+                        // We can also specify an offset into the texture:
                         let offset_x = x as i16 + offset.x;
                         let offset_y = y as i16 + offset.y;
 

@@ -7,7 +7,7 @@ pub use wayland::*;
 use crate::*;
 use common::*;
 
-use std::{ffi::{CString, c_void as void}, future, sync::Arc, task};
+use std::{ffi::{CString, c_void as void}, sync::Arc, task};
 
 // TODO: add better and more unit-tests
 

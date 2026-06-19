@@ -12,7 +12,7 @@ use wayland_protocols::xdg::{
         xdg_wm_base::{XdgWmBase, Event as XdgWmBaseEvent},
         xdg_surface::{XdgSurface, Event as XdgSurfaceEvent},
         xdg_toplevel::{XdgToplevel, Event as XdgToplevelEvent, State as XdgToplevelState},
-        xdg_popup::{XdgPopup, Event as XdgPopupEvent},
+        // xdg_popup::{XdgPopup, Event as XdgPopupEvent},
         xdg_positioner::XdgPositioner,
     },
     decoration::zv1::client::{zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, zxdg_toplevel_decoration_v1::{ZxdgToplevelDecorationV1, Event as ZxdgDecorationEvent, Mode as ZxdgDecorationMode}},
@@ -26,7 +26,7 @@ use wayland_protocols::wp::{
 };
 
 use wayland_protocols_wlr::layer_shell::v1::client::{
-    zwlr_layer_shell_v1::{ZwlrLayerShellV1, Layer},
+    zwlr_layer_shell_v1::ZwlrLayerShellV1,
     // zwlr_layer_surface_v1::{ZwlrLayerSurfaceV1, Event as ZwlrLayerSurfaceEvent, Anchor, KeyboardInteractivity},
 };
 
@@ -36,9 +36,8 @@ use async_io::{Async, Timer};
 use futures_lite::FutureExt;
 
 use std::{
-    env, fmt, io, mem, task,
+    env, io, mem, task,
     collections::{HashMap, VecDeque},
-    error::Error as StdError,
     ffi::c_void as void,
     os::fd::{AsFd, OwnedFd},
     sync::Arc,
@@ -290,7 +289,7 @@ struct WaylandGlobals {
     data_device: WlDataDevice,
     frac_scale_mgrs: Option<FracScaleMgrs>,
     decoration_mgr: Option<ZxdgDecorationManagerV1>,
-    layer_shell_mgr: Option<ZwlrLayerShellV1>,
+    // layer_shell_mgr: Option<ZwlrLayerShellV1>,
     activation_mgr: Option<XdgActivationV1>,
     cursor_shape_mgr: Option<WpCursorShapeManagerV1>,
 }
@@ -321,7 +320,7 @@ impl WaylandGlobals {
             frac_scale_mgrs: globals.bind(qh, 1..=1, ()).ok()
                 .map(|it| FracScaleMgrs { frac_scaling_mgr: it }),
             decoration_mgr: globals.bind(qh, 1..=1, ()).ok(),
-            layer_shell_mgr: globals.bind(qh, 1..=1, ()).ok(),
+            // layer_shell_mgr: globals.bind(qh, 1..=1, ()).ok(),
             activation_mgr: globals.bind(qh, 1..=1, ()).ok(),
             cursor_shape_mgr: globals.bind(qh, 1..=1, ()).ok(),
         };
@@ -770,8 +769,6 @@ impl DataKind {
         }
     }
 }
-
-pub type DataOfferId = u32;
 
 /// Don't hold onto it. You should immediatly decide if you want to receive something or not.
 pub struct DataReadableBackend {
@@ -1657,7 +1654,7 @@ impl wayland_client::Dispatch<WlDataDevice, ()> for ConnectionState {
     }
 
     wayland_client::event_created_child!(Self, WlDataDevice, [
-        EVT_DATA_OFFER_OPCODE => (WlDataOffer, ())
+        wayland_client::protocol::wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, ())
     ]);
 
 }
@@ -2460,12 +2457,6 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
 }
 
 // ### error handling ###
-
-// impl<'a> From<&'a str> for EvlError {
-//     fn from(value: &'a str) -> Self {
-//         Self::fatal(value.into())
-//     }
-// }
 
 impl From<wayland_client::ConnectError> for crate::EvlError {
     fn from(value: wayland_client::ConnectError) -> Self {
