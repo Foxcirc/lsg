@@ -10,7 +10,7 @@
  //! be bound on one thread at a time.**
 
  use common::{PhysicalRect, PhysicalSize, SmartMutex};
- use std::{error::Error as StdError, ffi::c_void as void, fmt, mem, sync::{Arc, Mutex}};
+ use std::{error::Error as StdError, ffi::c_void as void, fmt, mem, sync::Arc};
 
  pub struct LoadError {
      msg: String
@@ -390,14 +390,17 @@ pub struct Surface {
 
  impl Surface {
 
-     pub fn new<I: common::IsSurface>(locked: &Instance, config: &Config, inner: &I, size: PhysicalSize) -> Result<Self, LoadError> {
+     pub fn new<I: common::IsSurface>(locked: &Instance, config: &Config, window: &I) -> Result<Self, LoadError> {
 
          let instance = locked.inner.lock();
 
-         #[cfg(target_os = "linux")] // linux means wayland, as far as we are concerned
+         // Get the physical window buffer size.
+         let size = window.size();
+
+         #[cfg(target_os = "linux")] // Linux means wayland, as far as we are concerned.
          let wl_egl_surface = unsafe {
              wayland_egl::WlEglSurface::new_from_raw(
-                 inner.ptr().cast(),
+                 window.ptr().cast(),
                  size.w as i32,
                  size.h as i32
              ).map_err(|_| "cannot create WlEglSurface")?
@@ -407,7 +410,7 @@ pub struct Surface {
          let target = wl_egl_surface.ptr().cast_mut();
 
          #[cfg(not(target_os = "linux"))]
-         let target = inner.ptr();
+         let target = window.ptr();
 
          let surface = unsafe {
              instance.lib.create_window_surface(
@@ -435,10 +438,8 @@ pub struct Surface {
 
          surface.size = size;
 
-         #[cfg(target_os = "linux")] {
-             let (w, h) = (size.w as i32, size.h as i32);
-             surface.wl_egl_surface.resize(w, h, 0, 0);
-         }
+         #[cfg(target_os = "linux")]
+         surface.wl_egl_surface.resize(size.w as i32, size.h as i32, 0, 0);
 
      }
 

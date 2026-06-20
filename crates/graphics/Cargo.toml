@@ -6,7 +6,7 @@ authors.workspace = true
 edition.workspace = true
 
 [features]
-default = []
+default = ["gl"]
 import  = []
 browser = ["import"]
 gl      = ["dep:gl", "dep:egl"]

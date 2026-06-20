@@ -37,12 +37,12 @@ impl LogicalSize {
     pub const MIN: Self = Self::new(0, 0);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
     pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
-    pub const fn scale(&self, scale: f32) -> PhysicalSize {
+    pub const fn physical(&self, scale: f64) -> PhysicalSize {
         // With a scaling factor of 1.0, 1920 pixels should be 5000 units.
-        const FACTOR: f32 = 5000.0 / 1920.0;
+        const FACTOR: f64 = 1920.0 / 5000.0;
         PhysicalSize {
-            w: (self.w as f32 * FACTOR * scale).round() as u16,
-            h: (self.h as f32 * FACTOR * scale).round() as u16,
+            w: (self.w as f64 * FACTOR * scale).round() as u16,
+            h: (self.h as f64 * FACTOR * scale).round() as u16,
         }
     }
 }
@@ -67,6 +67,19 @@ impl PhysicalSize {
     pub const MIN: Self = Self::new(0, 0);
     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
     pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
+    pub const fn scale(&self, factor: f64) -> PhysicalSize {
+        PhysicalSize {
+            w: (self.w as f64 * factor).round() as u16,
+            h: (self.h as f64 * factor).round() as u16,
+        }
+    }
+    pub const fn logical(&self, scale: f64) -> LogicalSize {
+        const FACTOR: f64 = 5000.0 / 1920.0;
+        LogicalSize {
+            w: (self.w as f64 * FACTOR / scale).round() as u16,
+            h: (self.h as f64 * FACTOR / scale).round() as u16,
+        }
+    }
 }
 
 impl From<LogicalSize> for PhysicalSize {
@@ -120,6 +133,12 @@ impl PhysicalPoint {
     pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
     pub const fn new(x: i16, y: i16) -> Self {
         Self { x, y }
+    }
+    pub const fn scale(&self, factor: f64) -> PhysicalPoint {
+        PhysicalPoint {
+            x: (self.x as f64 * factor).round() as i16,
+            y: (self.y as f64 * factor).round() as i16,
+        }
     }
 }
 
@@ -373,14 +392,16 @@ pub unsafe trait IsDisplay {
 /// You must always return a valid pointer.
 // TODO: when can the surface wayland object be dropped?
 pub unsafe trait IsSurface {
-    /// ### Platforms
-    /// **On Wayland,**
-    /// should return a pointer to a `wl-surface` proxy object.
-    // TODO: add link to example in the desktop crate
+    /// # Platform-Specific
+    /// 1. Wayand: should return a pointer to a `wl-surface` proxy object.
     fn ptr(&self) -> *mut void;
-    /// Get the current size of the surface.
+    /// Get the current size of the surface. The size must be scaled
+    /// using the scaling factor to obtain the true physical size.
     /// Must not be `0` in any dimension.
+    // TODO: could there be any converion errors that lead to the created gl surface being missized? I dont think so, since logicalSize usually has a larger number space then physicalSize (1920 becomes 5000 with a 1.0 scale), so the conversion back from logical to phsical should be lossless
     fn size(&self) -> PhysicalSize;
+    /// Get the current scaling factor of the surface.
+    fn scale(&self) -> f64;
 }
 
 #[derive(Default)]
@@ -396,7 +417,7 @@ impl<T> SmartMutex<T> {
 
     #[track_caller]
     pub fn lock<'s>(&'s self) -> MutexGuard<'s, T> {
-        self.inner.lock().expect("mutex was poisoned")
+        self.inner.lock().expect("Mutex was poisoned.")
     }
 
     #[track_caller]

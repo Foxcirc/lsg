@@ -81,7 +81,7 @@ impl SurfaceBackend {
     pub fn new<S: IsSurface>(gp: &Rc<crate::Graphics>, window: &S) -> Self {
 
         let surface = egl::Surface::new(
-            &gp.backend.egl, &gp.backend.cfg, window, window.size(),
+            &gp.backend.egl, &gp.backend.cfg, window,
         ).expect("cannot create egl surface");
 
         Self {
@@ -94,7 +94,6 @@ impl SurfaceBackend {
     pub fn resize(&mut self, size: PhysicalSize) {
         self.surface.resize(size);
     }
-
 
     pub fn draw<'a>(&mut self, cmd: crate::DrawCommand<'a>) {
 

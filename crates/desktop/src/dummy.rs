@@ -78,11 +78,11 @@ impl WindowBackend {
         unimplemented!()
     }
 
-    pub fn minsize(&self, _size: Option<common::LogicalSize>) {
+    pub fn minsize(&self, _size: Option<common::PhysicalSize>) {
         unimplemented!()
     }
 
-    pub fn maxsize(&self, _size: Option<common::LogicalSize>) {
+    pub fn maxsize(&self, _size: Option<common::PhysicalSize>) {
         unimplemented!()
     }
 
@@ -161,7 +161,7 @@ impl HoveredItemBackend {
 pub struct CustomIconBackend;
 
 impl CustomIconBackend {
-    pub fn new(_evl: &EventLoop, _size: common::LogicalSize, _format: IconFormat, _data: &[u8]) -> Self {
+    pub fn new(_evl: &EventLoop, _size: common::PhysicalSize, _format: IconFormat, _data: &[u8]) -> Self {
         unimplemented!()
     }
 }

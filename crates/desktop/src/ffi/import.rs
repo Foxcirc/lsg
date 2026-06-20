@@ -37,7 +37,7 @@ pub mod definitions {
 
         pub fn custom_icon_new(
             evl0: *const EventLoop,
-            size: common::LogicalSize,
+            size: common::PhysicalSize,
             format: crate::IconFormat,
             data0: WriteSlice,
         ) -> *mut CustomIcon;
@@ -74,9 +74,9 @@ pub mod definitions {
         pub fn window_maximize(this0: *mut Window, value: bool);
         pub fn window_fullscreen(this0: *mut Window, value: bool, monitor0: *mut Monitor);
         pub fn window_sizehint(this0: *mut Window, size: common::PhysicalSize);
-        pub fn window_minsize(this0: *mut Window, size: common::LogicalSize);
+        pub fn window_minsize(this0: *mut Window, size: common::PhysicalSize);
         pub fn window_minsize_unset(this0: *mut Window);
-        pub fn window_maxsize(this0: *mut Window, size: common::LogicalSize);
+        pub fn window_maxsize(this0: *mut Window, size: common::PhysicalSize);
         pub fn window_maxsize_unset(this0: *mut Window);
         pub fn window_alert(this0: *mut Window, urgency: crate::Urgency);
         pub fn window_ptr(this0: *mut Window) -> *mut void;
@@ -290,13 +290,13 @@ pub mod implementation {
         pub fn sizehint(&self, size: common::PhysicalSize) {
             unsafe { window_sizehint(self.inner, size) };
         }
-        pub fn minsize(&self, size: Option<common::LogicalSize>) {
+        pub fn minsize(&self, size: Option<common::PhysicalSize>) {
             match size {
                 Some(it) => unsafe { window_minsize(self.inner, it) },
                 None     => unsafe { window_minsize_unset(self.inner) }
             }
         }
-        pub fn maxsize(&self, size: Option<common::LogicalSize>) {
+        pub fn maxsize(&self, size: Option<common::PhysicalSize>) {
             match size {
                 Some(it) => unsafe { window_maxsize(self.inner, it) },
                 None     => unsafe { window_maxsize_unset(self.inner) }
@@ -335,7 +335,7 @@ pub mod implementation {
     }
 
     impl CustomIconBackend {
-        pub fn new(evl: &crate::EventLoop, size: common::LogicalSize, format: crate::IconFormat, data: &[u8]) -> Self {
+        pub fn new(evl: &crate::EventLoop, size: common::PhysicalSize, format: crate::IconFormat, data: &[u8]) -> Self {
             let data0 = types::WriteSlice { ptr: data.as_ptr(), len: data.len() };
             let inner = unsafe { custom_icon_new(evl.backend.inner, size, format, data0) };
             Self { inner }

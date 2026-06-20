@@ -102,7 +102,7 @@ struct DndOfferData {
 #[derive(Default)]
 struct MouseData {
     focused: Option<WlSurface>,
-    pos: common::LogicalPoint,
+    pos: common::PhysicalPoint,
     last_enter_serial: u32,
 }
 
@@ -358,7 +358,7 @@ struct WindowState {
     xdg_toplevel: XdgToplevel,
     xdg_decoration: Option<ZxdgToplevelDecorationV1>,
     frac_scale_data: Option<FracScaleData>,
-    scaling_factor: f64, // Used to convert LogicalSize to PhysicalSize
+    scale: f64, // used to convert between logical and physical sizes
     size: common::PhysicalSize, // set by the xdg-toplevel configure event
     fullscreen: bool,
     hidden: bool,
@@ -442,8 +442,8 @@ impl WindowBackend {
             xdg_toplevel,
             xdg_decoration,
             frac_scale_data,
-            scaling_factor: 1.0,
-            size: PhysicalSize::new(500, 500), // default size of 500x500
+            scale: 1.0,
+            size: PhysicalSize::new(500, 500), // bigger isn't always better <3
             fullscreen: false,
             hidden: false,
             redraw: WindowRedrawStateV2::default(),
@@ -595,27 +595,36 @@ impl WindowBackend {
         let evb = &mut self.evl.backend.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
 
-        state.size = size;
+        // TODO: make sure the size is not updated inappropriatly. right now if you call this randomly the size property will be put in a "wrong" state
+
+        // Scale to window-geometry-space:
+        state.size = size.scale(1.0 / state.scale);
 
     }
 
-    pub fn minsize(&self, size: Option<LogicalSize>) {
+    pub fn minsize(&self, size: Option<PhysicalSize>) {
 
         let evb = &mut self.evl.backend.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
 
-        let size = size.unwrap_or_default();
+        // Scale to window-geometry-space:
+        let size = size.unwrap_or_default()
+            .scale(1.0 / state.scale);
+
         state.xdg_toplevel.set_min_size(size.w as i32, size.h as i32);
         state.wl_surface.commit();
 
     }
 
-    pub fn maxsize(&self, size: Option<LogicalSize>) {
+    pub fn maxsize(&self, size: Option<PhysicalSize>) {
 
         let evb = &mut self.evl.backend.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
 
-        let size = size.unwrap_or_default();
+        // Scale to window-geometry-space:
+        let size = size.unwrap_or_default()
+            .scale(1.0 / state.scale);
+
         state.xdg_toplevel.set_max_size(size.w as i32, size.h as i32);
         state.wl_surface.commit();
 
@@ -660,6 +669,12 @@ impl WindowBackend {
         let evb = &mut self.evl.backend.state.lock().wayland.state;
         let state = evb.windows.get(self.id);
         state.size
+    }
+
+    pub fn scale(&self) -> f64 {
+        let evb = &mut self.evl.backend.state.lock().wayland.state;
+        let state = evb.windows.get(self.id);
+        state.scale
     }
 
 }
@@ -967,7 +982,7 @@ impl CustomIconBackend {
     /// This function assserts that the `size` is valid for `data.len()`
     /// and also that `size > 0`.
     #[track_caller]
-    pub fn new(evl: &EventLoop, size: LogicalSize, format: IconFormat, data: &[u8]) -> Self {
+    pub fn new(evl: &EventLoop, size: PhysicalSize, format: IconFormat, data: &[u8]) -> Self {
 
         use nix::{sys::{mman, stat}, fcntl, unistd};
         use std::num::NonZeroUsize;
@@ -1466,7 +1481,7 @@ impl wayland_client::Dispatch<WlOutput, ()> for ConnectionState {
 
         match event {
             WlOutputEvent::Name { name } => {
-                if !name.is_empty() { info.name = name };
+                if name.is_empty() { info.name = name };
             },
             WlOutputEvent::Description { description } => {
                 info.description = description;
@@ -1857,15 +1872,14 @@ impl wayland_client::Dispatch<XdgSurface, Id> for ConnectionState {
             debug_assert_ne!(size.w, 0);
             debug_assert_ne!(size.h, 0);
 
-            // Update the window's viewport destination. (Used for custom scaling?)
+            // Update the window's viewport destination. (Used for custom scaling? TODO: do we need viewport shit???)
             // if let Some(ref frac_scale_data) = window.frac_scale_data {
             //     frac_scale_data.viewport.set_destination(size.w as i32, size.h as i32);
             // };
 
-            // foreward the final configuration state to the user
+            // Foreward the final configuration state to the user.
             evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Resize {
-                size: PhysicalSize { w: size.w as u16, h: size.h as u16 },
-                fullscreen: window.fullscreen,
+                size, fullscreen: window.fullscreen
             } });
 
             if !window.redraw.already_got_event {
@@ -1893,17 +1907,23 @@ impl wayland_client::Dispatch<XdgToplevel, Id> for ConnectionState {
 
             let zerosized = width <= 0 && height <= 0;
 
+            // Overwrite the values, since the compositor
+            // has told us a mandatory size now.
             if !zerosized {
-                // overwrite the values, since the compositor has given us a size hint
-                window.size = PhysicalSize::new(width as u16, height as u16);
+                // SCALING: The provided dimensions are in window-geometry-space,
+                    //      so we need to scale appropriatly.
+                window.size = PhysicalSize::new(width as u16, height as u16)
+                    .scale(window.scale);
+                // NOTE: In floating window compositors on wayland, the final
+                //       size is usually determined by the first render.
             }
 
             let flags = ConfigureFlags::parse(states);
 
             window.fullscreen = flags.fullscreen;
             window.hidden = flags.suspended || (window.hidden && zerosized);
-            //                                  ^^^^ if the window was programatically hidden, the
-            //                                       `suspended` flag might not be set
+            //                             ^^^^ If the window was programatically hidden, the
+            //                                  `suspended` flag might not be set, so we check extra.
 
         }
 
@@ -2043,12 +2063,28 @@ impl wayland_client::Dispatch<WpFractionalScaleV1, Id> for ConnectionState {
 
             let window = evl.windows.get(*id);
 
-            window.scaling_factor = scale as f64 / 120.0;
+            let new_scale = scale as f64 / 120.0;
+            let old_scale = window.scale;
+
+            // We need to update window scaling factor AND physical size:
+            window.scale = new_scale;
+            window.size = window.size
+                .scale(new_scale / old_scale);
 
             evl.events.push_back(Event::Window {
                 id: *id,
-                event: WindowEvent::Rescale { scale: scale as f64 / 120.0 }
+                event: WindowEvent::Rescale { scale: new_scale }
             });
+
+            // Tell the user to resize their buffers and re-render:
+            evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Resize {
+                size: window.size, fullscreen: window.fullscreen
+            } });
+
+            if !window.redraw.already_got_event {
+                window.redraw.already_got_event = true;
+                evl.events.push_back(Event::Window { id: *id, event: WindowEvent::Redraw });
+            }
 
         }
 
@@ -2330,9 +2366,9 @@ impl wayland_client::Dispatch<WlPointer, ()> for ConnectionState {
                 let (x, y) = (surface_x.max(0.) as i16,
                               surface_y.max(0.) as i16); // must not be negative
 
-                // convert to mathematical coordinate space
-                evl.mouse.pos.x = x;
-                evl.mouse.pos.y = window.size.h as i16 - y;
+                // Convert to physical/mathematical coordinate space.
+                evl.mouse.pos = PhysicalPoint::new(x, window.size.h as i16 - y)
+                    .scale(window.scale);
 
                 evl.mouse.focused = Some(surface);
 

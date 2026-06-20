@@ -59,9 +59,9 @@ pub enum WindowEvent {
     Leave,
     MouseEnter,
     MouseLeave,
-    MouseMotion { point: common::LogicalPoint },
-    MouseDown { point: common::LogicalPoint, button: MouseButton },
-    MouseUp { point: common::LogicalPoint, button: MouseButton },
+    MouseMotion { point: common::PhysicalPoint },
+    MouseDown { point: common::PhysicalPoint, button: MouseButton },
+    MouseUp { point: common::PhysicalPoint, button: MouseButton },
     MouseScroll { dx: i16, dy: i16 },
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
@@ -103,7 +103,7 @@ pub enum DndEvent {
 #[derive(Debug)]
 pub enum CursorStyle {
     Hidden,
-    Custom { icon: CustomIcon, hotspot: common::LogicalPoint },
+    Custom { icon: CustomIcon, hotspot: common::LogicalPoint }, // TODO: how exactly does the curstom cursor workflow look? should this rather take a PhysicalPoint?
     Predefined { shape: CursorShape }
 }
 
@@ -175,7 +175,7 @@ pub enum QuitReason {
 #[repr(C)]
 #[derive(Debug, Default)]
 pub enum Urgency {
-    /// Should display a hint or might do nothing.
+    /// Should display a slight hint or might do nothing.
     #[default]
     Info,
     /// Should switch window focus or display an urgent hint.
@@ -275,7 +275,7 @@ impl Default for DataKind {
 pub struct MonitorInfo {
     pub name: String,
     pub description: String,
-    /// Size in physical millimeters.
+    // TODO: internet says it is in "physical hardware units". so is this pixels or what... test it!
     pub size: common::PhysicalSize,
     /// Refresh rate in mHz. You can use the [`fps`](Monitor::fps) method to convert it to Hz.
     pub refresh: u32,
@@ -426,10 +426,10 @@ impl Window {
     pub fn sizehint(&self, size: common::PhysicalSize) {
         self.backend.sizehint(size);
     }
-    pub fn minsize(&self, size: Option<common::LogicalSize>) {
+    pub fn minsize(&self, size: Option<common::PhysicalSize>) {
         self.backend.minsize(size);
     }
-    pub fn maxsize(&self, size: Option<common::LogicalSize>) {
+    pub fn maxsize(&self, size: Option<common::PhysicalSize>) {
         self.backend.maxsize(size);
     }
     pub fn alert(&self, urgency: Urgency) {
@@ -443,6 +443,11 @@ unsafe impl common::IsSurface for Window {
     }
     fn size(&self) -> common::PhysicalSize {
         self.backend.size()
+    }
+    // The current scaling factor. You can use this
+    // to convert between logical and physical sizes.
+    fn scale(&self) -> f64 {
+        self.backend.scale()
     }
 }
 
@@ -543,7 +548,7 @@ pub struct CustomIcon {
 }
 
 impl CustomIcon {
-    pub fn new(evl: &EventLoop, size: common::LogicalSize, format: IconFormat, data: &[u8]) -> Self {
+    pub fn new(evl: &EventLoop, size: common::PhysicalSize, format: IconFormat, data: &[u8]) -> Self {
         let backend = backend::CustomIconBackend::new(evl, size, format, data);
         Self { backend }
     }

@@ -272,7 +272,7 @@ pub unsafe extern "C" fn monitor_drop(this0: *mut Monitor) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn custom_icon_new(
     evl0: *const EventLoop,
-    size: common::LogicalSize,
+    size: common::PhysicalSize,
     format: crate::IconFormat,
     data0: WriteSlice
 ) -> *mut CustomIcon {
@@ -466,7 +466,7 @@ pub unsafe extern "C" fn window_sizehint(this0: *mut Window, size: common::Physi
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn window_minsize(this0: *mut Window, size: common::LogicalSize) {
+pub unsafe extern "C" fn window_minsize(this0: *mut Window, size: common::PhysicalSize) {
     let this = unsafe { get_window(this0) };
     this.minsize(Some(size));
 }
@@ -478,7 +478,7 @@ pub unsafe extern "C" fn window_minsize_unset(this0: *mut Window) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn window_maxsize(this0: *mut Window, size: common::LogicalSize) {
+pub unsafe extern "C" fn window_maxsize(this0: *mut Window, size: common::PhysicalSize) {
     let this = unsafe { get_window(this0) };
     this.maxsize(Some(size));
 }
