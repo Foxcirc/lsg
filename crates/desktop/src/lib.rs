@@ -455,7 +455,7 @@ pub struct Monitor {
     backend: backend::MonitorBackend,
 }
 
-pub struct DataReadable { // TODO: some structs are missing a Debug implementation which causes weird behaviour cause Event actually DOES implement debug even though this doesnt and it is part of even........ sus
+pub struct DataReadable {
     backend: backend::DataReadableBackend,
 }
 
@@ -585,7 +585,7 @@ macro_rules! impl_debug_opaque {
     ($($name:ty),* $(,)?) => {
         $(impl fmt::Debug for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, concat!(stringify!($ty), " {{ ... }}"))
+                write!(f, concat!(stringify!($name), " {{ ... }}"))
             }
         })*
     };

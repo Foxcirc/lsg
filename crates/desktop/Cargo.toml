@@ -8,18 +8,17 @@ authors.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = ["linux"]
+default = []
 
 export = [
     "dep:futures",
     "futures/waker",
 ]
+
 import = [
     "dep:futures",
     "futures/import",
 ]
-
-dummy = []
 
 linux = [
     "dep:wayland-client",
