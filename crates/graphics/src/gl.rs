@@ -15,7 +15,11 @@ impl GraphicsBackend {
 
         // Initialize an EGL context.
         let egl = egl::Instance::new(display)?;
-        let cfg = egl::Config::build().api(egl::Api::Es3).version(3, 0).finish(&egl)?;
+        let cfg = egl::Config::build()
+            .api(egl::Api::Es3)
+            .version(3, 0)
+            .alpha(egl::AlphaFormat::Premultiplied)
+            .finish(&egl)?;
         let ctx = egl::Context::new(&egl, &cfg)?;
 
         gl::load_with(|name| egl.get_proc_address(name)).ok();
@@ -232,7 +236,7 @@ fn draw<'a>(target: &gl::FrameBuffer, cmd: crate::DrawCommand<'a>) {
         },
         crate::BlendMode::OrderedTransparency => {
             gl::enable(gl::Capability::Blend);
-            gl::blend_func(gl::BlendFunc::SrcAlpha, gl::BlendFunc::OneMinusSrcAlpha);
+            gl::blend_func(gl::BlendFunc::One, gl::BlendFunc::OneMinusSrcAlpha);
         }
     }
 

@@ -425,6 +425,8 @@ impl Renderer {
 
     pub fn new<D: IsDisplay>(display: &D) -> Result<Self, RenderError> {
 
+        use graphics::{VertexAttrib, AttribKind, Location, Divisor};
+
         let gp = graphics::Graphics::new(display)?;
 
         const VERT: &str = include_str!("shader/curve.vert");
@@ -436,9 +438,9 @@ impl Renderer {
         ]);
 
         let vbuf = graphics::VertexBuffer::new(&gp, &[
-            graphics::VertexAttrib { kind: graphics::AttribKind::U16, ..Default::default() },
-            graphics::VertexAttrib { kind: graphics::AttribKind::I32, ..Default::default() },
-            graphics::VertexAttrib { kind: graphics::AttribKind::U32, ..Default::default() },
+            VertexAttrib { kind: AttribKind::U16, loc: Location(0), count: 1, divisor: Divisor::PERVERTEX }, // FLAGS
+            VertexAttrib { kind: AttribKind::I16, loc: Location(1), count: 2, divisor: Divisor::PERVERTEX }, // X, Y
+            VertexAttrib { kind: AttribKind::U16, loc: Location(2), count: 2, divisor: Divisor::PERVERTEX }, // U, V
         ]);
 
         let samplerloc = program.uniformloc("atlas");
@@ -502,9 +504,9 @@ impl Renderer {
         // The layout is packed heavily to minimize memory usage.
         //
         // Layout:
-        // FLAGS  | x, y  | u, v, l
-        // 16 bit | 16 16 | 12 12 8
-        // u16      u32       u32     = a total of 10 bytes per vertex
+        // FLAGS  | x, y  | u, v
+        // 16 bit | 16 16 | 16 16
+        // u16      u16x2   u16x2    = a total of 10 bytes per vertex
         //
         // Flags Layout:
         // FILLED/CONVEX/CONCAVE   INSTANCED/NORMAL   VERTEX INDEX   OUTER EDGES
@@ -536,14 +538,12 @@ impl Renderer {
                 let scaled_x = (physical_x * 5000.0) / size.w as f64;
                 let scaled_y = (physical_y * 5000.0) / size.h as f64;
 
-                let shifted_x = scaled_x + instance.pos.x as f64;
-                let shifted_y = scaled_y + instance.pos.y as f64;
+                let transformed_x = scaled_x as i16 + instance.pos.x;
+                let transformed_y = scaled_y as i16 + instance.pos.y;
 
-                let packed_pos = 0i32 |
-                    ((shifted_y as i32 & 0xFFFF) << 0) | // y
-                    ((shifted_x as i32 & 0xFFFF) << 16); // x
+                let texture_lhs: u16;
+                let texture_rhs: u16;
 
-                let packed_texture: u32;
                 let isatlas: bool;
 
                 match instance.texture {
@@ -551,11 +551,12 @@ impl Renderer {
                     TextureKind::Color(r, g, b, a) => {
 
                         isatlas = false;
-                        packed_texture =
-                            ((r as u32 & 0xFF)  << 0)  | // r
-                            ((g as u32 & 0xFF)  << 8)  | // g
-                            ((b as u32 & 0xFF)  << 16) | // b
-                            ((a as u32 & 0xFF)  << 24);  // a
+                        texture_lhs =
+                            ((r as u16 & 0xFF)  << 0)  | // r
+                            ((g as u16 & 0xFF)  << 8);   // g
+                        texture_rhs =
+                            ((b as u16 & 0xFF)  << 0) | // b
+                            ((a as u16 & 0xFF)  << 8);  // a
 
                     },
 
@@ -572,16 +573,15 @@ impl Renderer {
                         let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);
 
                         // We can also specify an offset into the texture:
-                        let offset_x = x as i16 + offset.x;
-                        let offset_y = y as i16 + offset.y;
+                        let transformed_x = x as i16 + offset.x;
+                        let transformed_y = y as i16 + offset.y;
 
-                        // TODO: should negative offsets that make coords be < 0 be allowed,
-                        // hard error or a soft error like right now
+                        // TODO: What should be the behaviour for offsets that make x and y be out of bounds
+                        // for the texture (either positive or negative). Rn it might crash or display smth random.
 
                         isatlas = true;
-                        packed_texture =
-                            ((offset_y as u32 & 0xFFFF) << 0) | // y
-                            ((offset_x as u32 & 0xFFFF) << 16); // x
+                        texture_lhs = transformed_x as u16;
+                        texture_rhs = transformed_y as u16;
 
                     }
 
@@ -598,8 +598,10 @@ impl Renderer {
                     ((isatlas as u16 & 0b001) << 8);
 
                 self.vraw.extend(flags.to_ne_bytes());
-                self.vraw.extend(packed_pos.to_ne_bytes());
-                self.vraw.extend(packed_texture.to_ne_bytes());
+                self.vraw.extend(transformed_x.to_ne_bytes());
+                self.vraw.extend(transformed_y.to_ne_bytes());
+                self.vraw.extend(texture_lhs.to_ne_bytes());
+                self.vraw.extend(texture_rhs.to_ne_bytes());
 
                 /*
                 self.prepared.singular.vertices.extend_f(pos); // XY

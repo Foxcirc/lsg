@@ -18,10 +18,10 @@ fn main() {
                 .expect("create artifact dir");
         }
 
-        fs::copy(
-            "/home/moritz/Projects/lsg/target/debug/lsg/libdesktop.a",
-            lsgdir.join("libdesktop.a")
-        ).expect("copy library into artifact dir");
+        // fs::copy(
+        //     "/home/moritz/Projects/lsg/target/debug/lsg/libdesktop.a",
+        //     lsgdir.join("libdesktop.a")
+        // ).expect("copy library into artifact dir");
         // fs::copy("libdesktop.a", lsgdir.join("libdesktop.a")).expect("copy library into artifact dir");
 
         let target = get_target_triple();

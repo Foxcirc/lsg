@@ -49,8 +49,6 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
         texture: render::TextureKind::Color(0, 255, 100, 255),
     });
 
-    unsafe { render::SHAPE_TAKE_PART = usize::MAX };
-
     // run the event loop
     block_on(async move {
 

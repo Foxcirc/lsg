@@ -13,20 +13,19 @@ export interface EvlConfig {
 }
 
 export interface EvlObject {
-  kind: "EventLoop";
   // helpers: ReturnType<typeof newHelpers>;
-  events: AppEvent[]; // Optimal here, would be a VecDeque.
+  events: Event[]; // Optimal here, would be a VecDeque.
   currentWakerPtr: WasmPtr | null;
 }
 
 export interface WindowObject {
-  kind: "Window";
   evlObject: EvlObject;
   targetElement: HTMLElement;
+  targetElementHandle: WasmPtr;
   scale: number;
   size: Size,
   animationFrameRequested: boolean;
-  resizeObserver: ResizeObserver | null;
+  resizeObserver: ResizeObserver;
 }
 
 // =====================================================
@@ -96,28 +95,56 @@ export enum ScrollAxis {
   Horizontal = 1,
 }
 
-export type AppEvent =
-  | { kind: "Suspend" }
-  | { kind: "Resume" }
-  | { kind: "Quit"; reason: QuitReason }
-  | { kind: "WindowRedraw"; wndHandle: WasmPtr }
-  | { kind: "WindowEnter"; wndHandle: WasmPtr }
-  | { kind: "WindowLeave"; wndHandle: WasmPtr }
-  | { kind: "WindowResize"; wndHandle: WasmPtr; w: number; h: number; fullscreen: boolean }
-  | { kind: "WindowRescale"; wndHandle: WasmPtr; scale: number }
-  | { kind: "WindowDecorations"; enabled: boolean; wndHandle?: WasmPtr }
-  | { kind: "WindowMouseEnter"; wndHandle: WasmPtr }
-  | { kind: "WindowMouseLeave"; wndHandle: WasmPtr }
-  | { kind: "WindowMouseMotion"; wndHandle: WasmPtr; x: number; y: number }
-  | { kind: "WindowMouseDown"; wndHandle: WasmPtr; x: number; y: number; button: MouseButton }
-  | { kind: "WindowMouseUp"; wndHandle: WasmPtr; x: number; y: number; button: MouseButton }
-  | { kind: "WindowMouseScroll"; wndHandle: WasmPtr; dx: number; dy: number }
-  | { kind: "WindowKeyDownSpecial"; wndHandle: WasmPtr; knownSpecialKey: SpecialKey; repeat: boolean }
-  | { kind: "WindowKeyDownChar"; wndHandle: WasmPtr; chr: number; repeat: boolean }
-  | { kind: "WindowKeyDownUnknown"; wndHandle: WasmPtr; key: number; repeat: boolean }
-  | { kind: "WindowKeyUpSpecial"; wndHandle: WasmPtr; knownSpecialKey: SpecialKey }
-  | { kind: "WindowKeyUpChar"; wndHandle: WasmPtr; chr: number }
-  | { kind: "WindowKeyUpUnknown"; wndHandle: WasmPtr; key: number };
+enum EventKind {
+  Suspend,
+  Resume,
+  Quit,
+  WindowRedraw,
+  WindowEnter,
+  WindowLeave,
+  WindowResize,
+  WindowRescale,
+  WindowDecorations,
+  WindowMouseEnter,
+  WindowMouseLeave,
+  WindowMouseMotion,
+  WindowMouseDown,
+  WindowMouseUp,
+  WindowMouseScroll,
+  WindowKeyDownSpecial,
+  WindowKeyDownChar,
+  WindowKeyDownUnknown,
+  WindowKeyUpSpecial,
+  WindowKeyUpChar,
+  WindowKeyUpUnknown
+}
+
+export type Event =
+
+  | { kind: EventKind.Suspend }
+  | { kind: EventKind.Resume }
+  | { kind: EventKind.Quit; reason: QuitReason }
+
+  | { kind: EventKind.WindowRedraw;      wndHandle: number }
+  | { kind: EventKind.WindowEnter;       wndHandle: number }
+  | { kind: EventKind.WindowLeave;       wndHandle: number }
+  | { kind: EventKind.WindowResize;      wndHandle: number; w: number; h: number; fullscreen: boolean }
+  | { kind: EventKind.WindowRescale;     wndHandle: number; scale: number }
+  | { kind: EventKind.WindowDecorations; wndHandle: number, enabled: boolean }
+
+  | { kind: EventKind.WindowMouseEnter;  wndHandle: number }
+  | { kind: EventKind.WindowMouseLeave;  wndHandle: number }
+  | { kind: EventKind.WindowMouseMotion; wndHandle: number; x: number; y: number }
+  | { kind: EventKind.WindowMouseDown;   wndHandle: number; x: number; y: number; button: MouseButton }
+  | { kind: EventKind.WindowMouseUp;     wndHandle: number; x: number; y: number; button: MouseButton }
+  | { kind: EventKind.WindowMouseScroll; wndHandle: number; dx: number; dy: number }
+
+  | { kind: EventKind.WindowKeyDownSpecial; wndHandle: number; knownSpecialKey: SpecialKey; repeat: boolean }
+  | { kind: EventKind.WindowKeyDownChar;    wndHandle: number; chr: number; repeat: boolean }
+  | { kind: EventKind.WindowKeyDownUnknown; wndHandle: number; key: number; repeat: boolean }
+  | { kind: EventKind.WindowKeyUpSpecial;   wndHandle: number; knownSpecialKey: SpecialKey }
+  | { kind: EventKind.WindowKeyUpChar;      wndHandle: number; chr: number }
+  | { kind: EventKind.WindowKeyUpUnknown;   wndHandle: number; key: number };
 
 // =====================================================
 // IMPLEMENTATION
@@ -126,7 +153,7 @@ export type AppEvent =
 export function newEnv(glue: Glue, targetElement: HTMLElement) {
 
   const helpers = newHelpers(glue);
-  let alreadyInitialized = false;
+  let isWindowInitialized = false;
 
   return {
 
@@ -146,7 +173,6 @@ export function newEnv(glue: Glue, targetElement: HTMLElement) {
       const _config = helpers.readEventLoopConfig(configPtr);
 
       const evlObject: EvlObject = {
-        kind: "EventLoop",
         // helpers,
         events: [],
         currentWakerPtr: null,
@@ -154,8 +180,8 @@ export function newEnv(glue: Glue, targetElement: HTMLElement) {
 
       addEventListener("visibilitychange", () => {
         const hidden = document.hidden;
-        if (hidden) newEvent(helpers, evlObject, { kind: "Suspend" });
-        else        newEvent(helpers, evlObject, { kind: "Resume" });
+        if (hidden) newEvent(helpers, evlObject, { kind: EventKind.Suspend });
+        else        newEvent(helpers, evlObject, { kind: EventKind.Resume });
       });
 
       const evlHandle = glue.allocHandle("EventLoop", evlObject);
@@ -187,30 +213,30 @@ export function newEnv(glue: Glue, targetElement: HTMLElement) {
       if (ev) {
         switch (ev.kind) {
 
-          case "Resume":        helpers.evntResume  (ht, hs); break;
-          case "Suspend":       helpers.evntSuspend (ht, hs); break;
-          case "Quit":          helpers.evntQuit    (ht, hs, ev.reason); break;
+          case EventKind.Resume:        helpers.evntResume  (ht, hs); break;
+          case EventKind.Suspend:       helpers.evntSuspend (ht, hs); break;
+          case EventKind.Quit:          helpers.evntQuit    (ht, hs, ev.reason); break;
 
-          case "WindowRedraw":      helpers.evntWindowRedraw       (ht, hs, ev.wndHandle); break;
-          case "WindowEnter":       helpers.evntWindowEnter        (ht, hs, ev.wndHandle); break;
-          case "WindowLeave":       helpers.evntWindowLeave        (ht, hs, ev.wndHandle); break;
-          case "WindowResize":      helpers.evntWindowResize       (ht, hs, ev.wndHandle, ev.w, ev.h, ev.fullscreen); break;
-          case "WindowRescale":     helpers.evntWindowRescale      (ht, hs, ev.wndHandle, ev.scale); break;
-          case "WindowDecorations": helpers.evntWindowDecorations  (ht, hs, ev.wndHandle || 0, ev.enabled); break;
+          case EventKind.WindowRedraw:      helpers.evntWindowRedraw       (ht, hs, ev.wndHandle); break;
+          case EventKind.WindowEnter:       helpers.evntWindowEnter        (ht, hs, ev.wndHandle); break;
+          case EventKind.WindowLeave:       helpers.evntWindowLeave        (ht, hs, ev.wndHandle); break;
+          case EventKind.WindowResize:      helpers.evntWindowResize       (ht, hs, ev.wndHandle, ev.w, ev.h, ev.fullscreen); break;
+          case EventKind.WindowRescale:     helpers.evntWindowRescale      (ht, hs, ev.wndHandle, ev.scale); break;
+          case EventKind.WindowDecorations: helpers.evntWindowDecorations  (ht, hs, ev.wndHandle || 0, ev.enabled); break;
 
-          case "WindowMouseEnter":   helpers.evntWindowMouseEnter  (ht, hs, ev.wndHandle); break;
-          case "WindowMouseLeave":   helpers.evntWindowMouseLeave  (ht, hs, ev.wndHandle); break;
-          case "WindowMouseMotion":  helpers.evntWindowMouseMotion (ht, hs, ev.wndHandle, ev.x, ev.y); break;
-          case "WindowMouseDown":    helpers.evntWindowMouseDown   (ht, hs, ev.wndHandle, ev.x, ev.y, ev.button); break;
-          case "WindowMouseUp":      helpers.evntWindowMouseUp     (ht, hs, ev.wndHandle, ev.x, ev.y, ev.button); break;
-          case "WindowMouseScroll":  helpers.evntWindowMouseScroll (ht, hs, ev.wndHandle, ev.dx, ev.dy); break;
+          case EventKind.WindowMouseEnter:   helpers.evntWindowMouseEnter  (ht, hs, ev.wndHandle); break;
+          case EventKind.WindowMouseLeave:   helpers.evntWindowMouseLeave  (ht, hs, ev.wndHandle); break;
+          case EventKind.WindowMouseMotion:  helpers.evntWindowMouseMotion (ht, hs, ev.wndHandle, ev.x, ev.y); break;
+          case EventKind.WindowMouseDown:    helpers.evntWindowMouseDown   (ht, hs, ev.wndHandle, ev.x, ev.y, ev.button); break;
+          case EventKind.WindowMouseUp:      helpers.evntWindowMouseUp     (ht, hs, ev.wndHandle, ev.x, ev.y, ev.button); break;
+          case EventKind.WindowMouseScroll:  helpers.evntWindowMouseScroll (ht, hs, ev.wndHandle, ev.dx, ev.dy); break;
 
-          case "WindowKeyDownSpecial": helpers.evntWindowKeyDownSpecial (ht, hs, ev.wndHandle, ev.knownSpecialKey, ev.repeat); break;
-          case "WindowKeyDownChar":    helpers.evntWindowKeyDownChar    (ht, hs, ev.wndHandle, ev.chr, false, ev.repeat); break;
-          case "WindowKeyDownUnknown": helpers.evntWindowKeyDownUnknown (ht, hs, ev.wndHandle, ev.key, ev.repeat); break;
-          case "WindowKeyUpSpecial":   helpers.evntWindowKeyUpSpecial   (ht, hs, ev.wndHandle, ev.knownSpecialKey); break;
-          case "WindowKeyUpChar":      helpers.evntWindowKeyUpChar      (ht, hs, ev.wndHandle, ev.chr, false); break;
-          case "WindowKeyUpUnknown":   helpers.evntWindowKeyUpUnknown   (ht, hs, ev.wndHandle, ev.key); break;
+          case EventKind.WindowKeyDownSpecial: helpers.evntWindowKeyDownSpecial (ht, hs, ev.wndHandle, ev.knownSpecialKey, ev.repeat); break;
+          case EventKind.WindowKeyDownChar:    helpers.evntWindowKeyDownChar    (ht, hs, ev.wndHandle, ev.chr, false, ev.repeat); break;
+          case EventKind.WindowKeyDownUnknown: helpers.evntWindowKeyDownUnknown (ht, hs, ev.wndHandle, ev.key, ev.repeat); break;
+          case EventKind.WindowKeyUpSpecial:   helpers.evntWindowKeyUpSpecial   (ht, hs, ev.wndHandle, ev.knownSpecialKey); break;
+          case EventKind.WindowKeyUpChar:      helpers.evntWindowKeyUpChar      (ht, hs, ev.wndHandle, ev.chr, false); break;
+          case EventKind.WindowKeyUpUnknown:   helpers.evntWindowKeyUpUnknown   (ht, hs, ev.wndHandle, ev.key); break;
 
         }
         return PollResult.Ready;
@@ -221,18 +247,18 @@ export function newEnv(glue: Glue, targetElement: HTMLElement) {
 
     event_loop_suspend(evlHandle: WasmPtr) {
       const evlObject = glue.getHandle<EvlObject>(evlHandle);
-      newEvent(helpers, evlObject, { kind: "Suspend" });
+      newEvent(helpers, evlObject, { kind: EventKind.Suspend });
     },
 
     event_loop_resume(evlHandle: WasmPtr) {
       const evlObject = glue.getHandle<EvlObject>(evlHandle);
-      newEvent(helpers, evlObject, { kind: "Resume" });
+      newEvent(helpers, evlObject, { kind: EventKind.Resume });
     },
 
     event_loop_quit(evlHandle: WasmPtr) {
       const evlObject = glue.getHandle<EvlObject>(evlHandle);
       newEvent(helpers, evlObject, {
-        kind: "Quit",
+        kind: EventKind.Quit,
         reason: QuitReason.Program,
       });
     },
@@ -357,46 +383,103 @@ export function newEnv(glue: Glue, targetElement: HTMLElement) {
     // ==========================================
     // WINDOW
     // ==========================================
-    window_drop(ptr: WasmPtr) {
-      glue.freeHandle(ptr);
-    },
-
     window_new(evlHandle: WasmPtr): WasmPtr {
 
       const evlObject = glue.getHandle<EvlObject>(evlHandle);
 
-      if (alreadyInitialized) {
+      if (isWindowInitialized) {
         throw new Error("`Window` can only be created once.");
       } else {
-        alreadyInitialized = true;
+        isWindowInitialized = true;
       }
 
-      const wndObject = {
-        kind: "Window",
-        evlObject,
-        targetElement,
-        scale: 1.0,
-        size: { w: 0, h: 0 },
-        animationFrameRequested: false,
-        resizeObserver: null as ResizeObserver | null,
-      } as WindowObject;
-
+      const wndObject = {} as WindowObject;
       const wndHandle = glue.allocHandle("Window", wndObject);
+      const elHandle =  glue.allocHandle("TargetElement", targetElement);
 
-      // Setup event handlers etc.
-      setupWindowForElement(helpers, evlObject, wndObject, wndHandle);
+      // -------------------------------
+      // SETUP WINDOW STATE
+      // -------------------------------
+
+      wndObject.evlObject = evlObject;
+      wndObject.targetElement = targetElement;
+      wndObject.targetElementHandle = elHandle;
+
+      wndObject.animationFrameRequested = false;
+      wndObject.scale = window.devicePixelRatio;
+      wndObject.size = {
+        w: targetElement.clientWidth,
+        h: targetElement.clientHeight,
+      };
+
+      wndObject.resizeObserver = new ResizeObserver((entries) => {
+        const [entry] = entries;
+
+        const fullscreen = document.fullscreenElement === entry!.target;
+        const w = entry!.contentRect.width;
+        const h = entry!.contentRect.height;
+
+        wndObject.size = { w, h };
+
+        newEvent(helpers, evlObject, { kind: EventKind.WindowResize, wndHandle, w, h, fullscreen });
+
+        const scale = window.devicePixelRatio;
+        if (wndObject.scale !== scale) {
+          wndObject.scale = scale;
+          newEvent(helpers, evlObject, { kind: EventKind.WindowRescale, wndHandle, scale });
+        }
+      });
+
+      wndObject.resizeObserver.observe(wndObject.targetElement);
+
+      newEvent(helpers, evlObject,
+        { kind: EventKind.WindowDecorations, wndHandle, enabled: false }
+      );
+
+      // -------------------------------
+      // ATTACH EVENT HANDLERS
+      // -------------------------------
+
+      const el = targetElement;
+
+      if (!el.tabIndex) {
+        el.tabIndex = 0;
+      }
+
+      el.addEventListener("focus", () => newEvent(helpers, evlObject, { kind: EventKind.WindowEnter, wndHandle }));
+      el.addEventListener("blur", () => newEvent(helpers, evlObject, { kind: EventKind.WindowLeave, wndHandle }));
+
+      el.addEventListener("mouseenter", () => newEvent(helpers, evlObject, { kind: EventKind.WindowMouseEnter, wndHandle }));
+      el.addEventListener("mouseleave", () => newEvent(helpers, evlObject, { kind: EventKind.WindowMouseLeave, wndHandle }));
+
+      el.addEventListener("mousemove", (event) => newEvent(helpers, evlObject, newMouseMotionEvent(wndHandle, wndObject, event)));
+      el.addEventListener("mousedown", (event) => newEvent(helpers, evlObject, newMouseButtonEvent(wndHandle, wndObject, event, true)));
+      el.addEventListener("mouseup",   (event) => newEvent(helpers, evlObject, newMouseButtonEvent(wndHandle, wndObject, event, false)));
+      el.addEventListener("wheel",     (event) => newEvent(helpers, evlObject, newMouseScrollEvent(wndHandle, event)));
+
+      el.addEventListener("keydown", (event) => newEvent(helpers, evlObject, newKeyEvent(wndHandle, event, true)));
+      el.addEventListener("keyup",   (event) => newEvent(helpers, evlObject, newKeyEvent(wndHandle, event, false)));
 
       return wndHandle;
 
     },
 
-    window_id(wndHandle: WasmPtr): WasmPtr {
+    window_drop(wndHandle: number) {
+
+      const wndObject = glue.getHandle<WindowObject>(wndHandle);
+
+      glue.freeHandle(wndObject.targetElementHandle);
+      glue.freeHandle(wndHandle);
+
+    },
+
+    window_id(wndHandle: number): WasmPtr {
       return wndHandle;
     },
 
-    window_present(_wndHandle: WasmPtr) {},
+    window_present(_wndHandle: number) {},
 
-    window_redraw(wndHandle: WasmPtr) {
+    window_redraw(wndHandle: number) {
 
       const wndObject = glue.getHandle<WindowObject>(wndHandle);
 
@@ -406,7 +489,7 @@ export function newEnv(glue: Glue, targetElement: HTMLElement) {
         requestAnimationFrame(() => {
           wndObject.animationFrameRequested = false;
 
-          newEvent(helpers, wndObject.evlObject, { kind: "WindowRedraw", wndHandle });
+          newEvent(helpers, wndObject.evlObject, { kind: EventKind.WindowRedraw, wndHandle });
           if (wndObject.evlObject.currentWakerPtr) {
             helpers.wakerWake(wndObject.evlObject.currentWakerPtr);
           }
@@ -415,27 +498,28 @@ export function newEnv(glue: Glue, targetElement: HTMLElement) {
 
     },
 
-    window_transparency(wndHandle: WasmPtr, value: boolean) {},
-    window_decorations(wndHandle: WasmPtr, value: boolean) {},
-    window_title(wndHandle: WasmPtr, textPtr: WasmPtr) {},
-    window_maximize(wndHandle: WasmPtr, value: boolean) {},
-    window_fullscreen(wndHandle: WasmPtr, value: boolean, monitorPtr: WasmPtr) {},
-    window_sizehint(wndHandle: WasmPtr, sizePtr: WasmPtr) {},
-    window_minsize(wndHandle: WasmPtr, sizePtr: WasmPtr) {},
-    window_minsize_unset(wndHandle: WasmPtr) {},
-    window_maxsize(wndHandle: WasmPtr, sizePtr: WasmPtr) {},
-    window_maxsize_unset(wndHandle: WasmPtr) {},
-    window_alert(wndHandle: WasmPtr, urgency: number) {},
+    window_transparency(wndHandle: number, value: boolean) {},
+    window_decorations(wndHandle: number, value: boolean) {},
+    window_title(wndHandle: number, textPtr: WasmPtr) {},
+    window_maximize(wndHandle: number, value: boolean) {},
+    window_fullscreen(wndHandle: number, value: boolean, monitorPtr: WasmPtr) {},
+    window_sizehint(wndHandle: number, sizePtr: WasmPtr) {},
+    window_minsize(wndHandle: number, sizePtr: WasmPtr) {},
+    window_minsize_unset(wndHandle: number) {},
+    window_maxsize(wndHandle: number, sizePtr: WasmPtr) {},
+    window_maxsize_unset(wndHandle: number) {},
+    window_alert(wndHandle: number, urgency: number) {},
 
-    window_ptr(wndHandle: WasmPtr): WasmPtr {
-      return wndHandle;
-    },
-
-    window_size(outPtr: WasmPtr, wndHandle: WasmPtr) {
+    window_size(wndHandle: number, outPtr: WasmPtr) {
       const wndObject = glue.getHandle<WindowObject>(wndHandle);
       const size = wndObject.size;
       helpers.writePhysicalSize(outPtr, size.w, size.h);
     },
+
+    window_ptr(wndHandle: number): WasmPtr {
+      return wndHandle;
+    },
+
   };
 }
 
@@ -481,10 +565,10 @@ function newHelpers(glue: Glue) {
 
     evntWindowMouseEnter(ht: WasmPtr, hs: WasmPtr, id: WasmPtr) { glue.exports.call_window_mouse_enter(ht, hs, id) },
     evntWindowMouseLeave(ht: WasmPtr, hs: WasmPtr, id: WasmPtr) { glue.exports.call_window_mouse_leave(ht, hs, id) },
-    evntWindowMouseMotion(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, pointX: number, pointY: number) { glue.exports.call_window_mouse_motion(ht, hs, pointX, pointY) },
-    evntWindowMouseDown(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, pointX: number, pointY: number, button: MouseButton) { glue.exports.call_window_mouse_down(ht, hs, pointX, pointY, button) },
-    evntWindowMouseUp(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, pointX: number, pointY: number, button: MouseButton) { glue.exports.call_window_mouse_up(ht, hs, pointX, pointY, button) },
-    evntWindowMouseScroll(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, dx: number, dy: number) { glue.exports.call_window_mouse_scroll(ht, hs, dx, dy) },
+    evntWindowMouseMotion(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, pointX: number, pointY: number) { glue.exports.call_window_mouse_motion(ht, hs, id, pointX, pointY) },
+    evntWindowMouseDown(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, pointX: number, pointY: number, button: MouseButton) { glue.exports.call_window_mouse_down(ht, hs, id, pointX, pointY, button) },
+    evntWindowMouseUp(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, pointX: number, pointY: number, button: MouseButton) { glue.exports.call_window_mouse_up(ht, hs, id, pointX, pointY, button) },
+    evntWindowMouseScroll(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, dx: number, dy: number) { glue.exports.call_window_mouse_scroll(ht, hs, id, dx, dy) },
 
     evntWindowKeyDownSpecial(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, key: SpecialKey, repeat: boolean) { glue.exports.call_window_key_down_special(ht, hs, id, key, repeat) },
     evntWindowKeyDownChar(ht: WasmPtr, hs: WasmPtr, id: WasmPtr, chr: number, dead: boolean, repeat: boolean) { glue.exports.call_window_key_down_char(ht, hs, id, chr, dead, repeat) },
@@ -540,28 +624,32 @@ function convertMouseButton(button: number): MouseButton {
   }
 }
 
-function newMouseButtonEvent(wndHandle: WasmPtr, event: MouseEvent, direction: "Down" | "Up"): AppEvent {
+function newMouseButtonEvent(wndHandle: number, wndObject: WindowObject, event: MouseEvent, down: boolean): Event {
+  const h = wndObject.size.h;
   return {
-    kind: `WindowMouse${direction}` as "WindowMouseDown" | "WindowMouseUp",
+    kind: down ? EventKind.WindowMouseDown : EventKind.WindowMouseUp,
     wndHandle,
     x: event.clientX,
-    y: event.clientY,
+    // Flip the Y-Axis:
+    y: h - event.clientY,
     button: convertMouseButton(event.button),
   };
 }
 
-function newMouseMotionEvent(wndHandle: WasmPtr, event: MouseEvent): AppEvent {
+function newMouseMotionEvent(wndHandle: number, wndObject: WindowObject, event: MouseEvent): Event {
+  const h = wndObject.size.h;
   return {
-    kind: "WindowMouseMotion",
+    kind: EventKind.WindowMouseMotion,
     wndHandle,
     x: event.clientX,
-    y: event.clientY,
+    // Flip the Y-Axis:
+    y: h - event.clientY,
   };
 }
 
-function newMouseScrollEvent(wndHandle: WasmPtr, event: WheelEvent): AppEvent {
+function newMouseScrollEvent(wndHandle: number, event: WheelEvent): Event {
   return {
-    kind: "WindowMouseScroll",
+    kind: EventKind.WindowMouseScroll,
     wndHandle,
     dx: event.deltaX,
     dy: event.deltaY,
@@ -613,10 +701,10 @@ function fnvHashString(str: string): number {
   return hash >>> 0;
 }
 
-function newKeyEvent(wndHandle: WasmPtr, event: KeyboardEvent, direction: "Down" | "Up"): AppEvent {
+function newKeyEvent(wndHandle: number, event: KeyboardEvent, down: boolean): Event {
   if (event.key.length === 1) {
     return {
-      kind: `WindowKey${direction}Char`,
+      kind: down ? EventKind.WindowKeyDownChar : EventKind.WindowKeyUpChar,
       wndHandle,
       chr: event.key.codePointAt(0) || 0,
       repeat: event.repeat,
@@ -625,14 +713,14 @@ function newKeyEvent(wndHandle: WasmPtr, event: KeyboardEvent, direction: "Down"
     const knownSpecialKey = convertSpecialKey(event.key);
     if (knownSpecialKey !== null) {
       return {
-        kind: `WindowKey${direction}Special`,
+        kind: down ? EventKind.WindowKeyDownSpecial : EventKind.WindowKeyUpSpecial,
         wndHandle,
         knownSpecialKey,
         repeat: event.repeat,
       };
     } else {
       return {
-        kind: `WindowKey${direction}Unknown`,
+        kind: down ? EventKind.WindowKeyDownUnknown : EventKind.WindowKeyUpUnknown,
         wndHandle,
         key: fnvHashString(event.key),
         repeat: event.repeat,
@@ -641,52 +729,9 @@ function newKeyEvent(wndHandle: WasmPtr, event: KeyboardEvent, direction: "Down"
   }
 }
 
-function newEvent(helpers: ReturnType<typeof newHelpers>, evlObject: EvlObject, event: AppEvent) {
+function newEvent(helpers: ReturnType<typeof newHelpers>, evlObject: EvlObject, event: Event) {
   evlObject.events.push(event);
   if (evlObject.currentWakerPtr) {
     helpers.wakerWake(evlObject.currentWakerPtr);
   }
-}
-
-function setupWindowForElement(helpers: ReturnType<typeof newHelpers>, evlObject: EvlObject, wndObject: WindowObject, wndHandle: WasmPtr) {
-  const el = wndObject.targetElement;
-
-  if (!el.tabIndex) {
-    el.tabIndex = 0;
-  }
-
-  el.addEventListener("focus", () => newEvent(helpers, evlObject, { kind: "WindowEnter", wndHandle }));
-  el.addEventListener("blur", () => newEvent(helpers, evlObject, { kind: "WindowLeave", wndHandle }));
-
-  el.addEventListener("mouseenter", () => newEvent(helpers, evlObject, { kind: "WindowMouseEnter", wndHandle }));
-  el.addEventListener("mouseleave", () => newEvent(helpers, evlObject, { kind: "WindowMouseLeave", wndHandle }));
-
-  el.addEventListener("mousemove", (event) => newEvent(helpers, evlObject, newMouseMotionEvent(wndHandle, event)));
-  el.addEventListener("mousedown", (event) => newEvent(helpers, evlObject, newMouseButtonEvent(wndHandle, event, "Down")));
-  el.addEventListener("mouseup", (event) => newEvent(helpers, evlObject, newMouseButtonEvent(wndHandle, event, "Up")));
-  el.addEventListener("wheel", (event) => newEvent(helpers, evlObject, newMouseScrollEvent(wndHandle, event)));
-
-  el.addEventListener("keydown", (event) => newEvent(helpers, evlObject, newKeyEvent(wndHandle, event, "Down")));
-  el.addEventListener("keyup", (event) => newEvent(helpers, evlObject, newKeyEvent(wndHandle, event, "Up")));
-
-  wndObject.resizeObserver = new ResizeObserver((entries) => {
-    const [entry] = entries;
-
-    const fullscreen = document.fullscreenElement === entry!.target;
-    const w = entry!.contentRect.width;
-    const h = entry!.contentRect.height;
-
-    wndObject.size = { w, h };
-
-    newEvent(helpers, evlObject, { kind: "WindowResize", wndHandle, w, h, fullscreen });
-
-    const scale = window.devicePixelRatio;
-    if (wndObject.scale !== scale) {
-      wndObject.scale = scale;
-      newEvent(helpers, evlObject, { kind: "WindowRescale", wndHandle, scale });
-    }
-  });
-
-  wndObject.resizeObserver.observe(wndObject.targetElement);
-  newEvent(helpers, evlObject, { kind: "WindowDecorations", enabled: false, wndHandle });
 }

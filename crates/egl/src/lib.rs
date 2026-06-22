@@ -108,8 +108,17 @@ struct InstanceInner {
      Es3, // NOTE: Yes, this is supposed to be Es3.
  }
 
+ #[derive(Default)]
+ pub enum AlphaFormat {
+     #[default]
+     Premultiplied,
+     Unmultiplied,
+ }
+
  /// The sizes of the buffers for this
  /// context and surfaces used with it.
+ ///
+ /// Only applied on desktop OpenGL!
  pub struct BufferDesc {
      pub rgba: (usize, usize, usize, usize),
      pub depth: usize,
@@ -132,6 +141,7 @@ struct InstanceInner {
      pub version: [usize; 2],
      pub debug: bool,
      pub sizes: BufferDesc,
+     pub alpha: AlphaFormat,
  }
 
  impl ConfigBuilder {
@@ -151,8 +161,14 @@ struct InstanceInner {
          self
      }
 
+     /// Only applied on desktop OpenGL!
      pub fn bufferdesc(mut self, value: BufferDesc) -> Self {
          self.sizes = value;
+         self
+     }
+
+     pub fn alpha(mut self, value: AlphaFormat) -> Self {
+         self.alpha = value;
          self
      }
 
@@ -201,6 +217,10 @@ struct InstanceInner {
 
          let surface_attrs = vec![
              egl::RENDER_BUFFER, egl::BACK_BUFFER,
+             egl::ALPHA_FORMAT, match self.alpha {
+                 AlphaFormat::Premultiplied => egl::ALPHA_FORMAT_PRE,
+                 AlphaFormat::Unmultiplied => egl::ALPHA_FORMAT_NONPRE,
+             },
              egl::NONE,
          ];
 

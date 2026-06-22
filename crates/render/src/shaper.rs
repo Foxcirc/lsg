@@ -408,9 +408,6 @@ impl TriangulationPass {
 
         // eprintln!("points: {:?}", points);
 
-        #[cfg(debug_assertions)]
-        let mut debug_ears_generated = 0; // TODO: is this a decent debugging mechanism
-
         let mut changes = false; // used to check for errors
         let mut counter = 0;
 
@@ -463,13 +460,6 @@ impl TriangulationPass {
                 let indices = Self::neighbours(&self.removed, ic);
                 let ear = Self::ear(indices, points);
                 self.ears.set(ic as u64, ear);
-
-                #[cfg(debug_assertions)] {
-                    debug_ears_generated += 1;
-                    if debug_ears_generated == unsafe { crate::SHAPE_TAKE_PART } {
-                        break
-                    }
-                }
 
                 changes = true;
 

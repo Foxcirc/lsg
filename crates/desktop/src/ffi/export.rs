@@ -507,6 +507,12 @@ pub unsafe extern "C" fn window_size(this0: *mut Window) -> common::PhysicalSize
     this.size()
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn window_scale(this0: *mut Window) -> f64 {
+    let this = unsafe { get_window(this0) };
+    this.scale()
+}
+
 unsafe fn get_event_loop<'x>(ptr: *const EventLoop) -> &'x Arc<crate::EventLoop> {
     unsafe { &*ptr.cast() }
 }

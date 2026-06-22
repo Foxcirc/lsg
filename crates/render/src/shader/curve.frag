@@ -24,9 +24,9 @@ void main() {
     } else {
 
         //  Anti-Aliasing of normal triangles.
-        vec3 d = fwidth(barycentric);
-        vec3 edgeDist = barycentric / d;
-        float dist = min(min(edgeDist.x, edgeDist.y), edgeDist.z);
+        // vec3 d = fwidth(barycentric);
+        // vec3 edgeDist = barycentric / d;
+        // float dist = min(min(edgeDist.x, edgeDist.y), edgeDist.z);
         // multiplier = clamp(dist, 0.0, 1.0);
         multiplier = 1.0;
     }
@@ -38,9 +38,11 @@ void main() {
         pixel = textureData;
     }
 
+    float finalAlpha = pixel.a * multiplier;
+
     color = vec4(
-        pixel.rgb,
-        pixel.a * multiplier
+        pixel.rgb * finalAlpha,
+        finalAlpha
     );
 
 }

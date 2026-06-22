@@ -102,6 +102,10 @@ impl WindowBackend {
     pub fn size(&self) -> common::PhysicalSize {
         unimplemented!()
     }
+
+    pub fn scale(&self) -> f64 {
+        unimplemented!()
+    }
 }
 
 pub struct MonitorBackend;

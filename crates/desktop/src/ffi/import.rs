@@ -80,7 +80,8 @@ pub mod definitions {
         pub fn window_maxsize_unset(this0: *mut Window);
         pub fn window_alert(this0: *mut Window, urgency: crate::Urgency);
         pub fn window_ptr(this0: *mut Window) -> *mut void;
-        pub fn window_size(this0: *mut Window) -> common::PhysicalSize;
+        pub fn window_size(this0: *mut Window, out: &mut common::PhysicalSize);
+        pub fn window_scale(this0: *mut Window) -> f64;
     }
 
 }
@@ -199,10 +200,7 @@ pub mod implementation {
             unsafe { event_loop_quit(self.inner) }
         }
 
-    }
-
-    unsafe impl common::IsDisplay for EventLoopBackend {
-        fn ptr(&self) -> *const void {
+        pub fn ptr(&self) -> *const void {
             unsafe { event_loop_display_ptr(self.inner) }
         }
     }
@@ -309,7 +307,12 @@ pub mod implementation {
             unsafe { window_ptr(self.inner) }
         }
         pub fn size(&self) -> common::PhysicalSize {
-            unsafe { window_size(self.inner) }
+            let mut out = common::PhysicalSize::ZERO;
+            unsafe { window_size(self.inner, &mut out) };
+            out
+        }
+        pub fn scale(&self) -> f64 {
+            unsafe { window_scale(self.inner) }
         }
     }
 
@@ -498,10 +501,10 @@ pub mod implementation {
 
         window_mouse_enter:  handler!((id: crate::Id)                              => Event::Window { id, event: WindowEvent::MouseEnter }),
         window_mouse_leave:  handler!((id: crate::Id)                              => Event::Window { id, event: WindowEvent::MouseLeave }),
-        window_mouse_motion: handler!((id: crate::Id, point: common::LogicalPoint) => Event::Window { id, event: WindowEvent::MouseMotion { point } }),
+        window_mouse_motion: handler!((id: crate::Id, point: common::PhysicalPoint) => Event::Window { id, event: WindowEvent::MouseMotion { point } }),
 
-        window_mouse_down:   handler!((id: crate::Id, point: common::LogicalPoint, button: crate::MouseButton) => Event::Window { id, event: WindowEvent::MouseDown { point, button } }),
-        window_mouse_up:     handler!((id: crate::Id, point: common::LogicalPoint, button: crate::MouseButton) => Event::Window { id, event: WindowEvent::MouseUp { point, button } }),
+        window_mouse_down:   handler!((id: crate::Id, point: common::PhysicalPoint, button: crate::MouseButton) => Event::Window { id, event: WindowEvent::MouseDown { point, button } }),
+        window_mouse_up:     handler!((id: crate::Id, point: common::PhysicalPoint, button: crate::MouseButton) => Event::Window { id, event: WindowEvent::MouseUp { point, button } }),
 
         window_mouse_scroll: handler!((id: crate::Id, dx: i16, dy: i16) => Event::Window { id, event: WindowEvent::MouseScroll { dx, dy } }),
 

@@ -8,7 +8,7 @@ authors.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = ["linux"]
+default = []
 
 export = []
 import = [

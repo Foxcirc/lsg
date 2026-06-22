@@ -7,8 +7,11 @@ edition.workspace = true
 
 [features]
 default = []
-browser = ["desktop/browser"]
+browser = ["desktop/browser", "render/browser"]
 
 [dependencies]
+common = { path = "../common" }
 desktop = { path = "../desktop" }
 futures = { path = "../futures" }
+render = { path = "../render" }
+graphics = { path = "../graphics" }

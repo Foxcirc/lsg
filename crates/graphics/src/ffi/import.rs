@@ -15,20 +15,19 @@ pub mod definitions {
         pub fn program_new(gp: *mut types::Graphics, sources: types::SourcesSlice) -> *mut types::Program;
         pub fn program_drop(this: *mut types::Program);
 
-        #[cfg(any(target_os = "linux", target_family = "wasm"))]
         pub fn program_uniformloc(this: *mut types::Program, name: *const i8) -> u32;
 
         pub fn surface_new(gp: *mut types::Graphics, window: *const void) -> *mut types::Surface;
         pub fn surface_drop(this: *mut types::Surface);
         pub fn surface_resize(this: *mut types::Surface, size: common::PhysicalSize);
         pub fn surface_draw(this: *mut types::Surface, cmd: types::DrawCommand);
-        pub fn surface_blit(this: *mut types::Surface, texture: *const crate::Texture);
+        pub fn surface_blit(this: *mut types::Surface, texture: *const types::Texture);
         pub fn surface_swap(this: *mut types::Surface);
 
         pub fn texture_maxsize(gp: *mut types::Graphics) -> u32;
         pub fn texture_new(gp: *mut types::Graphics, size: common::PhysicalSize, data: types::ByteSlice) -> *mut types::Texture;
         pub fn texture_drop(this: *mut types::Texture);
-        pub fn texture_size(this: *mut types::Texture) -> common::PhysicalSize;
+        pub fn texture_size(this: *mut types::Texture, out: *mut common::PhysicalSize);
         pub fn texture_resize(this: *mut types::Texture, size: common::PhysicalSize, data: types::ByteSlice);
         pub fn texture_clear(this: *mut types::Texture, r: f32, g: f32, b: f32, a: f32);
         pub fn texture_inspect(this: *mut types::Texture, out: types::ByteSlice);
@@ -105,10 +104,9 @@ pub mod implementation {
             Self { inner }
         }
 
-        #[cfg(target_os = "linux")]
         #[track_caller]
         pub fn uniformloc(&mut self, name: &str) -> crate::Location {
-            let name0 = CString::new(name).expect("Invalid uniform name");
+            let name0 = CString::new(name).expect("Invalid uniform name.");
             let loc = unsafe { definitions::program_uniformloc(self.inner, name0.as_ptr()) };
             crate::Location(loc as usize)
         }
@@ -128,7 +126,7 @@ pub mod implementation {
         pub fn new<S: IsSurface>(gp: &crate::Graphics, window: &S) -> Self {
             let inner = unsafe { definitions::surface_new(
                 gp.backend.inner,
-                ptr::from_ref(window).cast()
+                window.ptr(),
             ) };
             Self { inner }
         }
@@ -160,7 +158,7 @@ pub mod implementation {
         }
 
         pub fn blit(&mut self, texture: &crate::Texture) {
-            unsafe { definitions::surface_blit(self.inner, ptr::from_ref(texture)) }
+            unsafe { definitions::surface_blit(self.inner, texture.backend.inner) }
         }
 
         pub fn swap(&mut self) {
@@ -189,7 +187,9 @@ pub mod implementation {
         }
 
         pub fn size(&self) -> PhysicalSize {
-            unsafe { definitions::texture_size(self.inner) }
+            let mut out = PhysicalSize::ZERO;
+            unsafe { definitions::texture_size(self.inner, &mut out) };
+            out
         }
 
         pub fn resize(&mut self, size: PhysicalSize, data: Option<&[u8]>) {
@@ -224,8 +224,8 @@ pub mod implementation {
         }
 
         #[track_caller]
-        pub fn fromtex(&mut self, src: &TextureBackend, srcrect: PhysicalRect, dstrect: PhysicalRect) {
-            unsafe { definitions::texture_fromtex(self.inner, src.inner, srcrect, dstrect) }
+        pub fn fromtex(&mut self, src: &crate::Texture, srcrect: PhysicalRect, dstrect: PhysicalRect) {
+            unsafe { definitions::texture_fromtex(self.inner, src.backend.inner, srcrect, dstrect) }
         }
 
         pub fn draw<'a>(&self, cmd: crate::DrawCommand<'a>) {

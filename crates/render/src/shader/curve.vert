@@ -1,10 +1,10 @@
 #version 300 es
 precision mediump float;
 
-// For the description of the vertex layout see comments in the gl-renderer.
+// For the description of the vertex layout see comments in the gl-renderer (fn prepare).
 layout (location = 0) in uint inFlags;
-layout (location = 1) in int inXY;
-layout (location = 2) in uint inTEX;
+layout (location = 1) in ivec2 inXY;
+layout (location = 2) in uvec2 inTEX;
 
 out vec4 textureData; // color/tex-coords, depending on isAtlas
 out vec2 curvePosition;
@@ -35,46 +35,35 @@ void main() {
     fillKind = inFillKind;
     isAtlas  = inIsAtlas;
 
-    ivec2 intXY = ivec2(
-        (inXY << 0)  >> 16, // X, 16 bit
-        (inXY << 16) >> 16 // Y, 16 bit
-    );
-
-    uvec2 intTEX = uvec2(
-        (inTEX >> 16u) & 0xFFFFu,
-        (inTEX >> 0u)  & 0xFFFFu
-    );
-
-    uvec4 uintColor = uvec4(
-        (inTEX >> 0u)  & 0xFFu, // r
-        (inTEX >> 8u)  & 0xFFu, // g
-        (inTEX >> 16u) & 0xFFu, // b
-        (inTEX >> 24u) & 0xFFu  // a
+    uvec4 maybeColor = uvec4(
+        (inTEX.x >> 0u) & 0xFFu, // r
+        (inTEX.x >> 8u) & 0xFFu, // g
+        (inTEX.y >> 0u) & 0xFFu, // b
+        (inTEX.y >> 8u) & 0xFFu  // a
     );
 
     // Convert coordinates to OpenGL's form.
 
     if (inIsAtlas == 1u) {
         textureData = vec4(
-            float(intTEX.x) / 5000.0,
-            float(intTEX.y) / 5000.0,
+            float(inTEX.x) / 5000.0,
+            float(inTEX.y) / 5000.0,
             0.0, 0.0 // unused
         );
     } else {
         textureData = vec4(
-            float(uintColor.r) / 255.0,
-            float(uintColor.g) / 255.0,
-            float(uintColor.b) / 255.0,
-            float(uintColor.a) / 255.0
+            float(maybeColor.r) / 255.0,
+            float(maybeColor.g) / 255.0,
+            float(maybeColor.b) / 255.0,
+            float(maybeColor.a) / 255.0
         );
     }
 
     gl_Position = vec4(
-        float(int(intXY.x) - 2500) / 2500.0,
-        float(int(intXY.y) - 2500) / 2500.0,
+        float(int(inXY.x) - 2500) / 2500.0,
+        float(int(inXY.y) - 2500) / 2500.0,
         0.0, 1.0 // unused coords
     );
-
 
     curvePosition = lookupCurvePosition(fillKind, vertexIndex);
 

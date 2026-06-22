@@ -1,12 +1,13 @@
 
-import type { Glue, WasmPtr, Size, Pos, Rect } from "./glue";
+import type { Glue, WasmPtr, Size } from "./glue";
 
 // =====================================================
 // TYPES & INTERFACES
 // =====================================================
 
-export interface EvlObjectMin {
-  canvas: HTMLCanvasElement;
+export interface WindowObjectMin {
+  targetElement: HTMLElement;
+  size: Size;
 }
 
 export interface GraphicsObject {
@@ -51,7 +52,7 @@ export interface TextureAttrib {
 }
 
 export interface VertexAttrib {
-  kind: number;
+  kind: DataType;
   count: number;
   divisor: number;
   location: number;
@@ -132,15 +133,18 @@ function sizeOfGlDataType(glType: DataType): number {
 // =====================================================
 
 export function newEnv(glue: Glue) {
+
   const helpers = newHelpers(glue);
 
-  return {
+  // We assign it to a variable, since it needs to call its own functions
+  // but "this" will not be bound when called from WASM.
+  const env = {
 
     graphics_new(_displayPtr: number): number {
 
       // Create the global canvas and webgl2 context.
       const canvas = document.createElement("canvas");
-      const gl = canvas.getContext("webgl2");
+      const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: true });
       if (!gl) { throw new Error("webgl2 not supported") };
 
       // Setup a scratch framebuffer.
@@ -219,16 +223,18 @@ export function newEnv(glue: Glue) {
 
       const gpObject = glue.getHandle<GraphicsObject>(gpHandle);
       const canvas = gpObject.canvas;
-      const targetElement = glue.getHandle<HTMLElement>(windowPtr);
+      const wndObjectMin = glue.getHandle<WindowObjectMin>(windowPtr);
+
+      console.log(windowPtr, wndObjectMin);
 
       const size = {
-        w: targetElement.clientWidth,
-        h: targetElement.clientHeight,
+        w: wndObjectMin.size.w,
+        h: wndObjectMin.size.h,
       };
 
       canvas.width = size.w;
       canvas.height = size.h;
-      targetElement.appendChild(canvas);
+      wndObjectMin.targetElement.appendChild(canvas);
 
       return glue.allocHandle("Surface", { gpObject, size });
 
@@ -272,10 +278,10 @@ export function newEnv(glue: Glue) {
 
       const surfaceObject = glue.getHandle<SurfaceObject>(surfaceHandle);
       const { gl, scratchFbo } = surfaceObject.gpObject;
-      const textureObject = glue.getHandle<TextureObject>(textureHandle);
+      const texObject = glue.getHandle<TextureObject>(textureHandle);
 
       const size = surfaceObject.size;
-      if (size.w !== textureObject.size.w || size.h !== textureObject.size.h) {
+      if (size.w !== texObject.size.w || size.h !== texObject.size.h) {
         throw new Error("Texture and surface must be equally sized for blitting.");
       }
 
@@ -284,7 +290,7 @@ export function newEnv(glue: Glue) {
         gl.READ_FRAMEBUFFER,
         gl.COLOR_ATTACHMENT0,
         gl.TEXTURE_2D,
-        textureObject.glTexture,
+        texObject.glTexture,
         0
       );
 
@@ -306,17 +312,18 @@ export function newEnv(glue: Glue) {
       return gl.getParameter(gl.MAX_TEXTURE_SIZE);
     },
 
-    texture_new(gpHandle: number, sizePtr: WasmPtr, dataPtr: WasmPtr): number {
+    texture_new(gpHandle: number, sizePtr: WasmPtr, dataSlicePtr: WasmPtr): number {
 
       const gpObject = glue.getHandle<GraphicsObject>(gpHandle);
-      const { gl } = gpObject;
+      const { gl, scratchFbo } = gpObject;
       const size = glue.readSize(sizePtr);
+      const view = helpers.viewOptionalByteSlice(dataSlicePtr);
 
-      let view: Uint8Array | null = null;
-      if (dataPtr) view = helpers.viewByteSlice(dataPtr);
+      if (size.w === 0 || size.h === 0)
+        throw new Error("Texture cannot be zero sized.");
 
       const glTexture = gl.createTexture();
-      if (!glTexture) throw new Error("Failed to create WebGL Texture");
+      if (!glTexture) throw new Error("Failed to create WebGL Texture.");
 
       gl.bindTexture(gl.TEXTURE_2D, glTexture);
 
@@ -326,6 +333,8 @@ export function newEnv(glue: Glue) {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 
+      console.log("(texture_new) uploading following data:", size, view);
+
       gl.texImage2D(
         gl.TEXTURE_2D, 0, gl.RGBA8,
         size.w, size.h, 0,
@@ -333,7 +342,21 @@ export function newEnv(glue: Glue) {
         view
       );
 
-      return glue.allocHandle("Texture", { gpObject, glTexture, size });
+      const handle = glue.allocHandle("Texture", {
+        gpObject, glTexture, size
+      });
+
+      // If no data was provided, we clear the texture, so it is not left in an
+      // uninitialized state, which would generate a warning in WebGL.
+      if (!view) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, scratchFbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, glTexture, 0);
+
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+
+      return handle;
 
     },
 
@@ -341,27 +364,28 @@ export function newEnv(glue: Glue) {
       glue.freeHandle(texHandle);
     },
 
-    texture_size(texHandle: number, sizeOut: WasmPtr): void {
+    texture_size(texHandle: number, outPtr: WasmPtr): void {
       const texObject = glue.getHandle<TextureObject>(texHandle);
-      glue.writeSize(sizeOut, texObject.size);
+      glue.writeSize(outPtr, texObject.size);
     },
 
-    texture_resize(texHandle: number, sizePtr: WasmPtr, dataPtr: WasmPtr): void {
+    texture_resize(texHandle: number, sizePtr: WasmPtr, dataSlicePtr: WasmPtr): void {
 
       const texObject = glue.getHandle<TextureObject>(texHandle);
       const { gpObject: { gl }, glTexture } = texObject;
-      const newSize = glue.readSize(sizePtr);
+      const size = glue.readSize(sizePtr);
 
       // Update our size!
-      texObject.size = newSize;
+      texObject.size = size;
 
-      let view: Uint8Array | null = null;
-      if (dataPtr) view = helpers.viewByteSlice(dataPtr);
+      const view = helpers.viewOptionalByteSlice(dataSlicePtr);
+
+      console.log("(texture_resize) uploading following data:", size, view);
 
       gl.bindTexture(gl.TEXTURE_2D, glTexture);
       gl.texImage2D(
         gl.TEXTURE_2D, 0, gl.RGBA8,
-        newSize.w, newSize.h, 0,
+        size.w, size.h, 0,
         gl.RGBA, gl.UNSIGNED_BYTE,
         view
       );
@@ -469,34 +493,67 @@ export function newEnv(glue: Glue) {
       const glVao = gl.createVertexArray();
       if (!glVao) throw new Error("Failed to create WebGL vertex array.");
 
-      const vertsize = layout
-        .map((it) => sizeOfGlDataType(it.kind as DataType))
-        .reduce((acc, it) => acc + it, 0);
+      const vertsize = layout.reduce(
+        (acc, it) => acc + (sizeOfGlDataType(it.kind) * it.count), 0
+      );
 
       gl.bindVertexArray(glVao);
       gl.bindBuffer(gl.ARRAY_BUFFER, glVbo);
 
-      let loc = 0;
       let offset = 0;
 
       for (const it of layout) {
-        gl.vertexAttribPointer(
-          loc,
-          it.count,
-          glDataTypeCast(gl, it.kind as DataType),
-          false,
-          vertsize,
-          offset
-        );
-        gl.enableVertexAttribArray(loc);
 
-        loc += 1;
-        offset += sizeOfGlDataType(it.kind as DataType);
+        if (it.kind == DataType.F32) {
+          // Float.
+          gl.vertexAttribPointer(
+            it.location, it.count,
+            glDataTypeCast(gl, it.kind),
+            false, vertsize, offset
+          );
+        } else {
+          // Integer types.
+          gl.vertexAttribIPointer(
+            it.location, it.count,
+            glDataTypeCast(gl, it.kind),
+            vertsize, offset
+          );
+        }
+
+        gl.enableVertexAttribArray(it.location);
+
+        const size = sizeOfGlDataType(it.kind);
+        if (offset % size != 0 || vertsize % size != 0)
+          throw new Error(`Alignment mismatch in attribute ${it.location}`);
+
+        offset += sizeOfGlDataType(it.kind) * it.count;
+
       }
 
-      return glue.allocHandle("VertexBuffer", {
-        gl, glVbo, glVao, vertsize, totalsize: 0
-      });
+      gl.bindVertexArray(glVao);
+
+      for (let loc = 0; loc < 8; ++loc) {
+          console.log("attrib", loc, {
+              enabled: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_ENABLED),
+              buffer: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING),
+              size: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_SIZE),
+              stride: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_STRIDE),
+              offset: gl.getVertexAttribOffset(
+                  loc,
+                  gl.VERTEX_ATTRIB_ARRAY_POINTER
+              ),
+          });
+      }
+
+      const vbObject: VertexBufferObject = {
+        gpObject,
+        glVbo,
+        glVao,
+        vertsize,
+        totalsize: 0
+      };
+
+      return glue.allocHandle("VertexBuffer", vbObject);
 
     },
 
@@ -523,6 +580,9 @@ export function newEnv(glue: Glue) {
     },
 
   };
+
+  return env;
+
 }
 
 // =====================================================
@@ -532,6 +592,13 @@ export function newEnv(glue: Glue) {
 function newHelpers(glue: Glue) {
 
   return {
+
+    viewOptionalByteSlice(ptr: WasmPtr): Uint8Array | null {
+      const header = glue.readSliceHeader(ptr);
+      if (header.ptr)
+        return glue.viewU8!.subarray(header.ptr, header.ptr + header.len);
+      else return null;
+    },
 
     viewByteSlice(ptr: WasmPtr): Uint8Array {
       const header = glue.readSliceHeader(ptr);
@@ -612,7 +679,7 @@ function drawToCurrentFramebuffer(gl: WebGL2RenderingContext, cmd: DrawCmd, glue
     }
     case BlendMode.OrderedTransparency: {
       gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       break;
     }
   }
