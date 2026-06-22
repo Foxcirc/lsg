@@ -1,4 +1,5 @@
 
-pub mod types;
-pub mod waker;
-pub mod import; // TODO: add feature gate for import module (desktop uses this crate always)
+#[cfg(any(feature = "waker", feature = "import"))] pub mod types;
+#[cfg(any(feature = "waker", feature = "import"))] pub mod waker;
+
+#[cfg(feature = "import")] pub mod import;

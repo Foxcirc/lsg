@@ -9,8 +9,15 @@ edition.workspace = true
 
 [features]
 default = []
+browser = [
+    "desktop/browser",
+    # "futures/browser",
+    "render/browser",
+    "graphics/browser",
+]
 linux = [
     "desktop/linux",
+    # "futures/linux",
     "render/gl",
     "graphics/gl",
 ]

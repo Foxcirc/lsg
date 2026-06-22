@@ -228,6 +228,9 @@ dependencies = [
 [[package]]
 name = "futures"
 version = "0.1.0"
+dependencies = [
+ "futures-lite",
+]
 
 [[package]]
 name = "futures-core"

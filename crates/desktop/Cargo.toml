@@ -8,11 +8,15 @@ authors.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = []
+default = ["linux"]
 
-export = []
+export = [
+    "dep:futures",
+    "futures/waker",
+]
 import = [
     "dep:futures",
+    "futures/import",
 ]
 
 dummy = []
@@ -30,6 +34,7 @@ linux = [
 
 browser = [
     "import",
+    "futures/browser",
 ]
 
 [dependencies]

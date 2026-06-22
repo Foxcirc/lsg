@@ -2,11 +2,11 @@
 //! Waker-Interop between FFI and Rust.
 //!
 //! # Filename
-//! In the terminology used in the lsg project, this file is essentially
-//! an `export.rs`, since it exports functions to be called by extern code.
-//! However, this file is special, since it is also needed by extern backends,
-//! when implementing the API consumed in `import.rs`, specifically to create an
-//! `InternalWaker`. So it has a special name, even though it exports stuff.
+//! In the terminology used in the lsg project, this file is
+//! essentially an `export.rs`, since it exports functions to be
+//! called by extern code. However, this file is special, since it
+//! is also needed by `import` backends, specifically to create or use
+//! InternalWaker`. So it has a special name, even though it exports stuff.
 
 use std::{sync::Arc, task};
 
@@ -75,9 +75,7 @@ pub unsafe extern "C" fn waker_wake_same(
     rhs0: *const types::InternalWaker
 ) -> bool {
     lhs0 == rhs0
-    // // Since you might have two different cloned internal wakers which wake the
-    // // same target, a simple comparison like this is not enough: lhs0 == rhs0
-    // // So we do this: (Guarding against null pointers!)
+    // Not needed right now, but maybe for future use when deep-checking is needed:
     // ((lhs0.is_null() || rhs0.is_null()) && lhs0 != rhs0) || {
     //     let lhs = unsafe { &*lhs0 };
     //     let rhs = unsafe { &*rhs0 };

@@ -7,7 +7,8 @@ edition.workspace = true
 
 [features]
 default = []
-browser = ["desktop/browser", "render/browser"]
+linux = ["desktop/linux", "render/gl", "futures/linux"]
+browser = ["desktop/browser", "render/browser", "futures/browser"]
 
 [dependencies]
 common = { path = "../common" }

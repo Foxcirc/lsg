@@ -5,4 +5,13 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+waker = []
+import = ["waker"]
+browser = ["import"]
+native = ["dep:futures-lite"]
+linux = ["native"]
+
 [dependencies]
+futures-lite = { version = "2.6.1", optional = true, default-features = false, features = ["std"] }

@@ -28,8 +28,6 @@ use desktop::{InputMode::Text, *};
 use common::*;
 use render::{DrawableGeometry, shaper};
 
-use futures::ffi::import::implementation as fexeci;
-
 const APPID: &str = file!();
 
 #[unsafe(no_mangle)]
@@ -78,7 +76,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     log("Spawning event handler now...");
 
     // run the event loop
-    fexeci::spawn(async move {
+    let fut = async move {
 
         while let Ok(event) = evl.next().await {
 
@@ -165,12 +163,17 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
         }
 
-    });
+    };
+
+    #[cfg(feature = "browser")]
+    futures::spawn(fut);
+
+    #[cfg(feature = "linux")]
+    futures::blockon(fut);
 
     Ok(())
 
 }
-
 
 /*
 
