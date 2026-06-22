@@ -67,7 +67,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             instances: &instances,
                         };
 
-                        storage.clear([0.0, 0.0, 0.0, 1.0]);
+                        storage.clear([0.0, 0.0, 0.0, 0.5]);
 
                         window.present();
                         renderer.draw(&drawable, &atlas, &mut storage);

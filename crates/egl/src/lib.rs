@@ -176,25 +176,20 @@ struct InstanceInner {
 
          let instance = locked.inner.lock();
 
-         let attribs = match self.api {
-             Api::OpenGl => vec![
-                 egl::SURFACE_TYPE, egl::WINDOW_BIT,
-                 egl::RENDERABLE_TYPE, egl::OPENGL_BIT,
-                 egl::RED_SIZE,     self.sizes.rgba.0  as i32,
-                 egl::GREEN_SIZE,   self.sizes.rgba.1  as i32,
-                 egl::BLUE_SIZE,    self.sizes.rgba.2  as i32,
-                 egl::ALPHA_SIZE,   self.sizes.rgba.3  as i32,
-                 egl::DEPTH_SIZE,   self.sizes.depth   as i32,
-                 egl::STENCIL_SIZE, self.sizes.stencil as i32,
-                 egl::NONE
-             ],
-             // Es3 is weird.
-             Api::Es3 => vec![
-                 egl::SURFACE_TYPE, egl::WINDOW_BIT,
-                 egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT,
-                 egl::NONE
-             ]
-         };
+         let attribs = vec![
+             egl::SURFACE_TYPE, egl::WINDOW_BIT,
+             egl::RENDERABLE_TYPE, match self.api {
+                 Api::OpenGl => egl::OPENGL_BIT,
+                 Api::Es3    => egl::OPENGL_ES3_BIT,
+             },
+             egl::RED_SIZE,     self.sizes.rgba.0  as i32,
+             egl::GREEN_SIZE,   self.sizes.rgba.1  as i32,
+             egl::BLUE_SIZE,    self.sizes.rgba.2  as i32,
+             egl::ALPHA_SIZE,   self.sizes.rgba.3  as i32,
+             egl::DEPTH_SIZE,   self.sizes.depth   as i32,
+             egl::STENCIL_SIZE, self.sizes.stencil as i32,
+             egl::NONE
+         ];
 
          let config = instance.lib.choose_first_config(instance.display, &attribs)?
              .ok_or("failed to choose an egl config")?;

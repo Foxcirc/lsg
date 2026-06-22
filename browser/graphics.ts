@@ -397,6 +397,8 @@ export function newEnv(glue: Glue) {
       const texObject = glue.getHandle<TextureObject>(texHandle);
       const { gpObject: { gl, scratchFbo }, glTexture } = texObject;
 
+      console.log("clearing texture of size", texObject.size, "with color", { r, g, b, a });
+
       gl.bindFramebuffer(gl.FRAMEBUFFER, scratchFbo);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, glTexture, 0);
 
@@ -476,6 +478,8 @@ export function newEnv(glue: Glue) {
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, glTexture, 0);
 
       gl.viewport(0, 0, size.w, size.h);
+
+      console.log("drawing to texture of size", texObject.size);
 
       drawToCurrentFramebuffer(gl, cmd, glue);
 
@@ -632,10 +636,11 @@ function newHelpers(glue: Glue) {
       const vertexBufferHandle = glue.readU32(ptr + 0);
       const programHandle = glue.readU32(ptr + 4);
       const textures = this.readTextureAttribSlice(ptr + 8);
-      const options = this.readDrawOptions(ptr + 16);
+      const optionsPtr = glue.readU32(ptr + 16);
 
       const vertexBufferObject = glue.getHandle<VertexBufferObject>(vertexBufferHandle);
       const programObject = glue.getHandle<ProgramObject>(programHandle);
+      const options = this.readDrawOptions(optionsPtr);
 
       return { vertexBufferObject, programObject, textures, options };
     },
@@ -671,6 +676,8 @@ function drawToCurrentFramebuffer(gl: WebGL2RenderingContext, cmd: DrawCmd, glue
 
   gl.useProgram(cmd.programObject.glProgram);
   gl.bindVertexArray(cmd.vertexBufferObject.glVao);
+
+  console.log(cmd);
 
   switch (cmd.options.blendMode) {
     case BlendMode.None: {

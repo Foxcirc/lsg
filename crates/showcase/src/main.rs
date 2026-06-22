@@ -24,7 +24,7 @@ fn main() {
 
 use std::sync::Arc;
 
-use desktop::*;
+use desktop::{InputMode::Text, *};
 use common::*;
 use render::{DrawableGeometry, shaper};
 
@@ -95,7 +95,7 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
                             instances: &instances,
                         };
 
-                        storage.clear([0.0, 0.0, 0.0, 1.0]);
+                        storage.clear([0.0, 0.0, 0.0, 0.5]);
 
                         window.present();
                         renderer.draw(&drawable, &atlas, &mut storage);
