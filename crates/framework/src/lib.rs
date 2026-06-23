@@ -6,14 +6,23 @@ mod test;
 
 use common::{IsSurface, SmartMutex};
 use desktop::{MouseButton, Key};
-use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, future::pending, pin::Pin, sync::{Arc, Weak}, task};
+use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, future::{pending, poll_fn}, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
 pub struct Config {
+    //// This name will be registered in various places around the system.
+    ///
+    /// # Platform-Specific
+    /// - Linux:
+    ///     - Main thread name.
+    ///     - DBus client name.
     pub appid: String,
-    /// If `true` relevant signals will be intercepted and
-    /// turned into `Quit` events. Otherwise signals
-    /// will never be intercepted.
+    /// If `true` relevant signals will be intercepted and turned into
+    /// `Quit` events. Otherwise signals will never be intercepted.
+    ///
+    /// Recommendation: Enable it only on release builds. When debugging it is
+    /// annoying, since it prevents terminating a program which is stuck and
+    /// cannot poll the event loop anymore, e.g. when in an infinite loop.
     pub intercept: bool,
 }
 
@@ -71,9 +80,7 @@ impl App {
                     Ok(result)
                 });
 
-                let futures = this.executor.run(pending())
-                    .or(eventloop)
-                    .or(main);
+                let futures = this.executor.run(eventloop.or(main));
 
                 block_on(futures)
 
@@ -681,65 +688,37 @@ impl<T: Clone> Default for EventBroadcaster<T> {
 }
 
 struct EventBroadcasterInner<T: Clone> {
-    events: VecDeque<Event<T>>,
-    wakers: Vec<Option<task::Waker>>,
-    listeners: u16, // currently active listeners
-    tick: u16, // incremental counter, used to avoid double-reading an event
+    event: Option<T>,
+    wakers: Vec<task::Waker>,
+    tick: u16,
 }
 
-#[derive(Clone)]
-struct Event<T: Clone> {
-    value: T,
-    pending: u16, // listeners that have yet to respond
-    tick: u16, // which tick this event belongs to
-}
+// #[derive(Clone)]
+// struct Event<T: Clone> {
+//     value: T,
+//     pending: u16, // listeners that have yet to respond
+//     tick: u16, // which tick this event belongs to
+// }
 
 impl<T: Clone> EventBroadcaster<T> {
 
     pub const fn new() -> Self {
         Self {
             inner: SmartMutex::new(EventBroadcasterInner {
-                events: VecDeque::new(),
+                event: None,
                 wakers: Vec::new(),
-                listeners: 0,
-                tick: 0,
+                tick: 1,
             }),
         }
     }
 
-    /// Returns `true` if this channel has any listeners.
-    pub fn active(&self) -> bool {
-        self.inner.with(|it| it.listeners > 0)
-    }
-
-    pub fn len(&self) -> usize {
-        self.inner.with(|it| it.events.len())
-    }
-
     pub fn send(&self, event: T) {
-
-        // Don't send anything if there are no listeners, as
-        // this would create events which can never be consumed.
-        if !self.active() {
-            return
-        }
 
         let mut inner = self.inner.lock();
 
-        inner.tick = inner.tick.wrapping_add(1);
+        inner.event = Some(event);
 
-        let pending = inner.listeners;
-        let tick = inner.tick;
-        inner.events.push_back(Event {
-            value: event,
-            pending,
-            tick,
-        });
-
-        let alive = inner.wakers.iter()
-            .filter_map(Option::as_ref);
-
-        for waker in alive {
+        for waker in &inner.wakers {
             waker.wake_by_ref()
         }
 
@@ -749,22 +728,16 @@ impl<T: Clone> EventBroadcaster<T> {
 
         let mut inner = self.inner.lock();
 
-        inner.listeners += 1;
-
-        let slot = inner.wakers.iter().enumerate()
-            .find(|(.., it)| it.is_none())
-            .map(|(idx, ..)| idx)
-            .unwrap_or_else(|| {
-                inner.wakers.push(None);
-                inner.wakers.len() - 1
-            });
+        let slot = inner.wakers.iter().position(is_noop_waker).unwrap_or_else(|| {
+            inner.wakers.push(task::Waker::noop().clone());
+            inner.wakers.len()
+        });
 
         BroadcastFuture {
             channel: self,
             slot: slot as u16,
             tick: inner.tick,
         }
-
     }
 
 }
@@ -779,71 +752,54 @@ impl EventBroadcaster<()> {
 pub struct BroadcastFuture<'a, T: Clone> {
     channel: &'a EventBroadcaster<T>,
     slot: u16,
-    tick: u16, // only acknowledge events newer then this tick
+    tick: u16,
 }
 
 impl<'a, T: Clone> Drop for BroadcastFuture<'a, T> {
     fn drop(&mut self) {
+        // Make our slot available again.
         let mut inner = self.channel.inner.lock();
-        inner.wakers[self.slot as usize] = None;
-        inner.listeners -= 1;
+        inner.wakers[self.slot as usize] =
+            task::Waker::noop().clone();
     }
 }
 
 impl<'a, T: Clone> BroadcastFuture<'a, T> {
+
     pub async fn next(&mut self) -> T {
-        self.await
+        poll_fn(|cx| self.poll(cx)).await
     }
-}
 
-impl<'a, T: Clone> Future for &mut BroadcastFuture<'a, T> {
+    pub fn poll(&mut self, cx: &mut task::Context) -> task::Poll<T> {
 
-    type Output = T;
+        let mut inner = self.channel.inner.lock();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<T> {
+        // Since we use waker::noop to mark empty slots right now,
+        // we don't allow it in `next` to avoid confusing behaviour.
 
-        let this = self.get_mut();
-        let mut inner = this.channel.inner.lock();
+        assert!(
+            !is_noop_waker(cx.waker()),
+            "Cannot poll BroadcastFuture using `noop` waker."
+        );
 
-        let maybe = inner.events.iter_mut()
-            .find(|it| it.tick > this.tick);
-
-        // if we found an event, read it now
-
-        if let Some(it) = maybe {
-
-            // this event was now read by us
-            this.tick = it.tick;
-            it.pending -= 1;
-
-            let result = it.value.clone();
-
-            // remove the event if it was consumed by all listeners
-            if it.pending == 0 {
-                drop(inner.events.pop_front());
-            }
-
-            task::Poll::Ready(result)
-
+        // Read the event if it is new.
+        if let Some(ref event) = inner.event && inner.tick > self.tick {
+            // This event is now no longer new.
+            self.tick = inner.tick;
+            task::Poll::Ready(event.clone())
         } else {
-
-            let old = &mut inner.wakers[this.slot as usize];
-            let new = cx.waker();
-
-            let same = old.as_mut()
-                .map(|it| it.will_wake(new))
-                .unwrap_or_default();
-
-            if !same {
-                *old = Some(new.clone());
-            }
-
+            inner.wakers[self.slot as usize]
+                .clone_from(cx.waker());
             task::Poll::Pending
-
         }
 
     }
 
+
+}
+
+fn is_noop_waker(waker: &task::Waker) -> bool {
+    waker.will_wake(task::Waker::noop())
 }
 
 #[test]
@@ -863,38 +819,26 @@ fn event_broadcaster() {
     //     assert_eq!((&single).await, 3);
     // });
 
-    let multi = EventBroadcaster::new();
+    let evb = EventBroadcaster::new();
 
-    multi.send(0);
-
-    let mut listener1 = multi.listen();
-
-    multi.send(1);
-
-    let mut listener2 = multi.listen();
-
-    multi.send(2);
-    multi.send(3);
+    let mut listener1 = evb.listen();
+    evb.send(0);
+    let mut listener2 = evb.listen();
+    evb.send(1);
+    let mut listener3 = evb.listen();
 
     block_on(async move {
 
         // Both should receive only events that
         // happen after their creation.
 
-        // listener1:
-        assert_eq!((&mut listener1).await, 1);
-        assert_eq!((&mut listener1).await, 2);
-        assert_eq!((&mut listener1).await, 3);
+        let mut dummy = task::Context::from_waker(task::Waker::noop());
 
-        // listener2:
-        assert_eq!((&mut listener2).await, 2);
-        assert_eq!((&mut listener2).await, 3);
+        assert_eq!((&mut listener1).next().await, 1);
+        assert_eq!((&mut listener2).next().await, 1);
+        assert_eq!((&mut listener3).poll(&mut dummy), task::Poll::Pending);
 
     });
-
-    // the listeners were moved and dropped
-    assert_eq!(multi.active(), false);
-    assert_eq!(multi.len(), 0);
 
 
 }
