@@ -210,6 +210,7 @@ impl Window {
             curves: Default::default(),
             texture: graphics::Texture::new(&renderer.gp, inner.size(), None),
             surface: graphics::Surface::new(&renderer.gp, &inner),
+            instances: Default::default(),
         });
 
         let this = Arc::new(Self {
@@ -263,8 +264,8 @@ impl Window {
 
                 let space = Space {
                     state: &mut *windowstate,
-                    size: Size::abs(size.w, size.h),
-                    offset: Position::abs(0, 0)
+                    size: Vec2::new(abs(size.w as i16), abs(size.h as i16)),
+                    offset: Vec2::ZERO,
                 };
 
                 // This will render the whole tree.
@@ -275,25 +276,27 @@ impl Window {
                 // Now we can read back and render the data.
 
                 let AppRenderState { shaper, renderer, atlas } = &mut *appstate;
+                let WindowRenderState {
+                    ref mut surface,
+                    ref mut texture,
+                    ref curves,
+                    ref instances,
+                    ..
+                } = *windowstate;
 
-                let curves = &windowstate.curves.data;
+                let curves = &curves.data;
                 let vertices = shaper.process(curves);
 
-                {
-                    // TODO: Ugly code cuase it need &mut texture rn. Make it just take &texture.
-                    let WindowRenderState { ref curves, ref mut surface, ref mut texture, .. } = *windowstate;
+                let drawable = render::DrawableGeometry {
+                    source: &[vertices],
+                    instances,
+                };
 
-                    let drawable = render::DrawableGeometry {
-                        source: &[vertices],
-                        instances: &curves.instances,
-                    };
+                renderer.draw(&drawable, &atlas, texture);
 
-                    renderer.draw(&drawable, &atlas, texture);
+                surface.blit(texture);
+                surface.swap();
 
-                    surface.blit(texture);
-                    surface.swap();
-
-                }
 
             },
 
@@ -380,10 +383,11 @@ struct AppRenderState {
 }
 
 struct WindowRenderState {
-    // Buffers:
+    // Geometry Buffers:
     geometries: RenderStateGeometries,
     vertices: RenderStateVertices,
     curves: RenderStateCurves,
+    instances: Vec<render::Instance>,
     // Intermediate Texture and Surface:
     texture: graphics::Texture,
     surface: graphics::Surface,
@@ -392,11 +396,9 @@ struct WindowRenderState {
 impl WindowRenderState {
     pub fn clear(&mut self) {
         self.geometries.data.clear();
-        self.geometries.instances.clear();
         self.vertices.data.clear();
-        self.vertices.instances.clear();
         self.curves.data.clear();
-        self.curves.instances.clear();
+        self.instances.clear();
     }
 }
 
@@ -404,16 +406,12 @@ impl WindowRenderState {
 struct RenderStateGeometries {
     /// Widget-added geometries.
     data: Vec<Arc<render::VertexGeometry>>,
-    /// Indexes into `data`.
-    instances: Vec<render::Instance>,
 }
 
 #[derive(Default)]
 struct RenderStateVertices {
     /// Widget-added vertices.
     data: render::VertexGeometry,
-    /// Indexes into `data`.
-    instances: Vec<render::Instance>,
 }
 
 #[derive(Default)]
@@ -421,186 +419,165 @@ struct RenderStateCurves {
     // Widget-added curves.
     // Will be triangulated later on.
     data: render::CurveGeometry,
-    /// Indexes into `data`.
-    instances: Vec<render::Instance>,
-
 }
 
 pub struct Space<'a> {
     state: &'a mut WindowRenderState,
-    offset: Position,
+    offset: Vec2,
     size: Size,
 }
 
 impl<'a> Space<'a> {
 
-    pub fn curves(&mut self, data: &[common::CurvePoint]) -> SpaceKey {
+    pub fn data(&mut self, data: Data) -> SpaceKey {
 
-        let geometry = &mut self.state.curves.data;
+        match data {
+            Data::Curves(it) => {
 
-        // Insert the curve data.
-        let start = geometry.points.len() as u16;
-        geometry.points.extend_from_slice(data);
-        let end = geometry.points.len() as u16;
+                let target = &mut self.state.curves.data;
 
-        // Create the shape.
-        geometry.shapes.push(common::Shape::new(start..end));
+                let start = target.points.len() as u16;
+                target.points.extend_from_slice(it);
+                let end = target.points.len() as u16;
 
-        SpaceKey {
-            kind: SpaceKeyKind::Curves,
-            index: geometry.shapes.len() as u16 - 1,
+                target.shapes.push(common::Shape::new(start..end));
+                let idx = (target.shapes.len() - 1) as u16;
+
+                // SpaceKey { index, kind: SpaceKeyKind::Curves }
+                SpaceKey::Curves { shape: idx }
+
+            },
+            Data::Vertices(it) => {
+
+                let target = &mut self.state.vertices.data;
+
+                let start = target.vertices.len() as u16;
+                target.vertices.extend_from_slice(it);
+                let end = target.vertices.len() as u16;
+
+                target.shapes.push(common::Shape::new(start..end));
+                let idx = (target.shapes.len() - 1) as u16;
+
+                SpaceKey::Vertices { shape: idx }
+
+            },
+            Data::Geometry(it) => {
+
+                let items = &mut self.state.geometries.data;
+                items.push(it);
+                let geometry = (items.len() + 1) as u16;
+                //                        ^^^^
+                // we need to adjust because when creating the `DrawableGeometry`
+                // the first two geometries will be for our own curves and vertices.
+
+                SpaceKey::Geometry { geometry }
+
+            },
         }
 
     }
 
-    pub fn vertices(&mut self, data: &[render::PartialVertex]) -> SpaceKey {
+    #[track_caller]
+    pub fn instance(&mut self, key: SpaceKey, i: Instance) {
 
-        // let geometry = Arc::get_mut(&mut self.state.vertices.data)
-        //     .expect("exclusive ownership of vertex geometry");
-
-        let geometry = &mut self.state.vertices.data;
-
-        // Insert the curve data.
-        let start = geometry.vertices.len() as u16;
-        geometry.vertices.extend_from_slice(data);
-        let end = geometry.vertices.len() as u16;
-
-        // Create the shape.
-        geometry.shapes.push(common::Shape::new(start..end));
-
-        SpaceKey {
-            kind: SpaceKeyKind::Vertices,
-            index: geometry.shapes.len() as u16 - 1,
-        }
-
-    }
-
-    pub fn geometry(&mut self, geometry: Arc<render::VertexGeometry>) -> GeometryKey {
-        let items = &mut self.state.geometries.data;
-        items.push(geometry);
-        GeometryKey {
-            index: items.len() as u16 - 1
-        }
-    }
-
-    pub fn instance(&mut self, key: SpaceKey, instance: Instance) {
-
-        let pos  = self.apply_transform_pos(instance.pos);
-        let size = self.apply_transform_size(instance.size);
+        let new = Self::transform(Rect { point: i.pos, size: i.size }, self.offset, self.size);
 
         let inner = render::Instance {
-            target: render::GeometryTarget { geometry: 0, shape: key.index },
-            pos: pos.into(),
-            size: size.into(),
-            texture: instance.texture,
+            target: key.target(),
+            pos: new.point.into(),
+            size: new.size.into(),
+            texture: i.texture,
         };
 
-        match key.kind {
-            SpaceKeyKind::Curves => self.state.curves.instances.push(inner),
-            SpaceKeyKind::Vertices => self.state.vertices.instances.push(inner),
-        }
-    }
-
-    pub fn targeted(&mut self, key: GeometryKey, shape: u16, instance: Instance) {
-
-        let pos  = self.apply_transform_pos(instance.pos);
-        let size = self.apply_transform_size(instance.size);
-
-        let inner = render::Instance {
-            target: render::GeometryTarget { geometry: key.index, shape },
-            pos: pos.into(),
-            size: size.into(),
-            texture: instance.texture,
-        };
-
-        self.state.geometries.instances.push(inner);
+        self.state.instances.push(inner);
 
     }
 
-    pub fn child<'s>(&'s mut self, offset: Position, size: Size) -> Space<'s> {
+    pub fn child<'s>(&'s mut self, offset: Vec2, size: Size) -> Space<'s> {
 
-        let offset = self.apply_transform_pos(offset);
-        let size = self.apply_transform_size(size);
+        let new = Self::transform(Rect { point: offset, size }, self.offset, self.size);
 
         Space {
             state: self.state,
-            offset,
-            size
+            offset: new.point,
+            size: new.size
         }
 
     }
 
-    fn apply_transform_pos(&self, pos: Position) -> Position {
-        match pos.measure {
-            Measure::Absolute => Position::abs(
-                pos.x + self.offset.x,
-                pos.y + self.offset.y
-            ),
-            Measure::Relative => Position::abs(
-                Self::rescale_value(pos.x, self.size.w as i16) + self.offset.x,
-                Self::rescale_value(pos.y, self.size.h as i16) + self.offset.y,
-            ),
-        }
-    }
-
-    fn apply_transform_size(&self, size: Size) -> Size {
-        match size.measure {
-            Measure::Absolute => size,
-            Measure::Relative => Size::abs(
-                Self::rescale_value(size.w as i16, self.size.w as i16) as u16,
-                Self::rescale_value(size.h as i16, self.size.h as i16) as u16,
-            ),
-        }
+    fn transform(input: Rect, toffset: Vec2, tscale: Vec2) -> Rect {
+        let point = Vec2 {
+            x: toffset.x + match input.point.mx {
+                Measure::Absolute => input.point.x,
+                Measure::Relative => Self::rescale(input.point.x, tscale.x)
+            },
+            y: toffset.x + match input.point.my {
+                Measure::Absolute => input.point.y,
+                Measure::Relative => Self::rescale(input.point.y, tscale.y)
+            },
+            mx: Measure::Absolute,
+            my: Measure::Absolute
+        };
+        let size = Size {
+            x: match input.size.mx {
+                Measure::Absolute => input.size.x,
+                Measure::Relative => Self::rescale(input.size.x, tscale.x)
+            },
+            y: match input.size.my {
+                Measure::Absolute => input.size.y,
+                Measure::Relative => Self::rescale(input.size.y, tscale.y)
+            },
+            mx: Measure::Absolute,
+            my: Measure::Absolute
+        };
+        Rect { point, size }
     }
 
     /// Computes value% * scale%, but using units per 5000.
     ///
     /// So if value = 1,250 and scale = 2,500 this returns 625, equivalent to
     ///       value = 25%       sccale = 50%       returns 12.5%
-    fn rescale_value(value: i16, scale: i16) -> i16 {
+    fn rescale(value: i16, scale: i16) -> i16 {
         ((value as isize * scale as isize) / 5000isize) as i16
     }
 
 }
-
-// pub const fn size(input: &str) -> u16 {
-
-//     let mut count = 0;
-
-//     for chr in input.chars() {
-//         if chr.is_ascii_digit() { count += 1 }
-//     }
-
-//     let unit = input.get(count..count + 1)
-//         .unwrap_or_default();
-
-//     let percent = unit == "%";
-
-//     let mut number = u16::from_str_radix(&input[..count], 10)
-//         .expect("not a valid number");
-
-//     if percent {
-//         number *= 100;
-//     }
-
-//     number
-
-// }
-
 // const FULL: u16 = size("100%");
 
-pub struct SpaceKey {
-    kind: SpaceKeyKind,
-    index: u16,
+
+pub enum Data<'a> {
+    Curves(&'a [common::CurvePoint]),
+    Vertices(&'a [render::PartialVertex]),
+    Geometry(Arc<render::VertexGeometry>)
 }
 
-enum SpaceKeyKind {
-    Curves,
-    Vertices,
+#[derive(Clone, Copy)]
+pub enum SpaceKey {
+    Curves       { shape: u16 },
+    Vertices     { shape: u16 },
+    Geometry     { geometry: u16 },
+    GeometryFull { geometry: u16, shape: u16 }
 }
 
-pub struct GeometryKey {
-    index: u16,
+impl SpaceKey {
+    #[track_caller]
+    pub fn shape(self, shape: u16) -> Self {
+        if let Self::Geometry { geometry } = self {
+            Self::GeometryFull { geometry, shape }
+        } else {
+            panic!("Only used for geometry `SpaceKey`.")
+        }
+    }
+    #[track_caller]
+    pub fn target(self) -> render::GeometryTarget {
+        use render::GeometryTarget;
+        match self {
+            Self::Curves       { shape }           => GeometryTarget { geometry: 0, shape },
+            Self::Vertices     { shape }           => GeometryTarget { geometry: 1, shape },
+            Self::GeometryFull { geometry, shape } => GeometryTarget { geometry, shape },
+            Self::Geometry     { .. }              => panic!("Incomplete `SpaceKey`."),
+        }
+    }
 }
 
 #[derive(Clone, Copy)] // TODO: derive all necessary traits on all types (also impl a good Debug)
@@ -610,70 +587,55 @@ pub enum Measure {
 }
 
 #[derive(Clone, Copy)]
-pub struct Position {
+pub struct Rect {
+    point: Point,
+    size: Size
+}
+
+#[derive(Clone, Copy)]
+pub struct Vec2 {
     x: i16,
     y: i16,
-    measure: Measure,
+    mx: Measure,
+    my: Measure
 }
 
-impl Position {
-    pub fn abs(x: i16, y: i16) -> Self { Self { x, y, measure: Measure::Absolute } }
-    pub fn rel(x: i16, y: i16) -> Self { Self { x, y, measure: Measure::Relative } }
-}
-
-impl From<Position> for Size {
-    #[track_caller]
-    fn from(it: Position) -> Self {
-        debug_assert!(it.x > 0 && it.y > 0);
-        Self {
-            w: it.x as u16,
-            h: it.y as u16,
-            measure: it.measure,
-        }
+impl Vec2 {
+    const ZERO: Self = Self::new(abs(0), abs(0));
+    pub const fn new((x, mx): (i16, Measure), (y, my): (i16, Measure)) -> Self {
+        Self { x, y, mx, my }
     }
 }
 
-impl From<Position> for common::LogicalPoint {
-    fn from(it: Position) -> Self {
+impl From<Vec2> for common::LogicalPoint {
+    fn from(it: Vec2) -> Self {
         Self::new(it.x, it.y)
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Size {
-    w: u16,
-    h: u16,
-    measure: Measure,
-}
-
-impl Size {
-    pub fn abs(w: u16, h: u16) -> Self { Self { w, h, measure: Measure::Absolute } }
-    pub fn rel(w: u16, h: u16) -> Self { Self { w, h, measure: Measure::Relative } }
-}
-
-impl From<Size> for Position {
-    #[track_caller]
-    fn from(it: Size) -> Self {
-        Self {
-            x: it.w as i16,
-            y: it.h as i16,
-            measure: it.measure,
-        }
+impl From<Vec2> for common::LogicalSize {
+    fn from(it: Vec2) -> Self {
+        Self::new(it.x as u16, it.y as u16)
     }
 }
 
-impl From<Size> for common::LogicalSize {
-    fn from(it: Size) -> Self {
-        Self::new(it.w, it.h)
-    }
+pub type Point = Vec2;
+pub type Size  = Vec2;
+
+pub const fn abs(val: i16) -> (i16, Measure) {
+    (val, Measure::Absolute)
+}
+
+pub const fn rel(val: i16) -> (i16, Measure) {
+    (val, Measure::Relative)
 }
 
 pub struct Instance {
     /// offsetX, offsetY
-    pub pos: Position,
+    pub pos: Vec2,
     /// Size of the shape in logical pixels.
     pub size: Size,
-    // BABABABABA
+    // Texture information.
     pub texture: render::TextureKind,
 }
 
@@ -689,16 +651,9 @@ impl<T: Clone> Default for EventBroadcaster<T> {
 
 struct EventBroadcasterInner<T: Clone> {
     event: Option<T>,
-    wakers: Vec<task::Waker>,
+    wakers: Vec<Option<task::Waker>>,
     tick: u16,
 }
-
-// #[derive(Clone)]
-// struct Event<T: Clone> {
-//     value: T,
-//     pending: u16, // listeners that have yet to respond
-//     tick: u16, // which tick this event belongs to
-// }
 
 impl<T: Clone> EventBroadcaster<T> {
 
@@ -718,9 +673,9 @@ impl<T: Clone> EventBroadcaster<T> {
 
         inner.event = Some(event);
 
-        for waker in &inner.wakers {
-            waker.wake_by_ref()
-        }
+        inner.wakers.iter()
+            .flat_map(identity)
+            .for_each(task::Waker::wake_by_ref);
 
     }
 
@@ -728,8 +683,8 @@ impl<T: Clone> EventBroadcaster<T> {
 
         let mut inner = self.inner.lock();
 
-        let slot = inner.wakers.iter().position(is_noop_waker).unwrap_or_else(|| {
-            inner.wakers.push(task::Waker::noop().clone());
+        let slot = inner.wakers.iter().position(Option::is_none).unwrap_or_else(|| {
+            inner.wakers.push(None);
             inner.wakers.len()
         });
 
@@ -759,8 +714,7 @@ impl<'a, T: Clone> Drop for BroadcastFuture<'a, T> {
     fn drop(&mut self) {
         // Make our slot available again.
         let mut inner = self.channel.inner.lock();
-        inner.wakers[self.slot as usize] =
-            task::Waker::noop().clone();
+        inner.wakers[self.slot as usize] = None;
     }
 }
 
@@ -774,14 +728,6 @@ impl<'a, T: Clone> BroadcastFuture<'a, T> {
 
         let mut inner = self.channel.inner.lock();
 
-        // Since we use waker::noop to mark empty slots right now,
-        // we don't allow it in `next` to avoid confusing behaviour.
-
-        assert!(
-            !is_noop_waker(cx.waker()),
-            "Cannot poll BroadcastFuture using `noop` waker."
-        );
-
         // Read the event if it is new.
         if let Some(ref event) = inner.event && inner.tick > self.tick {
             // This event is now no longer new.
@@ -789,6 +735,7 @@ impl<'a, T: Clone> BroadcastFuture<'a, T> {
             task::Poll::Ready(event.clone())
         } else {
             inner.wakers[self.slot as usize]
+                .get_or_insert_with(|| cx.waker().clone())
                 .clone_from(cx.waker());
             task::Poll::Pending
         }
@@ -796,10 +743,6 @@ impl<'a, T: Clone> BroadcastFuture<'a, T> {
     }
 
 
-}
-
-fn is_noop_waker(waker: &task::Waker) -> bool {
-    waker.will_wake(task::Waker::noop())
 }
 
 #[test]
