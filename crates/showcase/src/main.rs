@@ -7,15 +7,22 @@
 // use desktop::ffi::import::definitions as defs;
 // use desktop::ffi::types as types;
 
+#[cfg(target_family = "wasm")]
 unsafe extern "C" {
     fn logs(it: *const i8);
 }
 
+#[cfg(target_family = "wasm")]
 fn log(it: &str) {
     let mut buf = [0u8; 2048];
     buf[..it.len()].copy_from_slice(it.as_bytes());
     assert!(it.len() != 2048);
     unsafe { logs(buf.as_ptr().cast()) }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn log(it: &str) {
+    println!("{}", it);
 }
 
 fn main() {

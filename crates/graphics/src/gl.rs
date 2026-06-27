@@ -215,7 +215,7 @@ impl TextureBackend {
 
         // Read from `src.texture`.
         gl::frame_buffer_texture_2d(&self.gp.backend.scratch, gl::AttachmentPoint::Color0, &src.backend.texture);
-        gl::copy_tex_sub_image_2d((&self.gp.backend.scratch, srcrect.pos), (&self.texture, dstrect.pos), srcrect.size);
+        gl::copy_tex_sub_image_2d((&self.gp.backend.scratch, srcrect.point), (&self.texture, dstrect.point), srcrect.size);
 
     }
 

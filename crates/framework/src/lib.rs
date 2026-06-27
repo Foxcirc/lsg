@@ -161,7 +161,7 @@ pub struct Window {
     app: Arc<App>,
     inner: desktop::Window,
     handlers: WindowEventHandlers,
-    content: SmartMutex<widget::DynamicWidget>,
+    content: SmartMutex<widget::basic::DynamicWidget>,
     renderstate: SmartMutex<WindowRenderState>,
 }
 
@@ -251,12 +251,7 @@ impl Window {
                 // Now we can read back and render the data.
 
                 let AppRenderState { shaper, renderer, atlas } = &mut *appstate;
-                let WindowRenderState {
-                    ref mut surface,
-                    ref mut texture,
-                    ref geometry,
-                    ..
-                } = *windowstate;
+                let WindowRenderState { ref mut surface, ref mut texture, ref geometry, .. } = *windowstate;
 
                 let curves = &geometry.curves;
                 let vertices = shaper.process(curves);
@@ -292,7 +287,7 @@ impl Window {
     // }
 
     pub fn content<W: widget::Widget + 'static>(&self, widget: Arc<W>) {
-        self.content.set(widget::DynamicWidget::new(widget));
+        self.content.set(widget::basic::DynamicWidget::new(widget));
     }
 
     pub fn closed<'s>(&'s self) -> BroadcastFuture<'s, ()> {

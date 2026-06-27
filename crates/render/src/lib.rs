@@ -177,7 +177,7 @@ impl TextureAtlas {
     pub fn new(renderer: &Renderer) -> Self {
 
         let mut this = Self {
-            layout: AtlasLayout::new(PhysicalSize::MIN),
+            layout: AtlasLayout::new(PhysicalSize::ZERO),
             texture: graphics::Texture::new(&renderer.gp, PhysicalSize::new(1, 1), None),
             maxsize: graphics::Texture::maxsize(&renderer.gp) as i16,
             entries: Vec::new(),
