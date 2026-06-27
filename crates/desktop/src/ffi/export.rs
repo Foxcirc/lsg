@@ -66,9 +66,9 @@ pub const extern "C" fn evl_handlers_default() -> EvlHandlers {
 
         window_mouse_enter:  noop!(*mut void, crate::Id),
         window_mouse_leave:  noop!(*mut void, crate::Id),
-        window_mouse_motion: noop!(*mut void, crate::Id, common::LogicalPoint),
-        window_mouse_down:   noop!(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
-        window_mouse_up:     noop!(*mut void, crate::Id, common::LogicalPoint, crate::MouseButton),
+        window_mouse_motion: noop!(*mut void, crate::Id, common::PhysicalPoint),
+        window_mouse_down:   noop!(*mut void, crate::Id, common::PhysicalPoint, crate::MouseButton),
+        window_mouse_up:     noop!(*mut void, crate::Id, common::PhysicalPoint, crate::MouseButton),
         window_mouse_scroll: noop!(*mut void, crate::Id, i16, i16),
 
         window_key_down_special: noop!(*mut void, crate::Id, crate::SpecialKey, bool),

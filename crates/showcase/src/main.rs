@@ -68,8 +68,8 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     instances.push(render::Instance {
         target: render::GeometryTarget { geometry: 0, shape: 0 },
-        pos: LogicalPoint::new(0, 0),
-        size: LogicalSize::new(500, 500),
+        pos: PhysicalPair::new(0, 0),
+        size: PhysicalPair::new(500, 500),
         texture: render::TextureKind::Color(0, 255, 100, 255),
     });
 

@@ -32,7 +32,7 @@
 //! but adding more is really easy and often a matter of minutes.
 
 use std::{ffi::{c_void as void, CStr, CString}, fmt, mem::size_of, ptr::{null, null_mut}, slice, sync::Mutex, error::Error as StdError};
-use common::{PhysicalPoint, PhysicalRect, PhysicalSize};
+use common::{PhysicalPair, PhysicalRect, PhysicalSize};
 
 #[derive(Debug)]
 pub struct FnsUnknown;
@@ -1001,8 +1001,8 @@ pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBu
     bind_draw_frame_buffer(target.0);
     bind_read_frame_buffer(source.0);
     unsafe { gl::BlitFramebuffer(
-        source.1.pos.x as i32, source.1.pos.y as i32, source.1.size.w as i32, source.1.size.h as i32, // source rect
-        target.1.pos.x as i32, target.1.pos.y as i32, target.1.size.w as i32, target.1.size.h as i32, // target rect
+        source.1.pos.x as i32, source.1.pos.y as i32, source.1.size.x as i32, source.1.size.y as i32, // source rect
+        target.1.pos.x as i32, target.1.pos.y as i32, target.1.size.x as i32, target.1.size.y as i32, // target rect
         gl::COLOR_BUFFER_BIT,
         filter as u32,
     ) };
@@ -1028,7 +1028,7 @@ pub unsafe fn read_pixels(fbo: &FrameBuffer, rect: PhysicalRect, fpixel: ColorFo
     }
 
     let cap = fpixel.components() * fdata.size() *
-        rect.size.w as usize * rect.size.h as usize;
+        rect.size.x as usize * rect.size.y as usize;
 
     let mut buf = Vec::new();
     buf.resize(cap, 0);
@@ -1037,7 +1037,7 @@ pub unsafe fn read_pixels(fbo: &FrameBuffer, rect: PhysicalRect, fpixel: ColorFo
 
     unsafe { gl::ReadPixels(
         rect.pos.x as i32, rect.pos.y as i32,
-        rect.size.w as i32, rect.size.h as i32,
+        rect.size.x as i32, rect.size.y as i32,
         fpixel as u32,
         fdata as u32,
         buf.as_mut_ptr().cast(),
@@ -1052,7 +1052,7 @@ pub unsafe fn read_pixels(fbo: &FrameBuffer, rect: PhysicalRect, fpixel: ColorFo
 ///
 /// - You don't need to bind anything yourself!
 #[track_caller]
-pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPoint), target: (&Texture, PhysicalPoint), size: PhysicalSize) {
+pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPair), target: (&Texture, PhysicalPair), size: PhysicalSize) {
     bind_read_frame_buffer(&source.0);
     bind_texture(&target.0);
     assert!(target.0.kind == TextureType::Basic2D);
@@ -1061,7 +1061,7 @@ pub fn copy_tex_sub_image_2d(source: (&FrameBuffer, PhysicalPoint), target: (&Te
         0, // no mipmapping
         source.1.x as i32, source.1.y as i32, // source offset
         target.1.x as i32, target.1.y as i32, // target offset
-        size.w as i32, size.h as i32, // size
+        size.x as i32, size.y as i32, // size
     ) };
     check_error();
 }
@@ -1123,14 +1123,14 @@ pub fn bind_render_buffer(this: &RenderBuffer) {
 #[track_caller]
 pub fn render_buffer_storage(this: &RenderBuffer, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
-    unsafe { gl::RenderbufferStorage(gl::RENDERBUFFER, format as u32, size.w as i32, size.h as i32); }
+    unsafe { gl::RenderbufferStorage(gl::RENDERBUFFER, format as u32, size.x as i32, size.y as i32); }
     check_error();
 }
 
 #[track_caller]
 pub fn render_buffer_storage_multisample(this: &RenderBuffer, samples: usize, format: GpuColorFormat, size: PhysicalSize) {
     bind_render_buffer(this);
-    unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.w as i32, size.h as i32); }
+    unsafe { gl::RenderbufferStorageMultisample(gl::RENDERBUFFER, samples as i32, format as u32, size.x as i32, size.y as i32); }
     check_error();
 }
 
@@ -1234,7 +1234,7 @@ pub fn tex_image_2d<'d>(
 
     bind_texture(texture);
 
-    let needed = (size.w as usize * size.h as usize) *
+    let needed = (size.x as usize * size.y as usize) *
         fpixel.components() *
         fdata.size();
 
@@ -1247,7 +1247,7 @@ pub fn tex_image_2d<'d>(
         texture.kind as u32,
         0i32, // no mipmapping
         fgpu as i32,
-        size.w as i32, size.h as i32,
+        size.x as i32, size.y as i32,
         0i32, // "must always be 0"
         fpixel as u32,
         fdata as u32,
@@ -1266,8 +1266,8 @@ pub fn tex_image_2d_multisample(texture: &Texture, samples: usize, fcolor: GpuCo
         texture.kind as u32,
         samples as i32,
         fcolor as u32,
-        size.w as i32,
-        size.h as i32,
+        size.x as i32,
+        size.y as i32,
         1,
     ); }
     check_error();
@@ -1280,8 +1280,8 @@ pub fn tex_storage_3d(texture: &Texture, size: PhysicalSize, depth: u16, fcolor:
         texture.id as u32,
         0i32, // no mipmapping
         fcolor as u32,
-        size.w as i32,
-        size.h as i32,
+        size.x as i32,
+        size.y as i32,
         depth as i32,
     ) };
     check_error();
@@ -1290,7 +1290,7 @@ pub fn tex_storage_3d(texture: &Texture, size: PhysicalSize, depth: u16, fcolor:
 #[track_caller]
 pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorFormat, fdata: DataType, data: &[u8]) {
 
-    let needed = (rect.size.w * rect.size.h) as usize
+    let needed = (rect.size.x * rect.size.y) as usize
         * fpixel.components()
         * fdata.size();
 
@@ -1302,8 +1302,8 @@ pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorForm
         0i32,
         rect.pos.x as i32,
         rect.pos.y as i32,
-        rect.size.w as i32,
-        rect.size.h as i32,
+        rect.size.x as i32,
+        rect.size.y as i32,
         fpixel as u32,
         fdata as u32,
         data.as_ptr().cast()
@@ -1535,7 +1535,7 @@ pub fn depth_mask(enabled: bool) {
 
 #[track_caller]
 pub fn resize_viewport(size: PhysicalSize) {
-    unsafe { gl::Viewport(0, 0, size.w as i32, size.h as i32) }
+    unsafe { gl::Viewport(0, 0, size.x as i32, size.y as i32) }
     check_error();
 }
 

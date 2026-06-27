@@ -5,142 +5,145 @@ use std::{ffi::c_void as void, fmt, ops::{self, Range}, sync::{Mutex, MutexGuard
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PhysicalRect {
-    pub pos: PhysicalPoint,
-    pub size: PhysicalSize,
+    pub pos: PhysicalPair,
+    pub size: PhysicalPair,
 }
 
 impl PhysicalRect {
-    pub const MAX: Self = Self::new(PhysicalPoint::MIN, PhysicalSize::MAX);
-    pub const ZERO: Self = Self::new(PhysicalPoint::ZERO, PhysicalSize::MIN);
-    pub const fn new(pos: PhysicalPoint, size: PhysicalSize) -> Self {
+    pub const MAX: Self = Self::new(PhysicalPair::MIN, PhysicalPair::MAX);
+    pub const ZERO: Self = Self::new(PhysicalPair::ZERO, PhysicalPair::MIN);
+    pub const fn new(pos: PhysicalPair, size: PhysicalPair) -> Self {
         Self { pos, size }
     }
-    pub const fn new2(x: i16, y: i16, w: u16, h: u16) -> Self {
-        Self { pos: PhysicalPoint::new(x, y), size: PhysicalSize::new(w, h) }
+    pub const fn new2(x: i16, y: i16, w: i16, h: i16) -> Self {
+        Self { pos: PhysicalPair::new(x, y), size: PhysicalPair::new(w, h) }
     }
 }
 
-/// A non-negative size, specified in logical coordinates.
-///
-/// See [`LogicalPoint`].
+// /// A non-negative size, specified in logical coordinates.
+// ///
+// /// See [`LogicalPoint`].
+// #[repr(C)]
+// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+// pub struct LogicalSize {
+//     pub w: u16,
+//     pub h: u16
+// }
+
+// impl LogicalSize {
+//     pub const ZERO: Self = Self::new(0, 0);
+//     pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
+//     pub const FULL: Self = Self::new(5000, 5000);
+//     pub const MIN: Self = Self::new(0, 0);
+//     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
+//     pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
+//     pub const fn physical(&self, scale: f64) -> PhysicalSize {
+//         // With a scaling factor of 1.0, 1920 pixels should be 5000 units.
+//         const FACTOR: f64 = 1920.0 / 5000.0;
+//         PhysicalSize {
+//             w: (self.w as f64 * FACTOR * scale).round() as u16,
+//             h: (self.h as f64 * FACTOR * scale).round() as u16,
+//         }
+//     }
+// }
+
+// impl From<PhysicalSize> for LogicalSize {
+//     fn from(value: PhysicalSize) -> Self {
+//         Self::new(value.w, value.h)
+//     }
+// }
+
+// /// A non-negative size, specified in physical coordinates.
+// #[repr(C)]
+// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+// pub struct PhysicalSize {
+//     pub w: u16,
+//     pub h: u16
+// }
+
+// impl PhysicalSize {
+//     pub const ZERO: Self = Self::new(0, 0);
+//     pub const MAX: Self = Self::new(u16::MAX, u16::MAX);
+//     pub const MIN: Self = Self::new(0, 0);
+//     pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
+//     pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
+//     pub const fn scale(&self, factor: f64) -> PhysicalSize {
+//         PhysicalSize {
+//             w: (self.w as f64 * factor).round() as u16,
+//             h: (self.h as f64 * factor).round() as u16,
+//         }
+//     }
+    // pub const fn logical(&self, scale: f64) -> LogicalSize {
+    //     const FACTOR: f64 = 5000.0 / 1920.0;
+    //     LogicalSize {
+    //         w: (self.w as f64 * FACTOR / scale).round() as u16,
+    //         h: (self.h as f64 * FACTOR / scale).round() as u16,
+    //     }
+    // }
+// }
+
+// impl From<LogicalSize> for PhysicalSize {
+//     fn from(value: LogicalSize) -> Self {
+//         Self::new(value.w, value.h)
+//     }
+// }
+
+// /// A point, specified in logical coordinates.
+// #[repr(C)]
+// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+// pub struct LogicalPoint {
+//     pub x: i16,
+//     pub y: i16,
+// }
+
+// impl LogicalPoint {
+//     pub const FULL: Self = Self::new(10000, 10000);
+//     pub const ZERO: Self = Self::new(0, 0);
+//     pub const MAX: Self = Self::new(i16::MAX, i16::MAX);
+//     pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
+//     pub const fn new(x: i16, y: i16) -> Self {
+//         Self { x, y }
+//     }
+// }
+
+// impl From<MathPoint> for LogicalPoint {
+//     fn from(value: MathPoint) -> Self {
+//         Self::new(value.x as i16, value.y as i16)
+//     }
+// }
+
+// /// Convert discarding curve information.
+// impl From<CurvePoint> for LogicalPoint {
+//     fn from(value: CurvePoint) -> Self {
+//         Self::new(value.x() as i16, value.y() as i16)
+//     }
+// }
+
+/// A point, specified in physical coordinates.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct LogicalSize {
-    pub w: u16,
-    pub h: u16
-}
-
-impl LogicalSize {
-    pub const ZERO: Self = Self::new(0, 0);
-    pub const INFINITE: Self = Self::new(u16::MAX, u16::MAX);
-    pub const FULL: Self = Self::new(5000, 5000);
-    pub const MIN: Self = Self::new(0, 0);
-    pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
-    pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
-    pub const fn physical(&self, scale: f64) -> PhysicalSize {
-        // With a scaling factor of 1.0, 1920 pixels should be 5000 units.
-        const FACTOR: f64 = 1920.0 / 5000.0;
-        PhysicalSize {
-            w: (self.w as f64 * FACTOR * scale).round() as u16,
-            h: (self.h as f64 * FACTOR * scale).round() as u16,
-        }
-    }
-}
-
-impl From<PhysicalSize> for LogicalSize {
-    fn from(value: PhysicalSize) -> Self {
-        Self::new(value.w, value.h)
-    }
-}
-
-/// A non-negative size, specified in physical coordinates.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PhysicalSize {
-    pub w: u16,
-    pub h: u16
-}
-
-impl PhysicalSize {
-    pub const ZERO: Self = Self::new(0, 0);
-    pub const MAX: Self = Self::new(u16::MAX, u16::MAX);
-    pub const MIN: Self = Self::new(0, 0);
-    pub const fn new(w: u16, h: u16) -> Self { Self { w, h } }
-    pub const fn quad(wh: u16) -> Self { Self { w: wh, h: wh } }
-    pub const fn scale(&self, factor: f64) -> PhysicalSize {
-        PhysicalSize {
-            w: (self.w as f64 * factor).round() as u16,
-            h: (self.h as f64 * factor).round() as u16,
-        }
-    }
-    pub const fn logical(&self, scale: f64) -> LogicalSize {
-        const FACTOR: f64 = 5000.0 / 1920.0;
-        LogicalSize {
-            w: (self.w as f64 * FACTOR / scale).round() as u16,
-            h: (self.h as f64 * FACTOR / scale).round() as u16,
-        }
-    }
-}
-
-impl From<LogicalSize> for PhysicalSize {
-    fn from(value: LogicalSize) -> Self {
-        Self::new(value.w, value.h)
-    }
-}
-
-/// A point, specified in logical coordinates.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct LogicalPoint {
+pub struct PhysicalPair {
     pub x: i16,
     pub y: i16,
 }
 
-impl LogicalPoint {
-    pub const FULL: Self = Self::new(10000, 10000);
+impl PhysicalPair {
     pub const ZERO: Self = Self::new(0, 0);
     pub const MAX: Self = Self::new(i16::MAX, i16::MAX);
     pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
     pub const fn new(x: i16, y: i16) -> Self {
         Self { x, y }
     }
-}
-
-impl From<MathPoint> for LogicalPoint {
-    fn from(value: MathPoint) -> Self {
-        Self::new(value.x as i16, value.y as i16)
-    }
-}
-
-/// Convert discarding curve information.
-impl From<CurvePoint> for LogicalPoint {
-    fn from(value: CurvePoint) -> Self {
-        Self::new(value.x() as i16, value.y() as i16)
-    }
-}
-
-/// A point, specified in logical coordinates.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PhysicalPoint {
-    pub x: i16,
-    pub y: i16,
-}
-
-impl PhysicalPoint {
-    pub const ZERO: Self = Self::new(0, 0);
-    pub const MAX: Self = Self::new(i16::MAX, i16::MAX);
-    pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
-    pub const fn new(x: i16, y: i16) -> Self {
-        Self { x, y }
-    }
-    pub const fn scale(&self, factor: f64) -> PhysicalPoint {
-        PhysicalPoint {
+    pub const fn scale(&self, factor: f64) -> PhysicalPair {
+        PhysicalPair {
             x: (self.x as f64 * factor).round() as i16,
             y: (self.y as f64 * factor).round() as i16,
         }
     }
 }
+
+pub type PhysicalPoint = PhysicalPair;
+pub type PhysicalSize  = PhysicalPair;
 
 // TODO: I believe we should work with integer points that have high coordinate values instead of using f32 generally
 /// A mathematical point.
@@ -163,11 +166,11 @@ impl MathPoint {
 
 }
 
-impl From<LogicalPoint> for MathPoint {
-    fn from(value: LogicalPoint) -> Self {
-        Self::new(value.x as f32, value.y as f32)
-    }
-}
+// impl From<LogicalPoint> for MathPoint {
+//     fn from(value: LogicalPoint) -> Self {
+//         Self::new(value.x as f32, value.y as f32)
+//     }
+// }
 
 /// Convert discarding curve information.
 impl From<CurvePoint> for MathPoint {
@@ -272,12 +275,12 @@ fn curvepoint() {
 }
 
 /// Lossy conversion, see `new` for more details.
-impl CurvePointFrom<LogicalPoint> for CurvePoint {
-    #[track_caller]
-    fn convert(point: LogicalPoint, kind: PointKind) -> Self {
-        Self::new(point.x as i16, point.y as i16, kind)
-    }
-}
+// impl CurvePointFrom<LogicalPoint> for CurvePoint {
+//     #[track_caller]
+//     fn convert(point: LogicalPoint, kind: PointKind) -> Self {
+//         Self::new(point.x as i16, point.y as i16, kind)
+//     }
+// }
 
 /// Lossy conversion, see `new` for more details.
 impl CurvePointFrom<MathPoint> for CurvePoint {
@@ -287,7 +290,7 @@ impl CurvePointFrom<MathPoint> for CurvePoint {
     }
 }
 
-pub trait CurvePointFrom<T> {
+pub trait CurvePointFrom<T> { // TODO: Remove trait, replace with simple function.
     fn convert(t: T, kind: PointKind) -> Self;
 }
 
@@ -399,7 +402,7 @@ pub unsafe trait IsSurface {
     /// using the scaling factor to obtain the true physical size.
     /// Must not be `0` in any dimension.
     // TODO: could there be any converion errors that lead to the created gl surface being missized? I dont think so, since logicalSize usually has a larger number space then physicalSize (1920 becomes 5000 with a 1.0 scale), so the conversion back from logical to phsical should be lossless
-    fn size(&self) -> PhysicalSize;
+    fn size(&self) -> PhysicalPair;
     /// Get the current scaling factor of the surface.
     fn scale(&self) -> f64;
 }

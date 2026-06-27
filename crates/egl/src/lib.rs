@@ -366,7 +366,7 @@ struct ContextInner {
          damage_rects.clear();
          damage_rects.extend_from_slice(damage.rects);
          for rect in damage_rects.iter_mut() {
-             rect.pos.y = (surface.size.h as isize - rect.pos.y as isize - rect.size.h as isize) as i16;
+             rect.pos.y = (surface.size.y as isize - rect.pos.y as isize - rect.size.y as isize) as i16;
          }
 
          if let Some(func) = instance.swap_buffers_with_damage {
@@ -416,8 +416,8 @@ pub struct Surface {
          let wl_egl_surface = unsafe {
              wayland_egl::WlEglSurface::new_from_raw(
                  window.ptr().cast(),
-                 size.w as i32,
-                 size.h as i32
+                 size.x as i32,
+                 size.y as i32
              ).map_err(|_| "cannot create WlEglSurface")?
          };
 
@@ -454,7 +454,7 @@ pub struct Surface {
          surface.size = size;
 
          #[cfg(target_os = "linux")]
-         surface.wl_egl_surface.resize(size.w as i32, size.h as i32, 0, 0);
+         surface.wl_egl_surface.resize(size.x as i32, size.y as i32, 0, 0);
 
      }
 

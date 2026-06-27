@@ -59,9 +59,9 @@ pub enum WindowEvent {
     Leave,
     MouseEnter,
     MouseLeave,
-    MouseMotion { point: common::PhysicalPoint },
-    MouseDown { point: common::PhysicalPoint, button: MouseButton },
-    MouseUp { point: common::PhysicalPoint, button: MouseButton },
+    MouseMotion { point: common::PhysicalPair },
+    MouseDown { point: common::PhysicalPair, button: MouseButton },
+    MouseUp { point: common::PhysicalPair, button: MouseButton },
     MouseScroll { dx: i16, dy: i16 },
     KeyDown { key: Key, repeat: bool },
     KeyUp { key: Key },
@@ -103,7 +103,7 @@ pub enum DndEvent {
 #[derive(Debug)]
 pub enum CursorStyle {
     Hidden,
-    Custom { icon: CustomIcon, hotspot: common::LogicalPoint }, // TODO: how exactly does the curstom cursor workflow look? should this rather take a PhysicalPoint?
+    Custom { icon: CustomIcon, hotspot: common::PhysicalPair }, // TODO: how exactly does the curstom cursor workflow look?
     Predefined { shape: CursorShape }
 }
 

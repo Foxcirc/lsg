@@ -9,9 +9,9 @@ struct AtlasLayout {
     /// The current size of the atlas.
     size: PhysicalSize,
     /// The height of the current row.
-    rh: u16,
+    rh: i16,
     /// The position after the current slot.
-    cursor: PhysicalPoint,
+    cursor: PhysicalPair,
 }
 
 impl AtlasLayout {
@@ -20,7 +20,7 @@ impl AtlasLayout {
         Self {
             size,
             rh: 0,
-            cursor: PhysicalPoint::ZERO,
+            cursor: PhysicalPair::ZERO,
         }
     }
 
@@ -30,11 +30,11 @@ impl AtlasLayout {
     /// # Errors
     /// If the slot doesn't fit, returns the overshoot. It is not specified
     /// wether the overshoot occured sideways or upwards.
-    pub fn advance(&mut self, size: PhysicalSize) -> Result<PhysicalPoint, u16> {
+    pub fn advance(&mut self, size: PhysicalSize) -> Result<PhysicalPair, i16> {
 
-        let PhysicalSize { w, h } = size;
+        let PhysicalSize { x, y } = size;
 
-        if self.cursor.x as u16 + w > self.size.w {
+        if self.cursor.x + x > self.size.x {
 
             // If we overshoot sideways, we need to grow upwards.
 
@@ -45,36 +45,36 @@ impl AtlasLayout {
             self.cursor.x = 0;
             self.rh = 0;
 
-            if self.cursor.x as u16 + w > self.size.w {
+            if self.cursor.x + x > self.size.x {
                 // If we overshoot sideways again, the object is to large.
-                Err(self.cursor.x as u16 + w - self.size.w)
-            } else if self.cursor.y as u16 + h > self.size.h {
+                Err(self.cursor.x + x - self.size.x)
+            } else if self.cursor.y + y > self.size.y {
                 // If we go out of bounds upwards, there is no space left.
-                Err(self.cursor.y as u16 + h - self.size.h)
+                Err(self.cursor.y + y - self.size.y)
             } else {
 
                 // We made space.
 
                 let result = self.cursor;
 
-                self.cursor.x += w as i16;
-                self.rh = self.rh.max(h);
+                self.cursor.x += x;
+                self.rh = self.rh.max(y);
 
                 Ok(result)
 
             }
 
-        } else if self.cursor.y as u16 + h > self.size.h {
+        } else if self.cursor.y + y > self.size.y {
             // If we overshoot upwards immediatly, the object is to large.
-            Err(self.cursor.y as u16 + h - self.size.h)
+            Err(self.cursor.y + y - self.size.y)
         } else {
 
             // This is the simple case, where we actually have space.
 
             let result = self.cursor;
 
-            self.cursor.x += w as i16;
-            self.rh = self.rh.max(h);
+            self.cursor.x += x;
+            self.rh = self.rh.max(y);
 
             Ok(result)
 
@@ -93,7 +93,7 @@ fn atlas_layout() {
 
     for idx in 0..10 {
 
-        let pt = layout.advance(PhysicalSize::quad(10))
+        let pt = layout.advance(PhysicalSize::new(10, 10))
             .expect("must have enough space");
 
         assert_eq!(pt.y, 0, "y level must be 0");
@@ -111,15 +111,15 @@ fn atlas_layout() {
 
     // 3. misc squares, above the bar at y=20
 
-    let pt3 = layout.advance(PhysicalSize::quad(30)).unwrap();
+    let pt3 = layout.advance(PhysicalSize::new(30, 30)).unwrap();
     assert_eq!(pt3.y, 20);
     assert_eq!(pt3.x, 0);
 
-    let pt4 = layout.advance(PhysicalSize::quad(50)).unwrap();
+    let pt4 = layout.advance(PhysicalSize::new(50, 50)).unwrap();
     assert_eq!(pt4.y, 20);
     assert_eq!(pt4.x, 30);
 
-    let pt5 = layout.advance(PhysicalSize::quad(20)).unwrap();
+    let pt5 = layout.advance(PhysicalSize::new(20, 20)).unwrap();
     assert_eq!(pt5.y, 20);
     assert_eq!(pt5.x, 80);
 
@@ -135,13 +135,13 @@ fn atlas_layout() {
     assert_eq!(inv7, Err(5), "large object should not fit");
 
     let mut layout2 = AtlasLayout::new(PhysicalSize::new(100, 100));
-    let pt21 = layout2.advance(PhysicalSize::quad(100))
+    let pt21 = layout2.advance(PhysicalSize::new(100, 100))
         .expect("100x100 should fit on a 100x100 layout");
     assert_eq!(pt21.y, 0);
     assert_eq!(pt21.x, 0);
 
     let mut layout3 = AtlasLayout::new(PhysicalSize::new(100, 100));
-    let inv31 = layout3.advance(PhysicalSize::quad(101));
+    let inv31 = layout3.advance(PhysicalSize::new(101, 101));
     assert_eq!(inv31, Err(1), "101x101 should not fit on a 100x100 layout");
 
 }
@@ -156,7 +156,7 @@ pub struct TextureAtlas {
     /// The current layout, used to place new slots.
     layout: AtlasLayout,
     /// Which size (as a quad) we can't exceed.
-    maxsize: u16,
+    maxsize: i16,
     /// Which images we are currently storing.
     entries: Vec<TextureEntry>,
     /// This associates a `TextureIndex` with an actual
@@ -167,14 +167,14 @@ pub struct TextureAtlas {
 
 impl TextureAtlas {
 
-    const MININCR: u16 = 256;
+    const MININCR: i16 = 256;
 
     pub fn new(renderer: &Renderer) -> Self {
 
         let mut this = Self {
             layout: AtlasLayout::new(PhysicalSize::MIN),
-            texture: graphics::Texture::new(&renderer.gp, PhysicalSize::quad(1), None),
-            maxsize: graphics::Texture::maxsize(&renderer.gp) as u16,
+            texture: graphics::Texture::new(&renderer.gp, PhysicalSize::new(1, 1), None),
+            maxsize: graphics::Texture::maxsize(&renderer.gp) as i16,
             entries: Vec::new(),
             mapping: Vec::new(),
         };
@@ -213,8 +213,8 @@ impl TextureAtlas {
                 Ok(slot) => break slot,
                 Err(overshoot) => {
                     let incr = overshoot.max(Self::MININCR);
-                    if self.layout.size.w + incr > self.maxsize ||
-                       self.layout.size.h + incr > self.maxsize {
+                    if self.layout.size.x + incr > self.maxsize ||
+                       self.layout.size.y + incr > self.maxsize {
                         panic!("The texture-atlas is full.")
                    } else {
                        self.upsize(renderer, incr);
@@ -266,27 +266,27 @@ impl TextureAtlas {
 
         let orig = self.entries[self.mapping[index.inner as usize] as usize].rect;
 
-        let x_range = 0f64 .. self.layout.size.w as f64;
-        let y_range = 0f64 .. self.layout.size.w as f64;
+        let x_range = 0f64 .. self.layout.size.x as f64;
+        let y_range = 0f64 .. self.layout.size.x as f64;
 
         const TARGET_RANGE: Range<f64> = 0f64 .. 5000f64;
 
         PhysicalRect::new2(
             maprange(orig.pos.x  as f64, x_range.clone(), TARGET_RANGE) as i16,
             maprange(orig.pos.y  as f64, y_range.clone(), TARGET_RANGE) as i16,
-            maprange(orig.size.w as f64, x_range.clone(), TARGET_RANGE) as u16,
-            maprange(orig.size.h as f64, y_range.clone(), TARGET_RANGE) as u16
+            maprange(orig.size.x as f64, x_range.clone(), TARGET_RANGE) as i16,
+            maprange(orig.size.y as f64, y_range.clone(), TARGET_RANGE) as i16
         )
 
     }
 
-    fn upsize(&mut self, renderer: &Renderer, incr: u16) {
+    fn upsize(&mut self, renderer: &Renderer, incr: i16) {
 
         // Create a new, bigger texture.
 
         let mut layout = AtlasLayout::new(PhysicalSize::new(
-            self.layout.size.w + incr,
-            self.layout.size.h + incr,
+            self.layout.size.x + incr,
+            self.layout.size.y + incr,
         ));
 
         let mut new = graphics::Texture::new(&renderer.gp, layout.size, None);
@@ -295,8 +295,8 @@ impl TextureAtlas {
         // efficient spacial layout. We also need to update the mapping.
 
         self.entries.sort_unstable_by(|lhs, rhs| {
-            let ls = lhs.rect.size.w as usize * lhs.rect.size.h as usize;
-            let rs = rhs.rect.size.w as usize * rhs.rect.size.h as usize;
+            let ls = lhs.rect.size.x as usize * lhs.rect.size.y as usize;
+            let rs = rhs.rect.size.x as usize * rhs.rect.size.y as usize;
             ls.cmp(&rs)
         });
 
@@ -342,7 +342,7 @@ impl GlWriteToAtlas for [u8] {
 impl GlWriteToAtlas for graphics::Texture {
     #[track_caller]
         fn write(&self, target: &mut graphics::Texture, dstrect: PhysicalRect) {
-        target.fromtex(self, PhysicalRect::new(PhysicalPoint::ZERO, dstrect.size), dstrect);
+        target.fromtex(self, PhysicalRect::new(PhysicalPair::ZERO, dstrect.size), dstrect);
         // original: gl::copy_tex_sub_image_2d((&self.fbo, PhysicalPoint::ZERO), (&target, rect.pos), rect.size);
     }
 }
@@ -354,9 +354,9 @@ pub struct Instance {
     /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
     pub target: GeometryTarget,
     /// offsetX, offsetY
-    pub pos: LogicalPoint,
+    pub pos: PhysicalPair,
     /// Scale which is applied to the targeted shape.
-    pub size: LogicalSize,
+    pub size: PhysicalSize,
     /// Texture / Color
     pub texture: TextureKind,
 }
@@ -375,7 +375,7 @@ pub enum TextureKind {
     /// RGBA
     Color(u8, u8, u8, u8),
     /// Index into TextureAtlas + Offset
-    Atlas(TextureIndex, PhysicalPoint),
+    Atlas(TextureIndex, PhysicalPair),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,16 +527,16 @@ impl Renderer {
                 let vertex_x = vertex.pos[0];
                 let vertex_y = vertex.pos[1];
 
-                let physical_x = vertex_x as f64 * (instance.size.w as f64 / 5000.0);
-                let physical_y = vertex_y as f64 * (instance.size.h as f64 / 5000.0);
+                let physical_x = vertex_x as f64 * (instance.size.x as f64 / 5000.0);
+                let physical_y = vertex_y as f64 * (instance.size.y as f64 / 5000.0);
                 //                                                              / ^^^^^^
-                //      This is the scaling where 5000 means a 1.0 scale. So if...
-                //          1. SHAPE = 5000x5000 filled rect
-                //          2. INSTANCE.SCALE = 100 = (0.02x)
-                //      ...then you will get a 100x100 pixel filled rect.
+                //      This is the scaling where 10,000 means a 1.0 scale. So if...
+                //          1. SHAPE = 10,000x10,000 filled rect
+                //          2. INSTANCE.SCALE = 100 = (0.01x)
+                //      ...then you will get a 100x100 physical-pixel filled rect.
 
-                let scaled_x = (physical_x * 5000.0) / size.w as f64;
-                let scaled_y = (physical_y * 5000.0) / size.h as f64;
+                let scaled_x = (physical_x * 5000.0) / size.x as f64;
+                let scaled_y = (physical_y * 5000.0) / size.y as f64;
 
                 let transformed_x = scaled_x as i16 + instance.pos.x;
                 let transformed_y = scaled_y as i16 + instance.pos.y;
@@ -566,9 +566,9 @@ impl Renderer {
 
                         // Project the vertex' position inside the shape onto the texture:
                         let x_low  = coords.pos.x as f64;
-                        let x_high = coords.size.w as f64 + x_low;
+                        let x_high = coords.size.x as f64 + x_low;
                         let y_low  = coords.pos.y as f64;
-                        let y_high = coords.size.h as f64 + y_low;
+                        let y_high = coords.size.y as f64 + y_low;
                         let x = maprange(vertex_x as f64, 0f64..5000f64, x_low..x_high);
                         let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);
 

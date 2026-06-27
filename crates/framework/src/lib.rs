@@ -264,8 +264,8 @@ impl Window {
 
                 let space = Space {
                     state: &mut *windowstate,
-                    size: Vec2::new(abs(size.w as i16), abs(size.h as i16)),
-                    offset: Vec2::ZERO,
+                    size: MeasuredPair::new(abs(size.x), abs(size.y)),
+                    offset: MeasuredPair::ZERO,
                 };
 
                 // This will render the whole tree.
@@ -423,7 +423,7 @@ struct RenderStateCurves {
 
 pub struct Space<'a> {
     state: &'a mut WindowRenderState,
-    offset: Vec2,
+    offset: MeasuredPair,
     size: Size,
 }
 
@@ -493,7 +493,7 @@ impl<'a> Space<'a> {
 
     }
 
-    pub fn child<'s>(&'s mut self, offset: Vec2, size: Size) -> Space<'s> {
+    pub fn child<'s>(&'s mut self, offset: MeasuredPair, size: Size) -> Space<'s> {
 
         let new = Self::transform(Rect { point: offset, size }, self.offset, self.size);
 
@@ -505,15 +505,15 @@ impl<'a> Space<'a> {
 
     }
 
-    fn transform(input: Rect, toffset: Vec2, tscale: Vec2) -> Rect {
-        let point = Vec2 {
+    fn transform(input: Rect, toffset: MeasuredPair, tscale: MeasuredPair) -> Rect {
+        let point = MeasuredPair {
             x: toffset.x + match input.point.mx {
                 Measure::Absolute => input.point.x,
-                Measure::Relative => Self::rescale(input.point.x, tscale.x)
+                Measure::Relative => rescale(input.point.x, tscale.x)
             },
             y: toffset.x + match input.point.my {
                 Measure::Absolute => input.point.y,
-                Measure::Relative => Self::rescale(input.point.y, tscale.y)
+                Measure::Relative => rescale(input.point.y, tscale.y)
             },
             mx: Measure::Absolute,
             my: Measure::Absolute
@@ -521,11 +521,11 @@ impl<'a> Space<'a> {
         let size = Size {
             x: match input.size.mx {
                 Measure::Absolute => input.size.x,
-                Measure::Relative => Self::rescale(input.size.x, tscale.x)
+                Measure::Relative => rescale(input.size.x, tscale.x)
             },
             y: match input.size.my {
                 Measure::Absolute => input.size.y,
-                Measure::Relative => Self::rescale(input.size.y, tscale.y)
+                Measure::Relative => rescale(input.size.y, tscale.y)
             },
             mx: Measure::Absolute,
             my: Measure::Absolute
@@ -533,17 +533,7 @@ impl<'a> Space<'a> {
         Rect { point, size }
     }
 
-    /// Computes value% * scale%, but using units per 5000.
-    ///
-    /// So if value = 1,250 and scale = 2,500 this returns 625, equivalent to
-    ///       value = 25%       sccale = 50%       returns 12.5%
-    fn rescale(value: i16, scale: i16) -> i16 {
-        ((value as isize * scale as isize) / 5000isize) as i16
-    }
-
 }
-// const FULL: u16 = size("100%");
-
 
 pub enum Data<'a> {
     Curves(&'a [common::CurvePoint]),
@@ -593,48 +583,68 @@ pub struct Rect {
 }
 
 #[derive(Clone, Copy)]
-pub struct Vec2 {
+pub struct MeasuredPair {
     x: i16,
     y: i16,
     mx: Measure,
     my: Measure
 }
 
-impl Vec2 {
+impl MeasuredPair {
     const ZERO: Self = Self::new(abs(0), abs(0));
     pub const fn new((x, mx): (i16, Measure), (y, my): (i16, Measure)) -> Self {
         Self { x, y, mx, my }
     }
 }
 
-impl From<Vec2> for common::LogicalPoint {
-    fn from(it: Vec2) -> Self {
+impl From<MeasuredPair> for common::PhysicalPair {
+    fn from(it: MeasuredPair) -> Self {
         Self::new(it.x, it.y)
     }
 }
 
-impl From<Vec2> for common::LogicalSize {
-    fn from(it: Vec2) -> Self {
-        Self::new(it.x as u16, it.y as u16)
-    }
-}
+pub type Point = MeasuredPair;
+pub type Size  = MeasuredPair;
 
-pub type Point = Vec2;
-pub type Size  = Vec2;
-
+/// Utility to return a number with Measure::Absoulte.
 pub const fn abs(val: i16) -> (i16, Measure) {
     (val, Measure::Absolute)
 }
 
+/// Utility to return a number with Measure::Relative.
+///
+/// Also see: [`percent`].
 pub const fn rel(val: i16) -> (i16, Measure) {
     (val, Measure::Relative)
 }
 
+/// Utility to return a number with Measure::Relative.
+///
+/// This takes a percent-scale number as f32, which it
+/// will convert to the permyriad-scale used by the api.
+///
+/// Also see: [`rel`].
+pub const fn percent(val: f32) -> (i16, Measure) {
+    rel((val * 100.0) as i16)
+}
+
+/// Computes value * scale, but using units per 10,000.
+///
+/// # Example Conversion
+/// +-----------+-----------+-----------+-----------+
+/// | Regular % | 25%       | 50%       | 12,5%     |
+/// +-----------+-----------+-----------+-----------+
+/// | Our Units | 2,500     | 5,000     | 1,250     |
+/// +-----------+-----------+-----------+-----------+
+fn rescale(value: i16, scale: i16) -> i16 {
+    ((value as isize * scale as isize) / 10000isize) as i16
+}
+
 pub struct Instance {
     /// offsetX, offsetY
-    pub pos: Vec2,
+    pub pos: MeasuredPair,
     /// Size of the shape in logical pixels.
-    pub size: Size,
+    pub size: MeasuredPair,
     // Texture information.
     pub texture: render::TextureKind,
 }
@@ -750,18 +760,6 @@ fn event_broadcaster() {
 
     use futures_lite::future::block_on;
 
-    // let single = EventChannel::new();
-
-    // single.send(1);
-    // single.send(2);
-    // single.send(3);
-
-    // block_on(async move {
-    //     assert_eq!((&single).await, 1);
-    //     assert_eq!((&single).await, 2);
-    //     assert_eq!((&single).await, 3);
-    // });
-
     let evb = EventBroadcaster::new();
 
     let mut listener1 = evb.listen();
@@ -785,91 +783,3 @@ fn event_broadcaster() {
 
 
 }
-
-/*
-
-    Needed features:
-    - Add shape as list of points
-    - Add shape as vertices
-    - Create (many) instances of one shape
-
-    fn action(&self, action: Action) {
-
-        if let Action::Draw(ctx) = action {
-
-            let cached = ...;
-
-            ctx.geometry.add(cached or shape data, instace);
-
-            ctx.child(|inner| {
-                child.handle(Action::Draw { ctx: inner });
-            })
-
-            let sub = ctx.sub(position, size);
-            child.handle(Action::Draw { ctx: sub });
-
-            // impl DrawContext:
-            fn sub(&self, size, position) -> &mut Self {
-                &mut Self {
-                    vertex geometry: &mut self.VertexGeometry,
-                    curve geom: ...,
-                    self offset + position offset,
-                    self factor + size factor,
-                }
-            }
-
-        }
-
-    }
-
-    fn main() {
-        lsg::run(app)
-    }
-
-    #[test]
-    fn test() {
-        lsg::simulate(app, async |sim| {
-
-            let window = sim.window("window-zero");
-            window.click("button-counter").await;
-
-            // let textbox = window.content.inner.items[1];
-            let textbox = window.widget("textbox-counter");
-
-            let text = textbox.inner.get();
-
-            assert!(text == "1");
-
-        });
-    }
-
-    async fn app(app: lsg::App) {
-
-        let window = lsg::Window::new(&ev);
-        window.id("window-zero");
-
-        window.content.set(Widget);
-
-        app.connect(&button, Button::leftclicked, async || {
-            counter.update(|it| *it += 1);
-            text.inner.set(format!("{counter}"));
-            app.redraw(&text);
-        });
-
-        app.spawn(async {
-            loop {
-                button.leftclicked().await;
-            }
-        });
-
-        button.leftclicked(&ev, async || {
-            counter.update(|it| *it += 1);
-            text.inner.set(format!("{counter}"));
-            ev.redraw(&text);
-        });
-
-        window.closed().await;
-
-    }));
-
- */
