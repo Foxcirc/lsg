@@ -235,7 +235,7 @@ impl TextureAtlas {
 
         let (index, rect) = (
             TextureIndex { inner: mapping as u16 },
-            PhysicalRect { pos: slot, size }
+            PhysicalRect { point: slot, size }
         );
 
         self.entries.push(TextureEntry { rect, mapping });
@@ -277,8 +277,8 @@ impl TextureAtlas {
         const TARGET_RANGE: Range<f64> = 0f64 .. 5000f64;
 
         PhysicalRect::new2(
-            maprange(orig.pos.x  as f64, x_range.clone(), TARGET_RANGE) as i16,
-            maprange(orig.pos.y  as f64, y_range.clone(), TARGET_RANGE) as i16,
+            maprange(orig.point.x  as f64, x_range.clone(), TARGET_RANGE) as i16,
+            maprange(orig.point.y  as f64, y_range.clone(), TARGET_RANGE) as i16,
             maprange(orig.size.x as f64, x_range.clone(), TARGET_RANGE) as i16,
             maprange(orig.size.y as f64, y_range.clone(), TARGET_RANGE) as i16
         )
@@ -317,7 +317,7 @@ impl TextureAtlas {
             // Copy from the original rect, still stored in the rect to the new position `newpos`.
             new.fromtex(&self.texture, entry.rect, PhysicalRect::new(newpos, entry.rect.size));
             // Make sure to update the position of the entry accordingly.
-            entry.rect.pos = newpos;
+            entry.rect.point = newpos;
         }
 
         // After this the atlas is fully present in the
@@ -352,20 +352,6 @@ impl GlWriteToAtlas for graphics::Texture {
     }
 }
 
-/// A single instance of a shape. This can be used to render the same
-/// shape many times with different transformations and textures.
-#[derive(Debug, Clone)]
-pub struct Instance {
-    /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
-    pub target: GeometryTarget,
-    /// offsetX, offsetY
-    pub pos: PhysicalPair,
-    /// Scale which is applied to the targeted shape.
-    pub size: PhysicalSize,
-    /// Texture / Color
-    pub texture: TextureKind,
-}
-
 #[derive(Debug, Clone)]
 struct TextureEntry {
     /// The position inside the atlas texture.
@@ -373,27 +359,6 @@ struct TextureEntry {
     /// Which `mapping` stores our index. Used to update
     /// the mapping accordingly after sorting the entries.
     pub mapping: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum TextureKind {
-    /// RGBA
-    Color(u8, u8, u8, u8),
-    /// Index into TextureAtlas + Offset
-    Atlas(TextureIndex, PhysicalPair),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextureIndex {
-    inner: u16,
-}
-
-#[derive(Debug, Clone)]
-pub struct GeometryTarget {
-    /// Index into the associated list of vertex gemoetries.
-    pub geometry: u16,
-    /// Index into the list of shapes of that geometry.
-    pub shape: u16,
 }
 
 /// Represents multiple instances of shapes together with their vertex information.
@@ -523,7 +488,7 @@ impl Renderer {
 
             let inner = &geometry.source[instance.target.geometry as usize];
             let shape = &inner.shapes[instance.target.shape as usize];
-            let vertices = &inner.vertices[shape.range2()];
+            let vertices = &inner.vertices[shape.rangeu()];
 
             let ivertices = repeat([0, 1, 2] as [u16; 3]).flatten();
 
@@ -570,9 +535,9 @@ impl Renderer {
                         let coords = atlas.get(index);
 
                         // Project the vertex' position inside the shape onto the texture:
-                        let x_low  = coords.pos.x as f64;
+                        let x_low  = coords.point.x as f64;
                         let x_high = coords.size.x as f64 + x_low;
-                        let y_low  = coords.pos.y as f64;
+                        let y_low  = coords.point.y as f64;
                         let y_high = coords.size.y as f64 + y_low;
                         let x = maprange(vertex_x as f64, 0f64..5000f64, x_low..x_high);
                         let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);

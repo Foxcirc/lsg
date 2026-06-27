@@ -366,7 +366,7 @@ struct ContextInner {
          damage_rects.clear();
          damage_rects.extend_from_slice(damage.rects);
          for rect in damage_rects.iter_mut() {
-             rect.pos.y = (surface.size.y as isize - rect.pos.y as isize - rect.size.y as isize) as i16;
+             rect.point.y = (surface.size.y as isize - rect.point.y as isize - rect.size.y as isize) as i16;
          }
 
          if let Some(func) = instance.swap_buffers_with_damage {

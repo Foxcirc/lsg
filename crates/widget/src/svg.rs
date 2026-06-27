@@ -227,35 +227,35 @@ pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Result<Vec<Vec<Curve
                     });
                 }
                 // add the point
-                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
+                current.push(CurvePoint::fromp(p1 * scale, PointKind::Base));
                 start = p1;
                 cursor = p1;
             },
             PathCommand::Line(p1) => {
-                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
+                current.push(CurvePoint::fromp(p1 * scale, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Horizontal(pos) => {
-                current.push(CurvePoint::convert(MathPoint::new(pos, cursor.y) * scale, PointKind::Base));
+                current.push(CurvePoint::fromp(MathPoint::new(pos, cursor.y) * scale, PointKind::Base));
                 cursor.x = pos;
             },
             PathCommand::Vertical(pos) => {
-                current.push(CurvePoint::convert(MathPoint::new(cursor.x, pos) * scale, PointKind::Base));
+                current.push(CurvePoint::fromp(MathPoint::new(cursor.x, pos) * scale, PointKind::Base));
                 cursor.y = pos;
             },
             PathCommand::Quadratic(ct, p1) => {
-                current.push(CurvePoint::convert(ct * scale, PointKind::Ctrl));
-                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
+                current.push(CurvePoint::fromp(ct * scale, PointKind::Ctrl));
+                current.push(CurvePoint::fromp(p1 * scale, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Cubic(c1, c2, p1) => {
-                current.push(CurvePoint::convert(c1 * scale, PointKind::Ctrl));
-                current.push(CurvePoint::convert(c2 * scale, PointKind::Ctrl));
-                current.push(CurvePoint::convert(p1 * scale, PointKind::Base));
+                current.push(CurvePoint::fromp(c1 * scale, PointKind::Ctrl));
+                current.push(CurvePoint::fromp(c2 * scale, PointKind::Ctrl));
+                current.push(CurvePoint::fromp(p1 * scale, PointKind::Base));
                 cursor = p1;
             },
             PathCommand::Return => {
-                current.push(CurvePoint::convert(start * scale, PointKind::Base));
+                current.push(CurvePoint::fromp(start * scale, PointKind::Base));
                 cursor = start;
             },
         }

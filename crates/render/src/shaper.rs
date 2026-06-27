@@ -8,63 +8,6 @@ use std::{convert::identity, f32::consts::PI, iter::once};
 use bv::BitVec;
 use common::*;
 
-/// Geometry that represents curved polygons as a list of points.
-#[derive(Default)]
-pub struct CurveGeometry {
-    pub points: Vec<CurvePoint>,
-    pub shapes: Vec<Shape>,
-}
-
-impl CurveGeometry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn clear(&mut self) {
-        self.points.clear();
-        self.shapes.clear();
-    }
-}
-
-#[derive(Default, Clone, Copy, Debug)]
-#[repr(u8)]
-pub enum FillKind {
-    #[default]
-    Filled = 0,
-    Convex = 1,
-    Concave = 2
-}
-
-/// A simple vertex making up a list of triangles in [`VertexGeometry`].
-#[derive(Default, Clone, Copy, Debug)]
-pub struct PartialVertex {
-    /// x, y
-    pub pos: [u16; 2],
-    /// if this is a curve or filled
-    pub curve: FillKind,
-    /// bitflags, which edges are outer edges
-    pub edges: u8,
-}
-
-impl PartialVertex {
-    pub const fn new(pos: [u16; 2], curve: FillKind, edges: u8) -> Self {
-        Self { pos, curve, edges }
-    }
-}
-
-/// Geometry that represents curved polygons after triangulation.
-#[derive(Debug, Default)]
-pub struct VertexGeometry {
-    pub vertices: Vec<PartialVertex>,
-    pub shapes: Vec<Shape>,
-}
-
-impl VertexGeometry {
-    pub fn clear(&mut self) {
-        self.vertices.clear();
-        self.shapes.clear();
-    }
-}
-
 // pub struct SingularData {
 //     pub vertices: Vec<u8>,
 // }
@@ -136,7 +79,7 @@ impl LoweringPass {
 
     fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
 
-        let Some(points) = geometry.points.get(shape.range2()) else { return Err(()) };
+        let Some(points) = geometry.points.get(shape.rangeu()) else { return Err(()) };
 
         if points.len() < 3 { return Err(()) }
 
@@ -177,10 +120,10 @@ impl LoweringPass {
                     let [p, q] = TriangulationPass::split_quadratic(x, 0.5);
                     let [r, s] = TriangulationPass::split_quadratic(y, 0.5);
 
-                    self.output.points.extend_from_slice(&[CurvePoint::convert(p[0], PointKind::Base), CurvePoint::convert(p[1], PointKind::Ctrl)]);
-                    self.output.points.extend_from_slice(&[CurvePoint::convert(q[0], PointKind::Base), CurvePoint::convert(q[1], PointKind::Ctrl)]);
-                    self.output.points.extend_from_slice(&[CurvePoint::convert(r[0], PointKind::Base), CurvePoint::convert(r[1], PointKind::Ctrl)]);
-                    self.output.points.extend_from_slice(&[CurvePoint::convert(s[0], PointKind::Base), CurvePoint::convert(s[1], PointKind::Ctrl)]);
+                    self.output.points.extend_from_slice(&[CurvePoint::fromp(p[0], PointKind::Base), CurvePoint::fromp(p[1], PointKind::Ctrl)]);
+                    self.output.points.extend_from_slice(&[CurvePoint::fromp(q[0], PointKind::Base), CurvePoint::fromp(q[1], PointKind::Ctrl)]);
+                    self.output.points.extend_from_slice(&[CurvePoint::fromp(r[0], PointKind::Base), CurvePoint::fromp(r[1], PointKind::Ctrl)]);
+                    self.output.points.extend_from_slice(&[CurvePoint::fromp(s[0], PointKind::Base), CurvePoint::fromp(s[1], PointKind::Ctrl)]);
 
                 } else {
                     self.output.points.extend_from_slice(&section[..2]);
@@ -208,7 +151,7 @@ impl LoweringPass {
                     let new_ctrl_point_y = -0.25*curve[0].y + 0.75*curve[1].y + 0.75*curve[2].y -0.25*curve[3].y;
 
                     self.output.points.extend_from_slice(&[
-                        CurvePoint::convert(curve[0], PointKind::Base),
+                        CurvePoint::fromp(curve[0], PointKind::Base),
                         CurvePoint::new(new_ctrl_point_x as i16, new_ctrl_point_y as i16, PointKind::Ctrl)
                     ]);
 
@@ -299,7 +242,7 @@ impl TriangulationPass {
 
     fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
 
-        let points = geometry.points.get(shape.range2())
+        let points = geometry.points.get(shape.rangeu())
             .unwrap_or_default();
 
         if points.len() < 3 {

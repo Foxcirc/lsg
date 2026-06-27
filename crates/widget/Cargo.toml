@@ -7,4 +7,5 @@ authors.workspace = true
 
 [dependencies]
 common = { path = "../common" }
+desktop = { path = "../desktop" } # TODO: (maybe better?) Remove this dep (even though we dont enable any features here, which means we dont include a backend!) and move the necessary types (right now MouseButtonn and Key) to common
 nom = "8.0.0"

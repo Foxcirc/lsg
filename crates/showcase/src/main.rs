@@ -55,10 +55,10 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
     let mut surface = graphics::Surface::new(&renderer.gp, &window);
     let atlas = render::TextureAtlas::new(&renderer);
 
-    let mut geometry = shaper::CurveGeometry::new();
+    let mut geometry = common::CurveGeometry::new();
     let mut shaper = shaper::GeometryShaper::new();
 
-    let mut instances: Vec<render::Instance> = Vec::new();
+    let mut instances: Vec<common::Instance> = Vec::new();
 
     geometry.points.push(CurvePoint::new(1250, 1250, PointKind::Base));
     geometry.points.push(CurvePoint::new(3750, 1250, PointKind::Ctrl));
@@ -66,11 +66,11 @@ fn app(evl: Arc<EventLoop>) -> Result<(), Box<dyn std::error::Error>> {
 
     geometry.shapes.push(Shape::new(0..3));
 
-    instances.push(render::Instance {
-        target: render::GeometryTarget { geometry: 0, shape: 0 },
+    instances.push(common::Instance {
+        target: common::GeometryTarget { geometry: 0, shape: 0 },
         pos: PhysicalPair::new(0, 0),
         size: PhysicalPair::new(500, 500),
-        texture: render::TextureKind::Color(0, 255, 100, 255),
+        texture: common::TextureKind::Color(0, 255, 100, 255),
     });
 
     log("Spawning event handler now...");

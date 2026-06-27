@@ -5,18 +5,18 @@ use std::{ffi::c_void as void, fmt, ops::{self, Range}, sync::{Mutex, MutexGuard
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PhysicalRect {
-    pub pos: PhysicalPair,
+    pub point: PhysicalPair,
     pub size: PhysicalPair,
 }
 
 impl PhysicalRect {
     pub const MAX: Self = Self::new(PhysicalPair::MIN, PhysicalPair::MAX);
     pub const ZERO: Self = Self::new(PhysicalPair::ZERO, PhysicalPair::MIN);
-    pub const fn new(pos: PhysicalPair, size: PhysicalPair) -> Self {
-        Self { pos, size }
+    pub const fn new(point: PhysicalPair, size: PhysicalPair) -> Self {
+        Self { point, size }
     }
     pub const fn new2(x: i16, y: i16, w: i16, h: i16) -> Self {
-        Self { pos: PhysicalPair::new(x, y), size: PhysicalPair::new(w, h) }
+        Self { point: PhysicalPair::new(x, y), size: PhysicalPair::new(w, h) }
     }
 }
 
@@ -145,6 +145,42 @@ impl PhysicalPair {
 pub type PhysicalPoint = PhysicalPair;
 pub type PhysicalSize  = PhysicalPair;
 
+#[derive(Clone, Copy)]
+pub enum Measure {
+    Absolute,
+    Relative,
+}
+
+#[derive(Clone, Copy)]
+pub struct MeasuredRect {
+    pub point: MeasuredPoint,
+    pub size: MeasuredSize
+}
+
+#[derive(Clone, Copy)]
+pub struct MeasuredPair {
+    pub x: i16,
+    pub y: i16,
+    pub mx: Measure,
+    pub my: Measure
+}
+
+impl MeasuredPair {
+    pub const ZERO: Self = Self::new((0, Measure::Absolute), (0, Measure::Absolute));
+    pub const fn new((x, mx): (i16, Measure), (y, my): (i16, Measure)) -> Self {
+        Self { x, y, mx, my }
+    }
+}
+
+impl From<MeasuredPair> for PhysicalPair {
+    fn from(it: MeasuredPair) -> Self {
+        Self::new(it.x, it.y)
+    }
+}
+
+pub type MeasuredPoint = MeasuredPair;
+pub type MeasuredSize  = MeasuredPair;
+
 // TODO: I believe we should work with integer points that have high coordinate values instead of using f32 generally
 /// A mathematical point.
 #[repr(C)]
@@ -261,6 +297,11 @@ impl CurvePoint {
         }
     }
 
+    /// Lossy conversion, see `new` for more details.
+    pub fn fromp(point: MathPoint, kind: PointKind) -> Self {
+        Self::new(point.x as i16, point.y as i16, kind)
+    }
+
 }
 
 #[test]
@@ -272,26 +313,6 @@ fn curvepoint() {
     assert_eq!(p.y(), -40);
     assert_eq!(p.kind(), PointKind::Base);
 
-}
-
-/// Lossy conversion, see `new` for more details.
-// impl CurvePointFrom<LogicalPoint> for CurvePoint {
-//     #[track_caller]
-//     fn convert(point: LogicalPoint, kind: PointKind) -> Self {
-//         Self::new(point.x as i16, point.y as i16, kind)
-//     }
-// }
-
-/// Lossy conversion, see `new` for more details.
-impl CurvePointFrom<MathPoint> for CurvePoint {
-    #[track_caller]
-    fn convert(point: MathPoint, kind: PointKind) -> Self {
-        Self::new(point.x as i16, point.y as i16, kind)
-    }
-}
-
-pub trait CurvePointFrom<T> { // TODO: Remove trait, replace with simple function.
-    fn convert(t: T, kind: PointKind) -> Self;
 }
 
 #[repr(C)]
@@ -317,8 +338,134 @@ impl Shape {
     pub const fn new2(start: u16, end: u16) -> Self { Self { start,               end             } }
 
     pub fn range(&self)  -> Range<u16>   { self.start          .. self.end          }
-    pub fn range2(&self) -> Range<usize> { self.start as usize .. self.end as usize }
+    pub fn rangeu(&self) -> Range<usize> { self.start as usize .. self.end as usize }
 
+}
+
+/// A single instance of a shape. This can be used to render the same
+/// shape many times with different transformations and textures.
+#[derive(Debug, Clone)]
+pub struct Instance {
+    /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
+    pub target: GeometryTarget,
+    /// offsetX, offsetY
+    pub pos: PhysicalPair,
+    /// Scale which is applied to the targeted shape.
+    pub size: PhysicalSize,
+    /// Texture / Color
+    pub texture: TextureKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeometryTarget {
+    /// Index into the associated list of vertex gemoetries.
+    pub geometry: u16,
+    /// Index into the list of shapes of that geometry.
+    pub shape: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TextureKind {
+    /// RGBA
+    Color(u8, u8, u8, u8),
+    /// Index into TextureAtlas + Offset
+    Atlas(TextureIndex, PhysicalPair),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureIndex {
+    pub inner: u16,
+}
+
+/// Geometry that represents curved polygons as a list of points.
+#[derive(Default)]
+pub struct CurveGeometry {
+    pub points: Vec<CurvePoint>,
+    pub shapes: Vec<Shape>,
+}
+
+impl CurveGeometry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn clear(&mut self) {
+        self.points.clear();
+        self.shapes.clear();
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum FillKind {
+    #[default]
+    Filled = 0,
+    Convex = 1,
+    Concave = 2
+}
+
+/// A simple vertex making up a list of triangles in [`VertexGeometry`].
+#[derive(Default, Clone, Copy, Debug)]
+pub struct PartialVertex {
+    /// x, y
+    pub pos: [u16; 2],
+    /// if this is a curve or filled
+    pub curve: FillKind,
+    /// bitflags, which edges are outer edges
+    pub edges: u8,
+}
+
+impl PartialVertex {
+    pub const fn new(pos: [u16; 2], curve: FillKind, edges: u8) -> Self {
+        Self { pos, curve, edges }
+    }
+}
+
+/// Geometry that represents curved polygons after triangulation.
+#[derive(Debug, Default)]
+pub struct VertexGeometry {
+    pub vertices: Vec<PartialVertex>,
+    pub shapes: Vec<Shape>,
+}
+
+impl VertexGeometry {
+    pub fn clear(&mut self) {
+        self.vertices.clear();
+        self.shapes.clear();
+    }
+}
+
+/// Utility to return a number with Measure::Absoulte.
+pub const fn abs(val: i16) -> (i16, Measure) {
+    (val, Measure::Absolute)
+}
+
+/// Utility to return a number with Measure::Relative.
+///
+/// Also see: [`percent`].
+pub const fn rel(val: i16) -> (i16, Measure) {
+    (val, Measure::Relative)
+}
+
+/// Utility to return a number with Measure::Relative.
+///
+/// This takes a percent-scale number as f32, which it
+/// will convert to the permyriad-scale used by the api.
+///
+/// Also see: [`rel`].
+pub const fn percent(val: f32) -> (i16, Measure) {
+    rel((val * 100.0) as i16)
+}
+
+/// Computes value * scale, but using units per 10,000.
+///
+/// # Example Conversion
+/// +-----------+-----------+-----------+-----------+
+/// | Regular % | 25%       | 50%       | 12,5%     |
+/// +-----------+-----------+-----------+-----------+
+/// | Our Units | 2,500     | 5,000     | 1,250     |
+/// +-----------+-----------+-----------+-----------+
+pub fn rescale(value: i16, scale: i16) -> i16 {
+    ((value as isize * scale as isize) / 10000isize) as i16
 }
 
 // #[derive(Clone, Copy, PartialEq, Eq)]
@@ -352,33 +499,6 @@ impl Shape {
 //     }
 // }
 
-/// A point in normalized device coordinates.
-// #[derive(Debug, Clone, Copy)]
-// pub struct GlPoint {
-//     pub x: f32,
-//     pub y: f32,
-// }
-//
-// impl GlPoint {
-//
-//     pub fn new(x: f32, y: f32) -> Self {
-//         Self { x, y }
-//     }
-//
-//     /// Convert to normalized device coordinates using the given window size.
-//     pub fn convert(p: Point, size: Size) -> Self {
-//         Self {
-//             x:       2.0 * (p.x as f32 / size.w  as f32) - 1.0,
-//             y: 1.0 - 2.0 * (p.y as f32 / size.h as f32)
-//         }
-//     }
-//
-//     pub fn xy(&self) -> [f32; 2] {
-//         [self.x, self.y]
-//     }
-//
-// }
-
 /// Implemented by a type that can provide the platform specific display pointer.
 /// ### Safety
 /// You must always return a valid pointer.
@@ -393,7 +513,6 @@ pub unsafe trait IsDisplay {
 /// Implemented by a type that can provide the platform surface pointer.
 /// ### Safety
 /// You must always return a valid pointer.
-// TODO: when can the surface wayland object be dropped?
 pub unsafe trait IsSurface {
     /// # Platform-Specific
     /// 1. Wayand: should return a pointer to a `wl-surface` proxy object.
@@ -401,7 +520,6 @@ pub unsafe trait IsSurface {
     /// Get the current size of the surface. The size must be scaled
     /// using the scaling factor to obtain the true physical size.
     /// Must not be `0` in any dimension.
-    // TODO: could there be any converion errors that lead to the created gl surface being missized? I dont think so, since logicalSize usually has a larger number space then physicalSize (1920 becomes 5000 with a 1.0 scale), so the conversion back from logical to phsical should be lossless
     fn size(&self) -> PhysicalPair;
     /// Get the current scaling factor of the surface.
     fn scale(&self) -> f64;

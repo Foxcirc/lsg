@@ -1001,8 +1001,8 @@ pub fn blit_frame_buffer(target: (&FrameBuffer, PhysicalRect), source: (&FrameBu
     bind_draw_frame_buffer(target.0);
     bind_read_frame_buffer(source.0);
     unsafe { gl::BlitFramebuffer(
-        source.1.pos.x as i32, source.1.pos.y as i32, source.1.size.x as i32, source.1.size.y as i32, // source rect
-        target.1.pos.x as i32, target.1.pos.y as i32, target.1.size.x as i32, target.1.size.y as i32, // target rect
+        source.1.point.x as i32, source.1.point.y as i32, source.1.size.x as i32, source.1.size.y as i32, // source rect
+        target.1.point.x as i32, target.1.point.y as i32, target.1.size.x as i32, target.1.size.y as i32, // target rect
         gl::COLOR_BUFFER_BIT,
         filter as u32,
     ) };
@@ -1036,7 +1036,7 @@ pub unsafe fn read_pixels(fbo: &FrameBuffer, rect: PhysicalRect, fpixel: ColorFo
     bind_read_frame_buffer(&fbo);
 
     unsafe { gl::ReadPixels(
-        rect.pos.x as i32, rect.pos.y as i32,
+        rect.point.x as i32, rect.point.y as i32,
         rect.size.x as i32, rect.size.y as i32,
         fpixel as u32,
         fdata as u32,
@@ -1300,8 +1300,8 @@ pub fn tex_sub_image_2d(texture: &Texture, rect: PhysicalRect, fpixel: ColorForm
     unsafe { gl::TexSubImage2D(
         texture.kind as u32,
         0i32,
-        rect.pos.x as i32,
-        rect.pos.y as i32,
+        rect.point.x as i32,
+        rect.point.y as i32,
         rect.size.x as i32,
         rect.size.y as i32,
         fpixel as u32,
