@@ -1,4 +1,6 @@
 
+/*
+
 // use std::ffi::c_void as void;
 // use std::ptr::null_mut;
 // use std::sync::Arc;
@@ -256,3 +258,36 @@ extern "C" fn run() {
 // }
 
 */
+
+*/
+
+use std::sync::Arc;
+
+use lsg::Window;
+
+fn main() {
+    lsg::App::run(handle, lsg::Config::default())
+        .expect("run app");
+}
+
+async fn handle(app: Arc<lsg::App>) {
+
+    use lsg::widget::{layout, shapes};
+    use lsg::common::rel;
+
+    let window = lsg::Window::new(&app).expect("open window");
+
+    let widget = layout::Cols::new(vec![
+        (rel(5000), shapes::Rect::colored((130, 0, 0, 255))),
+        (rel(5000), shapes::Rect::colored((50, 0, 100, 255)))
+    ]);
+
+    window.content(Arc::new(widget));
+
+    app.connect(&window, Window::closed, async move |(app, ..)| {
+        app.quit();
+    });
+
+    app.quitted().next().await;
+
+}

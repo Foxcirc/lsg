@@ -7,12 +7,14 @@ edition.workspace = true
 
 [features]
 default = []
-linux = ["desktop/linux", "render/gl", "futures/linux"]
-browser = ["desktop/browser", "render/browser", "futures/browser"]
+linux = ["lsg/linux"]
+# linux = ["desktop/linux", "render/gl", "futures/linux"]
+# browser = ["desktop/browser", "render/browser", "futures/browser"]
 
 [dependencies]
-common = { path = "../common" }
-desktop = { path = "../desktop" }
-futures = { path = "../futures" }
-render = { path = "../render" }
-graphics = { path = "../graphics" }
+lsg = { path = "../framework" }
+# common = { path = "../common" }
+# desktop = { path = "../desktop" }
+# futures = { path = "../futures" }
+# render = { path = "../render" }
+# graphics = { path = "../graphics" }

@@ -1,29 +1,29 @@
 
-use crate::{Widget, Action};
+use crate::*;
 use std::sync::Arc;
 
 impl Widget for () {
-    fn action(&self, _: Action) {}
+    fn action(&self, _: Layout, _: Action) {}
 }
 
-pub struct DynamicWidget {
+pub struct DynWidget {
     pub inner: Arc<dyn Widget>,
 }
 
-impl DynamicWidget {
+impl DynWidget {
     pub fn new<W: Widget + 'static>(inner: Arc<W>) -> Self {
         Self { inner }
     }
 }
 
-impl Default for DynamicWidget {
+impl Default for DynWidget {
     fn default() -> Self {
         Self { inner: Arc::new(()) }
     }
 }
 
-impl Widget for DynamicWidget {
-    fn action(&self, action: Action) {
-        self.inner.action(action);
+impl Widget for DynWidget {
+    fn action(&self, layout: Layout, action: Action) {
+        self.inner.action(layout, action);
     }
 }

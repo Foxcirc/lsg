@@ -4,13 +4,16 @@
 #[cfg(test)]
 mod test;
 
+pub use common;
+pub use widget;
+
 use common::{IsSurface, SmartMutex};
 use desktop::{MouseButton, Key};
 use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, future::{pending, poll_fn}, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
 pub struct Config {
-    //// This name will be registered in various places around the system.
+    /// This name will be registered in various places around the system.
     ///
     /// # Platform-Specific
     /// - Linux:
@@ -20,10 +23,22 @@ pub struct Config {
     /// If `true` relevant signals will be intercepted and turned into
     /// `Quit` events. Otherwise signals will never be intercepted.
     ///
-    /// Recommendation: Enable it only on release builds. When debugging it is
+    /// Default: Enabled only on release builds. When debugging it is
     /// annoying, since it prevents terminating a program which is stuck and
     /// cannot poll the event loop anymore, e.g. when in an infinite loop.
     pub intercept: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            appid: format!("unknown-lsg-app"),
+            #[cfg(debug_assertions)]
+            intercept: false,
+            #[cfg(not(debug_assertions))]
+            intercept: true,
+        }
+    }
 }
 
 pub struct App {
@@ -161,7 +176,7 @@ pub struct Window {
     app: Arc<App>,
     inner: desktop::Window,
     handlers: WindowEventHandlers,
-    content: SmartMutex<widget::basic::DynamicWidget>,
+    content: SmartMutex<widget::basic::DynWidget>,
     renderstate: SmartMutex<WindowRenderState>,
 }
 
@@ -183,7 +198,7 @@ impl Window {
         let renderer = &app.renderstate.lock().renderer;
 
         let renderstate = SmartMutex::new(WindowRenderState {
-            geometry: widget::SpaceRenderState::default(),
+            geometry: SmartMutex::new(widget::SpaceRenderState::default()),
             texture: graphics::Texture::new(&renderer.gp, inner.size(), None),
             surface: graphics::Surface::new(&renderer.gp, &inner),
         });
@@ -236,22 +251,21 @@ impl Window {
                 windowstate.clear();
 
                 let size = self.inner.size();
-
-                let space = widget::Space {
-                    state: &mut windowstate.geometry,
-                    size: common::PhysicalSize::new(size.x, size.y),
-                    offset: common::PhysicalPoint::ZERO,
-                };
+                let space = widget::Space { state: &windowstate.geometry };
+                let action = widget::Action::Render { space };
+                let layout = widget::Layout::new(common::PhysicalRect {
+                    point: common::PhysicalPoint::ZERO, size
+                });
 
                 // This will render the whole tree.
-
-                self.content.lock().inner
-                    .action(widget::Action::Render { space });
+                self.content.lock().inner.action(layout, action);
 
                 // Now we can read back and render the data.
 
                 let AppRenderState { shaper, renderer, atlas } = &mut *appstate;
                 let WindowRenderState { ref mut surface, ref mut texture, ref geometry, .. } = *windowstate;
+
+                let geometry = geometry.lock();
 
                 let curves = &geometry.curves;
                 let vertices = shaper.process(curves);
@@ -287,7 +301,7 @@ impl Window {
     // }
 
     pub fn content<W: widget::Widget + 'static>(&self, widget: Arc<W>) {
-        self.content.set(widget::basic::DynamicWidget::new(widget));
+        self.content.set(widget::basic::DynWidget::new(widget));
     }
 
     pub fn closed<'s>(&'s self) -> BroadcastFuture<'s, ()> {
@@ -309,7 +323,7 @@ struct AppRenderState {
 
 struct WindowRenderState {
     // Geometry Buffers:
-    geometry: widget::SpaceRenderState,
+    geometry: SmartMutex<widget::SpaceRenderState>,
     // Intermediate Texture and Surface:
     texture: graphics::Texture,
     surface: graphics::Surface,
@@ -317,7 +331,7 @@ struct WindowRenderState {
 
 impl WindowRenderState {
     pub fn clear(&mut self) {
-        self.geometry.clear();
+        self.geometry.lock().clear();
     }
 }
 
@@ -333,7 +347,7 @@ impl<T: Clone> Default for EventBroadcaster<T> {
 
 struct EventBroadcasterInner<T: Clone> {
     event: Option<T>,
-    wakers: Vec<Option<task::Waker>>,
+    wakers: Vec<Option<task::Waker>>, // TODO: fix bug (slot reserved but still None = treated as empty slot)
     tick: u16,
 }
 
@@ -367,7 +381,7 @@ impl<T: Clone> EventBroadcaster<T> {
 
         let slot = inner.wakers.iter().position(Option::is_none).unwrap_or_else(|| {
             inner.wakers.push(None);
-            inner.wakers.len()
+            inner.wakers.len() - 1
         });
 
         BroadcastFuture {

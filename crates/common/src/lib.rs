@@ -1,5 +1,5 @@
 
-use std::{ffi::c_void as void, fmt, ops::{self, Range}, sync::{Mutex, MutexGuard}};
+use std::{ffi::c_void as void, fmt, mem::ManuallyDrop, ops::{self, Range}, sync::{Mutex, MutexGuard}};
 
 /// A rectangular region on a surface.
 #[repr(C)]
@@ -157,6 +157,13 @@ pub struct MeasuredRect {
     pub size: MeasuredSize
 }
 
+impl MeasuredRect {
+    pub const ZERO: Self = Self {
+        point: MeasuredPoint::ZERO,
+        size: MeasuredSize::ZERO
+    };
+}
+
 #[derive(Clone, Copy)]
 pub struct MeasuredPair {
     pub x: i16,
@@ -166,9 +173,9 @@ pub struct MeasuredPair {
 }
 
 impl MeasuredPair {
-    pub const ZERO: Self = Self::new((0, Measure::Absolute), (0, Measure::Absolute));
-    pub const fn new((x, mx): (i16, Measure), (y, my): (i16, Measure)) -> Self {
-        Self { x, y, mx, my }
+    pub const ZERO: Self = Self::new(abs(0), abs(0));
+    pub const fn new(x: MeasuredNumber, y: MeasuredNumber) -> Self {
+        Self { x: x.v, mx: x.mv, y: y.v, my: y.mv }
     }
 }
 
@@ -255,6 +262,14 @@ impl fmt::Debug for CurvePoint {
 impl CurvePoint {
 
     pub const ZERO: Self = Self::new(0, 0, PointKind::Base);
+
+    pub const fn base(x: i16, y: i16) -> Self {
+        Self::new(x, y, PointKind::Base)
+    }
+
+    pub const fn ctrl(x: i16, y: i16) -> Self {
+        Self::new(x, y, PointKind::Ctrl)
+    }
 
     /// Creates a new point.
     /// # Panic (debug-assertions)
@@ -406,11 +421,8 @@ pub enum FillKind {
 /// A simple vertex making up a list of triangles in [`VertexGeometry`].
 #[derive(Default, Clone, Copy, Debug)]
 pub struct PartialVertex {
-    /// x, y
-    pub pos: [u16; 2],
-    /// if this is a curve or filled
+    pub pos: [u16; 2], // TODO: should be i16 I think (to also allow negative offsets)
     pub curve: FillKind,
-    /// bitflags, which edges are outer edges
     pub edges: u8,
 }
 
@@ -434,16 +446,22 @@ impl VertexGeometry {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct MeasuredNumber {
+    pub v: i16,
+    pub mv: Measure
+}
+
 /// Utility to return a number with Measure::Absoulte.
-pub const fn abs(val: i16) -> (i16, Measure) {
-    (val, Measure::Absolute)
+pub const fn abs(v: i16) -> MeasuredNumber {
+    MeasuredNumber { v, mv: Measure::Absolute }
 }
 
 /// Utility to return a number with Measure::Relative.
 ///
 /// Also see: [`percent`].
-pub const fn rel(val: i16) -> (i16, Measure) {
-    (val, Measure::Relative)
+pub const fn rel(v: i16) -> MeasuredNumber {
+    MeasuredNumber { v, mv: Measure::Relative }
 }
 
 /// Utility to return a number with Measure::Relative.
@@ -452,7 +470,7 @@ pub const fn rel(val: i16) -> (i16, Measure) {
 /// will convert to the permyriad-scale used by the api.
 ///
 /// Also see: [`rel`].
-pub const fn percent(val: f32) -> (i16, Measure) {
+pub const fn percent(val: f32) -> MeasuredNumber {
     rel((val * 100.0) as i16)
 }
 
@@ -464,7 +482,7 @@ pub const fn percent(val: f32) -> (i16, Measure) {
 /// +-----------+-----------+-----------+-----------+
 /// | Our Units | 2,500     | 5,000     | 1,250     |
 /// +-----------+-----------+-----------+-----------+
-pub fn rescale(value: i16, scale: i16) -> i16 {
+pub const fn rescale(value: i16, scale: i16) -> i16 {
     ((value as isize * scale as isize) / 10000isize) as i16
 }
 
