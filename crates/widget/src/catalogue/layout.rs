@@ -49,17 +49,17 @@ impl<W: Widget> Widget for Cols<W> {
 
         let mut offset: i16 = 0;
 
-        for (width, widget) in &*self.inner.lock() {
+        for (cwidth, cwidget) in &*self.inner.lock() {
 
             let clayout = layout.child(common::MeasuredRect {
                 point: common::MeasuredPoint::new(common::abs(offset), common::abs(0)),
-                size: common::MeasuredSize::new(*width, layout.height())
+                size: common::MeasuredSize::new(*cwidth, common::abs(layout.height()))
             });
 
-            offset += clayout.width().v;
+            offset += clayout.width();
 
             if let Some(it) = action.cascade(layout) {
-                widget.action(clayout, it);
+                cwidget.action(clayout, it);
             }
 
         }
@@ -82,17 +82,17 @@ impl<W: Widget> Widget for Rows<W> {
 
         let mut offset: i16 = 0;
 
-        for (height, widget) in &*self.inner.lock() {
+        for (cheight, cwidget) in &*self.inner.lock() {
 
             let clayout = layout.child(common::MeasuredRect {
                 point: common::MeasuredPoint::new(common::abs(0), common::abs(offset)),
-                size: common::MeasuredSize::new(layout.width(), *height)
+                size: common::MeasuredSize::new(common::abs(layout.width()), *cheight)
             });
 
-            offset += clayout.height().v;
+            offset += clayout.height();
 
             if let Some(it) = action.cascade(layout) {
-                widget.action(clayout, it);
+                cwidget.action(clayout, it);
             }
 
         }

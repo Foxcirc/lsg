@@ -46,8 +46,8 @@ void main() {
 
     if (inIsAtlas == 1u) {
         textureData = vec4(
-            float(inTEX.x) / 5000.0,
-            float(inTEX.y) / 5000.0,
+            (float(inTEX.x) + 2500.0) / 5000.0,
+            (float(inTEX.y) + 2500.0) / 5000.0,
             0.0, 0.0 // unused
         );
     } else {
@@ -60,8 +60,8 @@ void main() {
     }
 
     gl_Position = vec4(
-        float(int(inXY.x) - 2500) / 2500.0,
-        float(int(inXY.y) - 2500) / 2500.0,
+        float(inXY.x) / 2500.0,
+        float(inXY.y) / 2500.0,
         0.0, 1.0 // unused coords
     );
 

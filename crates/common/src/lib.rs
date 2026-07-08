@@ -393,7 +393,7 @@ pub struct TextureIndex {
 }
 
 /// Geometry that represents curved polygons as a list of points.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct CurveGeometry {
     pub points: Vec<CurvePoint>,
     pub shapes: Vec<Shape>,
@@ -433,7 +433,7 @@ impl PartialVertex {
 }
 
 /// Geometry that represents curved polygons after triangulation.
-#[derive(Debug, Default)]
+#[derive(Default, Debug)]
 pub struct VertexGeometry {
     pub vertices: Vec<PartialVertex>,
     pub shapes: Vec<Shape>,

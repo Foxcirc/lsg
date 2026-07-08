@@ -64,12 +64,12 @@ let rect = widget("ForceResize(5000x5000, Rect(red, round25))");
          Self { rect }
      }
 
-     pub const fn width(&self) -> common::MeasuredNumber {
-         common::abs(self.rect.size.x)
+     pub const fn width(&self) -> i16 {
+         self.rect.size.x
      }
 
-     pub const fn height(&self) -> common::MeasuredNumber {
-         common::abs(self.rect.size.y)
+     pub const fn height(&self) -> i16 {
+         self.rect.size.y
      }
 
      /// Transforms a possibly relative rect into an absolute one.
@@ -80,7 +80,7 @@ let rect = widget("ForceResize(5000x5000, Rect(red, round25))");
                  common::Measure::Absolute => input.point.x,
                  common::Measure::Relative => common::rescale(input.point.x, scale.x)
              },
-             y: offset.x + match input.point.my {
+             y: offset.y + match input.point.my {
                  common::Measure::Absolute => input.point.y,
                  common::Measure::Relative => common::rescale(input.point.y, scale.y)
              }

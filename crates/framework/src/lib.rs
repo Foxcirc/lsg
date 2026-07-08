@@ -275,6 +275,7 @@ impl Window {
                     instances: &geometry.instances,
                 };
 
+                self.inner.present();
                 renderer.draw(&drawable, &atlas, texture);
 
                 surface.blit(texture);
@@ -368,6 +369,7 @@ impl<T: Clone> EventBroadcaster<T> {
         let mut inner = self.inner.lock();
 
         inner.event = Some(event);
+        inner.tick += 1;
 
         inner.wakers.iter()
             .flat_map(identity)

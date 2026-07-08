@@ -266,8 +266,7 @@ use std::sync::Arc;
 use lsg::Window;
 
 fn main() {
-    lsg::App::run(handle, lsg::Config::default())
-        .expect("run app");
+    lsg::App::run(handle, lsg::Config::default()).expect("run app");
 }
 
 async fn handle(app: Arc<lsg::App>) {

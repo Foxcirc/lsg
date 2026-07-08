@@ -38,11 +38,9 @@ async fn handle(app: Arc<lsg::App>) {
     });
     
     let (app2, window2) = (clone(app), clone(window));
-    app.spawn(async move {
-        window2.closed().handle(async move |ev| {
-            // use app2, window2, ev
-        });
-    });
+    app.spawn(window2.closed().handle(async move |ev| {
+        // use app2, window2, ev
+    }));
         
     app.quitted().next().await;
 

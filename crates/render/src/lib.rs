@@ -497,19 +497,20 @@ impl Renderer {
                 let vertex_x = vertex.pos[0];
                 let vertex_y = vertex.pos[1];
 
-                let physical_x = vertex_x as f64 * (instance.size.x as f64 / 5000.0);
-                let physical_y = vertex_y as f64 * (instance.size.y as f64 / 5000.0);
-                //                                                              / ^^^^^^
+                let physical_x = vertex_x as f64 * instance.size.x as f64 / 10000.0;
+                let physical_y = vertex_y as f64 * instance.size.y as f64 / 10000.0;
+                //                                                          ^^^^^^^
                 //      This is the scaling where 10,000 means a 1.0 scale. So if...
                 //          1. SHAPE = 10,000x10,000 filled rect
                 //          2. INSTANCE.SCALE = 100 = (0.01x)
                 //      ...then you will get a 100x100 physical-pixel filled rect.
 
-                let scaled_x = (physical_x * 5000.0) / size.x as f64;
-                let scaled_y = (physical_y * 5000.0) / size.y as f64;
+                let transformed_x = physical_x + instance.pos.x as f64;
+                let transformed_y = physical_y + instance.pos.y as f64;
 
-                let transformed_x = scaled_x as i16 + instance.pos.x;
-                let transformed_y = scaled_y as i16 + instance.pos.y;
+                // We convert them into format which is processed by the shader.
+                let packed_x = maprange(transformed_x, 0.0..size.x as f64, -2500f64..2500f64) as i16;
+                let packed_y = maprange(transformed_y, 0.0..size.y as f64, -2500f64..2500f64) as i16;
 
                 let texture_lhs: u16;
                 let texture_rhs: u16;
@@ -539,8 +540,8 @@ impl Renderer {
                         let x_high = coords.size.x as f64 + x_low;
                         let y_low  = coords.point.y as f64;
                         let y_high = coords.size.y as f64 + y_low;
-                        let x = maprange(vertex_x as f64, 0f64..5000f64, x_low..x_high);
-                        let y = maprange(vertex_y as f64, 0f64..5000f64, y_low..y_high);
+                        let x = maprange(vertex_x as f64, -2500f64..2500f64, x_low..x_high);
+                        let y = maprange(vertex_y as f64, -2500f64..2500f64, y_low..y_high);
 
                         // We can also specify an offset into the texture:
                         let transformed_x = x as i16 + offset.x;
@@ -568,8 +569,8 @@ impl Renderer {
                     ((isatlas as u16 & 0b001) << 8);
 
                 self.vraw.extend(flags.to_ne_bytes());
-                self.vraw.extend(transformed_x.to_ne_bytes());
-                self.vraw.extend(transformed_y.to_ne_bytes());
+                self.vraw.extend(packed_x.to_ne_bytes());
+                self.vraw.extend(packed_y.to_ne_bytes());
                 self.vraw.extend(texture_lhs.to_ne_bytes());
                 self.vraw.extend(texture_rhs.to_ne_bytes());
 
