@@ -1,4 +1,6 @@
 
+use std::{iter::zip, mem::swap};
+
 use common::SmartMutex;
 use crate::*;
 
@@ -161,23 +163,35 @@ impl<W: Widget> Widget for Rows<W> {
 
 /// Clips its children to avoid their geometry escaping bounds.
 ///
-/// A post processing is run on all added geometry and out of bounds
-/// points are adjusted so that the geometry stops at the layout edges.
+/// A clipping check is run on all child geometry and instances are
+/// adjusted so that their geometry stops at the layout bounds.
 ///
 /// This widget should only be used if you know the child is going to
-/// draw out of bounds on purpose. See [`Scrollable`].
+/// draw out of bounds on purpose.
 pub struct Clip<W: Widget> {
     pub inner: W,
-    /// We need our child to render into our own render state, since
-    /// the needed adjustments to the geometry require adding/removing points.
-    pub cache: SmartMutex<SpaceRenderState>,
+    bufs: SmartMutex<ClipBufs>,
+}
+
+struct ClipBufs {
+    pub curves0: Vec<common::CurvePoint>,
+    pub curves1: Vec<common::CurvePoint>,
+}
+
+impl ClipBufs {
+    pub fn new() -> Self {
+        Self {
+            curves0: Vec::with_capacity(24),
+            curves1: Vec::with_capacity(24),
+        }
+    }
 }
 
 impl<W: Widget> Clip<W> {
     pub fn new(inner: W) -> Self {
         Self {
             inner,
-            cache: SmartMutex::new(SpaceRenderState::default()),
+            bufs: SmartMutex::new(ClipBufs::new()),
         }
     }
 }
@@ -190,24 +204,203 @@ impl<W: Widget> Widget for Clip<W> {
 
         if let Action::Render { space } = action {
 
-            // Redirect the child's rendering into our cache.
-            let cspace = Space { state: &self.cache };
-            let caction = Action::Render { space: cspace };
+            let start = space.state.lock()
+                .instances.len();
 
-            // Render the child that might draw out of bounds geometry.
-            self.inner.action(layout, caction);
+            // Let the childs render, next we will inspect their output.
+            self.inner.action(layout, Action::Render { space });
 
-            // Now clip everything that was added by the child.
+            let SpaceRenderState { blobs, vertices, instances }
+                = &mut *space.state.lock();
 
-            let cache = self.cache.lock();
+            // Iterate over the instances added by the child.
+            for instance in &mut instances[start..] {
 
+                // We do bounding box checks on the instances:
+                //
+                // The checks are based on the fact, that an instance
+                // should always be smaller then its bounding box.
+                //
+                // +---------------------+-----------+
+                // | case                | action    |
+                // +---------------------+-----------+
+                // | completely inside   | keep      |
+                // | completely outside  | discard   |
+                // | touching bounds     | clip      |
+                // +---------------------+-----------+
 
-            // for section in cache.curves.sections() {
+                let rect = common::PhysicalRect {
+                    point: instance.pos,
+                    size: instance.size
+                };
 
-                // let points = cache.curves.points.get();
+                if rect_inside_rect(rect, layout.bounds) {
+                    // If completely inside, we can keep it as-is.
+                    continue
+                }
 
+                else if !rect_intersects_rect(rect, layout.bounds) {
+                    // If completely outside, discard it.
+                    *instance = common::Instance::DISCARD;
+                }
 
-            // }
+                else {
+
+                    // Otherwise this instance needs to be clipped.
+
+                    if instance.target.geometry == 0 {
+                        // `0` means index into `state.curves`.
+
+                        // A Sutherland-Hogman style algorithm is used, which clips the
+                        // geometry against the 4 edges of the bounding rect individually.
+
+                        const EDGES: [EdgeEquations; 4] = [
+                            EdgeEquations::LEFT,
+                            EdgeEquations::RIGHT,
+                            EdgeEquations::BOTTOM,
+                            EdgeEquations::TOP
+                        ];
+
+                        let ClipBufs { curves0, curves1 } = &mut *self.bufs.lock();
+
+                        let points = curves.get(instance.target.shape);
+
+                        // Initial setup for our multi-pass algorithm.
+                        curves0.extend_from_slice(points);
+
+                        for edge in EDGES {
+
+                            // Clear our output.
+                            curves1.clear();
+
+                            for section in common::CurveGeometry::sections(points) {
+
+                                match section {
+
+                                    common::CurveSection::Line([(.., p0), (.., p1)]) => {
+
+                                        match (
+                                            (edge.inside)(p0, layout.bounds),
+                                            (edge.inside)(p1, layout.bounds)
+                                        ) {
+                                            // staying outside:
+                                            (false, false) => (), // discard
+                                            // staying inside:
+                                            (true, true) => {
+                                                curves1.push(common::CurvePoint::base(p0.x, p0.y));
+                                            },
+                                            // moving outside:
+                                            (true, false) => {
+                                                let mid = (edge.iline)([p0, p1], layout.bounds);
+                                                curves1.push(common::CurvePoint::base(p0.x, p0.y));
+                                                curves1.push(common::CurvePoint::base(mid.x, mid.y));
+                                            },
+                                            // moving inside:
+                                            (false, true) => {
+                                                let mid = (edge.iline)([p0, p1], layout.bounds);
+                                                curves1.push(common::CurvePoint::base(mid.x, mid.y));
+                                            }
+                                        }
+
+                                    },
+
+                                    common::CurveSection::Quadratic([(.., p0), (.., ctrl), (.., p1)]) => {
+
+                                        use common::PointKind;
+
+                                        match (
+                                            (edge.inside)(p0,   layout.bounds),
+                                            (edge.inside)(ctrl, layout.bounds),
+                                            (edge.inside)(p1,   layout.bounds)
+                                        ) {
+                                            // staying outside:
+                                            (false, false, false) => (), // discard
+                                            // staying inside:
+                                            (true, true, true) => {
+                                                curves1.push(common::CurvePoint::base(p0.x,   p0.y));
+                                                curves1.push(common::CurvePoint::ctrl(ctrl.x, ctrl.y));
+                                            },
+                                            // (possibly) moving outside:
+                                            (true, ..) => {
+                                                let curve = [p0, ctrl, p1].map(common::MathPoint::from);
+                                                let intersections = (edge.icurve)([p0, ctrl, p1], layout.bounds);
+                                                match intersections {
+                                                    // not actually moving outside:
+                                                    CurveIntersections::None => {
+                                                        curves1.push(common::CurvePoint::base(p0.x,   p0.y));
+                                                        curves1.push(common::CurvePoint::ctrl(ctrl.x, ctrl.y));
+                                                    },
+                                                    // moving outside:
+                                                    CurveIntersections::One([t]) => {
+                                                        let [inner, ..] = common::splitquadratic(curve, t);
+                                                        curves1.push(common::CurvePoint::fromp(inner[0], PointKind::Base));
+                                                        curves1.push(common::CurvePoint::fromp(inner[1], PointKind::Ctrl));
+                                                        curves1.push(common::CurvePoint::fromp(inner[2], PointKind::Base));
+                                                    },
+                                                    // moving outside and back inside:
+                                                    CurveIntersections::Two([t1, t2]) => {
+                                                        let [inner1, .., inner2] = common::splitquadratic3(curve, t1, t2);
+                                                        // inner section 1:
+                                                        curves1.push(common::CurvePoint::fromp(inner1[0], PointKind::Base));
+                                                        curves1.push(common::CurvePoint::fromp(inner1[1], PointKind::Ctrl));
+                                                        curves1.push(common::CurvePoint::fromp(inner1[2], PointKind::Base));
+                                                        // inner section 2:
+                                                        curves1.push(common::CurvePoint::fromp(inner2[0], PointKind::Base));
+                                                        curves1.push(common::CurvePoint::fromp(inner2[1], PointKind::Ctrl));
+                                                        curves1.push(common::CurvePoint::fromp(inner2[2], PointKind::Base));
+                                                    }
+                                                }
+                                            },
+                                            // (possibly) moving inside:
+                                            (false, ..) => {
+                                                let curve = [p0, ctrl, p1].map(common::MathPoint::from);
+                                                let intersections = (edge.icurve)([p0, ctrl, p1], layout.bounds);
+                                                match intersections {
+                                                    // not actually moving inside:
+                                                    CurveIntersections::None => (), // discard
+                                                    // moving inside:
+                                                    CurveIntersections::One([t]) => {
+                                                        let [.., inner] = common::splitquadratic(curve, t);
+                                                        curves1.push(common::CurvePoint::fromp(inner[0], PointKind::Base));
+                                                        curves1.push(common::CurvePoint::fromp(inner[1], PointKind::Ctrl));
+                                                    },
+                                                    // moving inside and back outside:
+                                                    CurveIntersections::Two([t1, t2]) => {
+                                                        let [_, inner, _] = common::splitquadratic3(curve, t1, t2);
+                                                        curves1.push(common::CurvePoint::fromp(inner[0], PointKind::Base));
+                                                        curves1.push(common::CurvePoint::fromp(inner[1], PointKind::Ctrl));
+                                                        curves1.push(common::CurvePoint::fromp(inner[2], PointKind::Base));
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                    }
+
+                                    common::CurveSection::Cubic(..) => unreachable!()
+
+                                }
+
+                            }
+
+                            // One passes output shall be input to the next.
+                            swap(curves0, curves1);
+
+                        }
+
+                        // The final clipped shape is contained in curves0.
+                        let idx = curves.add(curves0);
+                        instance.target.shape = idx;
+
+                    } else if instance.target.geometry == 1 {
+                        // `1` means index into `state.vertices`.
+                    } else {
+                        // otherwise, index into another geometry
+                    }
+
+                }
+
+            }
 
 
         } else {
@@ -216,6 +409,198 @@ impl<W: Widget> Widget for Clip<W> {
 
     }
 }
+
+enum AddPoints {
+    None,
+    One([common::PhysicalPoint; 1]),
+    Two([common::PhysicalPoint; 2])
+}
+
+struct EdgeEquations {
+    /// Get if a point is inside the bounds.
+    pub inside: fn(point: common::PhysicalPoint, bounds: common::PhysicalRect) -> bool,
+    /// Get the intersection point of the edge and the bounds.
+    pub iline: fn(edge: [common::PhysicalPoint; 2], bounds: common::PhysicalRect) -> common::PhysicalPoint,
+    /// Get the intersection point(s) of the curve and the bounds.
+    pub icurve: fn(curve: [common::PhysicalPoint; 3], bounds: common::PhysicalRect) -> CurveIntersections
+}
+
+impl EdgeEquations {
+
+    pub const LEFT: Self = Self {
+        inside: |point, bounds| point.x >= bounds.point.x,
+        iline: |[p0, p1], bounds| common::PhysicalPoint::new(
+            bounds.point.x, p0.y + (p1.y - p0.y) * ((bounds.point.x - p0.x) / (p1.x -p0.x))
+        ),
+        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.x as f32, ctrl.x as f32, p1.x as f32, bounds.point.x as f32)
+    };
+
+    pub const RIGHT: Self = Self {
+        inside: |point, bounds| point.x <= bounds.point.x + bounds.size.x,
+        iline: |[p0, p1], bounds| {
+            let xmax = bounds.point.x + bounds.size.x;
+            common::PhysicalPoint::new(
+                xmax, p0.y + (p1.y - p0.y) * ((xmax - p0.x) / (p1.x - p0.x))
+            )
+        },
+        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.x as f32, ctrl.x as f32, p1.x as f32, bounds.point.x as f32 + bounds.size.x as f32)
+    };
+
+    pub const BOTTOM: Self = Self {
+        inside: |point, bounds| point.y >= bounds.point.y,
+        iline: |[p0, p1], bounds| common::PhysicalPoint::new(
+            p0.x + (p1.x - p0.x) * ((bounds.point.y - p0.y) / (p1.y - p0.y)), bounds.point.y
+        ),
+        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.y as f32, ctrl.y as f32, p1.y as f32, bounds.point.y as f32)
+    };
+
+    pub const TOP: Self = Self {
+        inside: |point, bounds| point.y <= bounds.point.y + bounds.size.y,
+        iline: |[p0, p1], bounds| {
+            let ymax = bounds.point.y + bounds.size.y;
+            common::PhysicalPoint::new(
+                p0.x + (p1.x - p0.x) * ((ymax - p0.y) / (p1.y - p0.y)), ymax
+            )
+        },
+        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.y as f32, ctrl.y as f32, p1.y as f32, bounds.point.y as f32 + bounds.size.y as f32)
+    };
+
+}
+
+enum CurveIntersections {
+    None,
+    One([f32; 1]),
+    Two([f32; 2])
+}
+
+fn solve_quadratic_bezier_1d(p0: f32, ctrl: f32, p1: f32, target: f32) -> CurveIntersections {
+
+    // I hate math.
+
+    let a = p0 - 2.0 * ctrl + p1;
+    let b = 2.0 * (ctrl - p0);
+    let c = p0 - target;
+
+    let mut roots = CurveIntersections::None;
+
+    if a.abs() < 1e-6 {
+
+        if b.abs() > 1e-6 {
+            let t = -c / b;
+            if (0.0..=1.0).contains(&t) {
+                roots = CurveIntersections::One([t])
+            }
+        }
+
+    } else {
+
+        let discriminant = b * b - 4.0 * a * c;
+
+        if discriminant >= 0.0 {
+
+            let sqrt_d = discriminant.sqrt();
+            let t1 = (-b - sqrt_d) / (2.0 * a);
+            let t2 = (-b + sqrt_d) / (2.0 * a);
+
+            let t1_valid = (0.0..=1.0).contains(&t1);
+            let t2_valid = (0.0..=1.0).contains(&t2);
+
+            match (t1_valid, t2_valid) {
+                (true, true) => {
+                    // Make sure the smaller one is first.
+                    match t1 <= t2 {
+                        true  =>  roots = CurveIntersections::Two([t1, t2]),
+                        false =>  roots = CurveIntersections::Two([t2, t1])
+                    };
+                }
+                (true, false) => {
+                    roots = CurveIntersections::One([t1]);
+                }
+                (false, true) => {
+                    roots = CurveIntersections::One([t2]);
+                }
+                (false, false) => {}
+            }
+        }
+    }
+
+    roots
+
+}
+
+/// Returns `true` if `inner` is contained completely inside `outer`.
+fn rect_inside_rect(inner: common::PhysicalRect, outer: common::PhysicalRect) -> bool {
+    inner.point.x >= outer.point.x &&
+    inner.point.y >= outer.point.y &&
+    (inner.point.x + inner.size.x) <= (outer.point.x + outer.size.x) &&
+    (inner.point.y + inner.size.y) <= (outer.point.y + outer.size.y)
+}
+
+/// Returns `true` if the rects are intersecting and `false` if `inner` is completely outside `outer`.
+fn rect_intersects_rect(inner: common::PhysicalRect, outer: common::PhysicalRect) -> bool {
+        inner.point.x                < outer.point.x + outer.size.x &&
+        inner.point.y                < outer.point.y + outer.size.y &&
+        inner.point.x + inner.size.x > outer.point.x                &&
+        inner.point.y + inner.size.y > outer.point.y
+}
+
+// enum RectEdge {
+//     Left,
+//     Right,
+//     Top,
+//     Bottom,
+// }
+
+// fn rect_intersects_point_at(rect: &common::PhysicalRect, line: [common::MathPoint; 2]) -> Option<(RectEdge, common::MathPoint)> {
+//     // TODO:                               ^^^^^^^^^^^^ impl something like "MathRect"
+
+//     // From the line we get a origin and direction vector.
+//     let origin = line[0];
+//     let dir = common::MathPoint {
+//         x: line[1].x - line[0].x,
+//         y: line[1].y - line[0].y
+//     };
+
+//     // Convert the rect into the representation we need.
+//     let rect0 = common::MathPoint::from(rect.point);
+//     let rect1 = common::MathPoint {
+//         x: (rect.point.x + rect.size.x) as f32,
+//         y: (rect.point.y + rect.size.y) as f32
+//     };
+
+//     let tx1 = (rect0.x - origin.x) / dir.x;
+//     let tx2 = (rect1.x - origin.x) / dir.x;
+//     let ty1 = (rect0.y - origin.y) / dir.y;
+//     let ty2 = (rect1.y - origin.y) / dir.y;
+
+//     let tx_near = tx1.min(tx2);
+//     let tx_far  = tx1.max(tx2);
+//     let ty_near = ty1.min(ty2);
+//     let ty_far  = ty1.max(ty2);
+
+//     let t_near = tx_near.max(ty_near);
+//     let t_far = tx_far.min(ty_far);
+
+//     // If t_near is NaN (start point on boundary), we treat it as 0.0
+//     let t_near = if t_near.is_nan() { 0.0 } else { t_near };
+
+//     if t_near > t_far || t_far < 0.0 || t_near > 1.0 {
+//         return None;
+//     }
+
+//     let hit_point = MathPoint {
+//         x: origin.x + t_near * dir.x,
+//         y: origin.y + t_near * dir.y,
+//     };
+
+//     let edge = if tx_near > ty_near {
+//         if dir.x > 0.0 { Edge::Left } else { Edge::Right }
+//     } else {
+//         if dir.y > 0.0 { Edge::Top } else { Edge::Bottom }
+//     };
+
+//     Some((edge, hit_point))
+// }
 
 // pub struct Scrollable<W: Widget> {
 //     pub inner: W,

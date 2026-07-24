@@ -9,6 +9,8 @@ pub struct PhysicalRect {
     pub size: PhysicalPair,
 }
 
+// TODO: Add MathRect
+
 impl PhysicalRect {
     pub const MAX: Self = Self::new(PhysicalPair::MIN, PhysicalPair::MAX);
     pub const ZERO: Self = Self::new(PhysicalPair::ZERO, PhysicalPair::MIN);
@@ -345,6 +347,7 @@ pub enum PointKind {
 }
 
 /// Description of what points or vertices make up a shape.
+// TODO: Remove and use a Range<u16>, cause having a "Shape" type just for this is not worth it.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape {
@@ -366,7 +369,7 @@ impl Shape {
 
 /// A single instance of a shape. This can be used to render the same
 /// shape many times with different transformations and textures.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instance {
     /// Index into the [`VertexGeometry`]s and then the inner [`Shape`]s.
     pub target: GeometryTarget,
@@ -378,7 +381,25 @@ pub struct Instance {
     pub texture: TextureKind,
 }
 
-#[derive(Debug, Clone)]
+impl Instance {
+    /// Special value that signifies that this instance shall be ignored.
+    ///
+    /// # Why is this useful
+    /// In some cases, e.g. when clipping, we want to no longer draw some instances.
+    /// Removing them would mean needing to shift the `Vec`, which is inefficient.
+    pub const DISCARD: Self = Self {
+        target: GeometryTarget::DISCARD,
+        pos: PhysicalPoint::ZERO,
+        size: PhysicalSize::ZERO,
+        texture: TextureKind::Color(0, 0, 0, 0)
+    };
+    /// Check if this instance should be discarded.
+    pub fn discard(&self) -> bool {
+        self.target == GeometryTarget::DISCARD
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GeometryTarget {
     /// Index into the associated list of vertex gemoetries.
     pub geometry: u16,
@@ -386,7 +407,15 @@ pub struct GeometryTarget {
     pub shape: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+impl GeometryTarget {
+    /// See [`Instance::DISCARD`].
+    pub const DISCARD: Self = Self {
+        geometry: u16::MAX,
+        shape: u16::MAX
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureKind {
     /// RGBA
     Color(u8, u8, u8, u8),
@@ -417,259 +446,27 @@ impl CurveGeometry {
         self.shapes.clear();
     }
 
-    /// Add a new shape to the curve geometry and returns its index.
-    ///
-    /// # Notes
-    /// The shape is automatically lowered to a simpler representation,
-    /// so the data it easier to introspect and work with for widgets:
-    /// - Cubic curves are lowered to quadratic ones.
-    /// - Intersected quadratic curves are split,
-    ///   so they can be correctly triangulated later.
-    pub fn add(&mut self, points: &[CurvePoint]) -> usize {
+    #[track_caller]
+    pub fn get(&self, ishape: u16) -> &[CurvePoint] {
+        &self.points[self.shapes[ishape as usize].rangeu()]
+    }
 
-        // The section is always an extension of the last current point,
-        // so e.g. `Quadratic` only contains the new control and end point.
+    /// Utility to add a new shape to the curve geometry and returns its index.
+    pub fn add(&mut self, points: &[CurvePoint]) -> u16 {
 
+        // Push points.
         let start = self.points.len() as u16;
-
-        for section in Self::sections(points) {
-
-            match section {
-
-                CurveSection::Line([(.., a), ..]) => self.points.push(
-                    CurvePoint::base(a.x, a.y)
-                ),
-
-                CurveSection::Quadratic([(ia, a), (ib, b), (ic, c)]) => {
-
-                    // We need to check for intersections with any other points in the shape.
-                    let abc = [a, b, c].map(MathPoint::from);
-                    let intersected = points.iter().enumerate().any(|(idx, it)|
-                        (idx as u16 != ia && idx as u16 != ib && idx as u16 != ic) &&
-                        triangle_intersects_point(abc.map(MathPoint::from), MathPoint::from(*it))
-                    );
-
-                    if intersected {
-                        for [a, b, ..] in splitquadratic4(abc) {
-                            self.points.extend_from_slice(&[
-                                CurvePoint::fromp(a, PointKind::Base),
-                                CurvePoint::fromp(b, PointKind::Ctrl),
-                            ]);
-                        }
-                    } else {
-                        self.points.extend_from_slice(&[
-                            CurvePoint::base(a.x, a.y),
-                            CurvePoint::ctrl(b.x, b.y)
-                        ])
-                    }
-
-                },
-
-                CurveSection::Cubic(it) => {
-
-                    // Lower the cubic curve into quadratic curves.
-                    let cubic = it.map(|(.., it)| MathPoint::from(it));
-
-                    for [a, b, ..] in lowercubic(cubic) {
-                        self.points.extend_from_slice(&[
-                            CurvePoint::fromp(a, PointKind::Base),
-                            CurvePoint::fromp(b, PointKind::Ctrl),
-                        ]);
-                    }
-
-                }
-
-            }
-        }
-
+        self.points.extend(points);
         let end = self.points.len() as u16;
 
+        // Push new shape.
         self.shapes.push(Shape { start, end });
-        self.shapes.len() - 1
+
+        // Return index.
+        (self.shapes.len() - 1) as u16
 
     }
 
-    pub fn sections(points: &[CurvePoint]) -> impl Iterator<Item = CurveSection> {
-
-        use PointKind::*;
-
-        let len = points.len();
-
-        // To resolve cases where the points start with a `Ctrl` instead
-        // of `Base` point we use this to shift the iterator around a bit.
-        let mut offset = 0;
-
-        // Inspect the start of our shape.
-        if len > 0 {
-
-            let kinds = [
-                points[0 % len].kind(),
-                points[1 % len].kind(),
-            ];
-
-            match kinds {
-               [Ctrl, Ctrl] => offset = 2,
-               [Ctrl, Base] => offset = 1,
-               [Base, ..] => offset = 0,
-            }
-
-        }
-
-        let mut idx = offset;
-
-        iter::from_fn(move || {
-
-            if idx == len + offset {
-                return None
-            }
-
-            let incr;
-            let result;
-
-            let indices @ [ia, ib, ic, id] = [
-                ((idx + 0) % len) as u16,
-                ((idx + 1) % len) as u16,
-                ((idx + 2) % len) as u16,
-                ((idx + 3) % len) as u16
-            ];
-
-            let sub = indices.map(|idx| points[idx as usize]);
-            let kinds = sub.map(CurvePoint::kind);
-            let [a, b, c, d] = sub.map(PhysicalPoint::from);
-
-            match kinds {
-                // LINE:
-                [Base, Base, ..] => {
-                    incr = 1;
-                    result = CurveSection::Line([(ia, a), (ib, b)]);
-                },
-                // QUADRATIC CURVE:
-                [Base, Ctrl, Base, ..] => {
-                    incr = 2;
-                    result = CurveSection::Quadratic([(ia, a), (ib, b), (ic, c)]);
-                },
-                // CUBIC CURVE:
-                [Base, Ctrl, Ctrl, Base] => {
-                    incr = 3;
-                    result = CurveSection::Cubic([(ia, a), (ib, b), (ic, c), (id, d)]);
-                },
-                // INVALID (3+ CTRL POINTS):
-                invalid => panic!("Invalid points in shape: {:?}", invalid),
-            }
-
-            idx += incr;
-            return Some(result);
-
-        })
-
-    }
-
-}
-
-/// Area of the triangle ABC.
-// TODO: could use signed area (remove "abs") to also get the convexity from this (for svg the stuff)
-fn triangle_area([a, b, c]: [MathPoint; 3]) -> f32 {
-    (((b.x - a.x) as f32 * (c.y - a.y) as f32 -
-      (c.x - a.x) as f32 * (b.y - a.y) as f32).abs()) * 0.5
-}
-
-/// If `point` lies within the triangle `trig`.
-///
-/// Considers points that lie exactly on an edge as outside.
-fn triangle_intersects_point([a, b, c]: [MathPoint; 3], point: MathPoint) -> /* IntersectionRelation */ bool {
-
-    let abc = triangle_area([a, b, c]);
-
-    let pab = triangle_area([point, a, b]);
-    let pbc = triangle_area([point, b, c]);
-    let pca = triangle_area([point, c, a]);
-
-    let total = pab + pbc + pca;
-
-    // small epsilon, to account for precision errors
-    const EPS: f32 = 1e-6;
-
-    // if (total - abc).abs() < EPS {
-    //     match (pab < EPS, pbc < EPS, pca < EPS) {
-    //         // point is inside
-    //         (false, false, false) => return IntersectionRelation::Inside,
-    //         // point lies on one edge
-    //         (true, false, false) => return IntersectionRelation::OnEdge([[a, b]]),
-    //         (false, true, false) => return IntersectionRelation::OnEdge([[b, c]]),
-    //         (false, false, true) => return IntersectionRelation::OnEdge([[c, a]]),
-    //         // point lies on two edges (= on a corner)
-    //         (true, true, false) => return IntersectionRelation::OnCorner([[a, b], [b, c]]), // corner B
-    //         (false, true, true) => return IntersectionRelation::OnCorner([[b, c], [c, a]]), // corner C
-    //         (true, false, true) => return IntersectionRelation::OnCorner([[c, a], [a, b]]), // corner A
-    //         // deformed triangle
-    //         (true, true, true) => return IntersectionRelation::Outside,
-    //     }
-    // } else {
-    //     IntersectionRelation::Outside
-    // }
-
-    (total - abc).abs() < EPS && // general area check
-    pab > EPS && pbc > EPS && pca > EPS // points on an edge should be considered outside
-
-}
-
-
-fn lowercubic(c: [MathPoint; 4]) -> [[MathPoint; 3]; 4] {
-
-    let [x, y] = splitcubic(c, 0.5);
-    let [p, q] = splitcubic(x, 0.5);
-    let [r, s] = splitcubic(y, 0.5);
-
-    [p, q, r, s].map(|[a, b, c, d]| {
-        // Degree reduce from cubic to quadratic, by averaging.
-        let averaged = MathPoint {
-            x: -0.25*a.x + 0.75*b.x + 0.75*c.x -0.25*d.x,
-            y: -0.25*a.y + 0.75*b.y + 0.75*c.y -0.25*d.y
-        };
-
-        [a, averaged, d]
-
-    })
-
-}
-
-fn lerp(p1: MathPoint, p2: MathPoint, t: f32) -> MathPoint {
-    MathPoint::new(
-        p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
-        p1.y as f32 + (p2.y as f32 - p1.y as f32) * t
-    )
-}
-
-fn splitcubic([a, b, c, d]: [MathPoint; 4], t: f32) -> [[MathPoint; 4]; 2] {
-    let p1  = lerp(a, b, t);
-    let p2  = lerp(b, c, t);
-    let p3  = lerp(c, d, t);
-    let p12 = lerp(p1, p2, t);
-    let p23 = lerp(p2, p3, t);
-    let p   = lerp(p12, p23, t);
-    [[a, p1, p12, p], [p, p23, p3, d]]
-    // -- curve1 --    -- curve2  --
-}
-
-fn splitquadratic([a, b, c]: [MathPoint; 3], t: f32) -> [[MathPoint; 3]; 2] {
-    let q1 = lerp(a, b, t);
-    let q2 = lerp(b, c, t);
-    let r0 = lerp(q1, q2, t);
-    [[a, q1, r0], [r0, q2, c]]
-    //  curve1       curve2
-}
-
-fn splitquadratic4(abc: [MathPoint; 3]) -> [[MathPoint; 3]; 4] {
-    let [x, y] = splitquadratic(abc, 0.5);
-    let [p, q] = splitquadratic(x, 0.5);
-    let [r, s] = splitquadratic(y, 0.5);
-    [p, q, r, s]
-}
-
-pub enum CurveSection {
-    Line      ([(u16, PhysicalPoint); 2]),
-    Quadratic ([(u16, PhysicalPoint); 3]),
-    Cubic     ([(u16, PhysicalPoint); 4])
 }
 
 #[derive(Default, Clone, Copy, Debug)]

@@ -53,28 +53,28 @@ let rect = widget("ForceResize(5000x5000, Rect(red, round25))");
  /// relative into absolute points and position and constrain child widgets.
  #[derive(Default, Clone, Copy)]
  pub struct Layout {
-     pub rect: common::PhysicalRect,
+     pub bounds: common::PhysicalRect,
  }
 
  impl Layout {
 
-     pub const ZERO: Self = Self { rect: common::PhysicalRect::ZERO };
+     pub const ZERO: Self = Self { bounds: common::PhysicalRect::ZERO };
 
-     pub const fn new(rect: common::PhysicalRect) -> Self {
-         Self { rect }
+     pub const fn new(bounds: common::PhysicalRect) -> Self {
+         Self { bounds }
      }
 
      pub const fn width(&self) -> i16 {
-         self.rect.size.x
+         self.bounds.size.x
      }
 
      pub const fn height(&self) -> i16 {
-         self.rect.size.y
+         self.bounds.size.y
      }
 
      /// Transforms a possibly relative rect into an absolute one.
      pub fn transform(&self, input: common::MeasuredRect) -> common::PhysicalRect {
-         let common::PhysicalRect { point: offset, size: scale } = self.rect;
+         let common::PhysicalRect { point: offset, size: scale } = self.bounds;
          let point = common::PhysicalPoint {
              x: offset.x + match input.point.mx {
                  common::Measure::Absolute => input.point.x,
@@ -99,7 +99,7 @@ let rect = widget("ForceResize(5000x5000, Rect(red, round25))");
      }
 
      pub fn child(&self, rect: common::MeasuredRect) -> Self {
-         Self { rect: self.transform(rect) }
+         Self { bounds: self.transform(rect) }
      }
 
  }
@@ -135,14 +135,14 @@ impl<'a> Action<'a> {
     /// may be determined to not cascade, in which case `None` is returned.
     pub fn cascade(self, layout: Layout) -> Option<Self> {
 
-        let target = layout.rect;
+        let target = layout.bounds;
 
         match self {
             Self::Render { .. } => Some(self),
-            Self::MouseMotion { point }     => if intersects(point, target) { Some(self) } else { Some(Self::Unhover) },
-            Self::MouseDown   { point, .. } => if intersects(point, target) { Some(self) } else { Some(Self::Unfocus) },
-            Self::MouseUp     { point, .. } => if intersects(point, target) { Some(self) } else { Some(Self::Unfocus) },
-            Self::MouseScroll { point, .. } => if intersects(point, target) { Some(self) } else { Some(Self::Unhover) },
+            Self::MouseMotion { point }     => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unhover) },
+            Self::MouseDown   { point, .. } => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unfocus) },
+            Self::MouseUp     { point, .. } => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unfocus) },
+            Self::MouseScroll { point, .. } => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unhover) },
             Self::Unhover => Some(self),
             Self::Unfocus => Some(self),
             Self::KeyDown { .. } => Some(self),
@@ -156,9 +156,9 @@ impl<'a> Action<'a> {
 
 }
 
-pub fn intersects(pt: common::PhysicalPoint, rect: common::PhysicalRect) -> bool {
-    pt.x > rect.point.x && pt.x < rect.point.x + rect.size.x &&
-    pt.y > rect.point.y && pt.y < rect.point.y + rect.size.y
+pub fn point_inside_rect(pt: common::PhysicalPoint, rect: common::PhysicalRect) -> bool {
+    pt.x >= rect.point.x && pt.x <= rect.point.x + rect.size.x &&
+    pt.y >= rect.point.y && pt.y <= rect.point.y + rect.size.y
 }
 
 #[derive(Default)]
@@ -167,8 +167,6 @@ pub struct SpaceRenderState {
     pub blobs: Vec<Arc<common::VertexGeometry>>,
     /// Widget-added vertices.
     pub vertices: common::VertexGeometry,
-    /// Widget-added curves.
-    pub curves: common::CurveGeometry,
     /// Ordered shape instances, which index
     /// into the various stored geometries.
     pub instances: Vec<common::Instance>,
@@ -178,7 +176,6 @@ impl SpaceRenderState {
     pub fn clear(&mut self) {
         self.blobs.clear();
         self.vertices.clear();
-        self.curves.clear();
         self.instances.clear();
     }
 }
@@ -190,51 +187,32 @@ pub struct Space<'a> {
 
 impl<'a> Space<'a> {
 
-    pub fn data(&self, data: Data) -> SpaceKey {
+    pub fn shape(&self, data: &[common::PartialVertex]) -> u16 {
 
-        match data {
-            Data::Curves(it) => {
+        let target = &mut self.state.lock().vertices;
 
-                let target = &mut self.state.lock().curves;
+        // Calculate where our shape will be.
+        let start = target.vertices.len() as u16;
+        let end = start + data.len() as u16;
+        let shape = common::Shape::new(start..end);
 
-                let start = target.points.len() as u16;
-                target.points.extend_from_slice(it);
-                let end = target.points.len() as u16;
+        // Just push the points and the new shape.
+        target.vertices.extend_from_slice(data);
+        target.shapes.push(shape);
 
-                target.shapes.push(common::Shape::new(start..end));
-                let idx = (target.shapes.len() - 1) as u16;
+        return (target.shapes.len() - 1) as u16
 
-                // SpaceKey { index, kind: SpaceKeyKind::Curves }
-                SpaceKey::Curves { shape: idx }
+    }
 
-            },
-            Data::Vertices(it) => {
+    pub fn geometry(&self, geometry: Arc<common::VertexGeometry>) -> u16 {
 
-                let target = &mut self.state.lock().vertices;
+        let target = &mut self.state.lock().blobs;
 
-                let start = target.vertices.len() as u16;
-                target.vertices.extend_from_slice(it);
-                let end = target.vertices.len() as u16;
+        // Just push the geometry.
+        target.push(geometry);
 
-                target.shapes.push(common::Shape::new(start..end));
-                let idx = (target.shapes.len() - 1) as u16;
-
-                SpaceKey::Vertices { shape: idx }
-
-            },
-            Data::Geometry(it) => {
-
-                let items = &mut self.state.lock().blobs;
-                items.push(it);
-                let geometry = (items.len() + 1) as u16;
-                //                        ^^^^
-                // we need to adjust because when creating the `DrawableGeometry`
-                // the first two geometries will be for our own curves and vertices.
-
-                SpaceKey::Geometry { geometry }
-
-            },
-        }
+        return (target.len() - 1 + 1) as u16
+        //                       ^^^^ because the first geometry is ours
 
     }
 
@@ -256,37 +234,19 @@ impl<'a> Space<'a> {
 
 }
 
-pub enum Data<'a> {
-    Curves(&'a [common::CurvePoint]),
-    Vertices(&'a [common::PartialVertex]),
-    Geometry(Arc<common::VertexGeometry>)
-}
-
 #[derive(Clone, Copy)]
 pub enum SpaceKey {
-    Curves       { shape: u16 },
-    Vertices     { shape: u16 },
-    Geometry     { geometry: u16 },
-    GeometryFull { geometry: u16, shape: u16 }
+    Shape(u16),
+    Geometry(u16, u16)
 }
 
 impl SpaceKey {
     #[track_caller]
-    pub fn shape(self, shape: u16) -> Self {
-        if let Self::Geometry { geometry } = self {
-            Self::GeometryFull { geometry, shape }
-        } else {
-            panic!("Only used for geometry `SpaceKey`.")
-        }
-    }
-    #[track_caller]
     pub fn target(self) -> common::GeometryTarget {
         use common::GeometryTarget;
         match self {
-            Self::Curves       { shape }           => GeometryTarget { geometry: 0, shape },
-            Self::Vertices     { shape }           => GeometryTarget { geometry: 1, shape },
-            Self::GeometryFull { geometry, shape } => GeometryTarget { geometry, shape },
-            Self::Geometry     { .. }              => panic!("Incomplete `SpaceKey`."),
+            Self::Shape(shape)              => GeometryTarget { geometry: 0, shape },
+            Self::Geometry(geometry, shape) => GeometryTarget { geometry,    shape }
         }
     }
 }

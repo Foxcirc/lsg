@@ -19,7 +19,7 @@ use common::*;
 // }
 
 pub struct GeometryShaper {
-    lower: LoweringPass,
+    // lower: LoweringPass,
     trig: TriangulationPass,
 }
 
@@ -27,8 +27,8 @@ impl GeometryShaper {
 
     pub fn process<'s>(&'s mut self, geometry: &CurveGeometry) -> &'s VertexGeometry {
 
-        let lowered = self.lower.process_geometry(geometry);
-        let result = self.trig.process_geometry(lowered);
+        // let lowered = self.lower.process_geometry(geometry);
+        let result = self.trig.process_geometry(geometry);
 
         result
 
@@ -36,160 +36,160 @@ impl GeometryShaper {
 
     pub fn new() -> Self {
         Self {
-            lower: LoweringPass::new(),
+            // lower: LoweringPass::new(),
             trig: TriangulationPass::new(),
         }
     }
 
 }
 
-/// This pass performs lowering of curve data so the later algorithms can be simpler.
-///
-/// More concretely this currently does following things:
-/// - Convert all cubic into quadratic beziér curves
-/// - Split up curve triangles that intersect with the shape
-struct LoweringPass {
-    output: CurveGeometry,
-    errors: usize,
-}
-impl LoweringPass {
+// /// This pass performs lowering of curve data so the later algorithms can be simpler.
+// ///
+// /// More concretely this currently does following things:
+// /// - Convert all cubic into quadratic beziér curves
+// /// - Split up curve triangles that intersect with the shape
+// struct LoweringPass {
+//     output: CurveGeometry,
+//     errors: usize,
+// }
+// impl LoweringPass {
 
-    fn new() -> Self {
-        Self {
-            output: CurveGeometry::default(),
-            errors: 0,
-        }
-    }
+//     fn new() -> Self {
+//         Self {
+//             output: CurveGeometry::default(),
+//             errors: 0,
+//         }
+//     }
 
-    /// Returns a reference to the updated geometry.
-    fn process_geometry<'s>(&'s mut self, geometry: &CurveGeometry) -> &'s CurveGeometry {
+//     /// Returns a reference to the updated geometry.
+//     fn process_geometry<'s>(&'s mut self, geometry: &CurveGeometry) -> &'s CurveGeometry {
 
-        self.output.clear();
+//         self.output.clear();
 
-        for shape in &geometry.shapes {
-            match self.process_one_shape(shape, geometry) {
-                Ok(..) => (),
-                Err(..) => self.errors += 1,
-            }
-        }
+//         for shape in &geometry.shapes {
+//             match self.process_one_shape(shape, geometry) {
+//                 Ok(..) => (),
+//                 Err(..) => self.errors += 1,
+//             }
+//         }
 
-        &self.output
+//         &self.output
 
-    }
+//     }
 
-    fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
+//     fn process_one_shape(&mut self, shape: &Shape, geometry: &CurveGeometry) -> Result<(), ()> {
 
-        let Some(points) = geometry.points.get(shape.rangeu()) else { return Err(()) };
+//         let Some(points) = geometry.points.get(shape.rangeu()) else { return Err(()) };
 
-        if points.len() < 3 { return Err(()) }
+//         if points.len() < 3 { return Err(()) }
 
-        // save the start index so we later know which geometry belongs to the current shape
-        let shape_start = self.output.points.len() as u16;
+//         // save the start index so we later know which geometry belongs to the current shape
+//         let shape_start = self.output.points.len() as u16;
 
-        let mut idx = 0;
-        loop {
+//         let mut idx = 0;
+//         loop {
 
-            let len = points.len();
+//             let len = points.len();
 
-            let section = [
-                points[(idx + 0) % len],
-                points[(idx + 1) % len],
-                points[(idx + 2) % len],
-                points[(idx + 3) % len],
-            ];
+//             let section = [
+//                 points[(idx + 0) % len],
+//                 points[(idx + 1) % len],
+//                 points[(idx + 2) % len],
+//                 points[(idx + 3) % len],
+//             ];
 
-            let [a, b, c, d] = section.map(|it| MathPoint::from(it));
+//             let [a, b, c, d] = section.map(|it| MathPoint::from(it));
 
-            let increment; // how many points to skip for the next iteration
+//             let increment; // how many points to skip for the next iteration
 
-            // 1: quadratic curve
-            if section[0].kind() == PointKind::Base &&
-               section[1].kind() == PointKind::Ctrl &&
-               section[2].kind() == PointKind::Base {
+//             // 1: quadratic curve
+//             if section[0].kind() == PointKind::Base &&
+//                section[1].kind() == PointKind::Ctrl &&
+//                section[2].kind() == PointKind::Base {
 
-                increment = 2;
+//                 increment = 2;
 
-                let intersected = points.iter().enumerate().any(|(pidx, it)|
-                    !(pidx >= idx && pidx <= idx + 3) &&
-                    TriangulationPass::triangle_intersects_point([a, b, c], MathPoint::from(*it))
-                );
+//                 let intersected = points.iter().enumerate().any(|(pidx, it)|
+//                     !(pidx >= idx && pidx <= idx + 3) &&
+//                     TriangulationPass::triangle_intersects_point([a, b, c], MathPoint::from(*it))
+//                 );
 
-                if intersected {
+//                 if intersected {
 
-                    let [x, y] = TriangulationPass::split_quadratic([a, b, c], 0.5);
-                    let [p, q] = TriangulationPass::split_quadratic(x, 0.5);
-                    let [r, s] = TriangulationPass::split_quadratic(y, 0.5);
+//                     let [x, y] = TriangulationPass::split_quadratic([a, b, c], 0.5);
+//                     let [p, q] = TriangulationPass::split_quadratic(x, 0.5);
+//                     let [r, s] = TriangulationPass::split_quadratic(y, 0.5);
 
-                    self.output.points.extend_from_slice(&[CurvePoint::fromp(p[0], PointKind::Base), CurvePoint::fromp(p[1], PointKind::Ctrl)]);
-                    self.output.points.extend_from_slice(&[CurvePoint::fromp(q[0], PointKind::Base), CurvePoint::fromp(q[1], PointKind::Ctrl)]);
-                    self.output.points.extend_from_slice(&[CurvePoint::fromp(r[0], PointKind::Base), CurvePoint::fromp(r[1], PointKind::Ctrl)]);
-                    self.output.points.extend_from_slice(&[CurvePoint::fromp(s[0], PointKind::Base), CurvePoint::fromp(s[1], PointKind::Ctrl)]);
+//                     self.output.points.extend_from_slice(&[CurvePoint::fromp(p[0], PointKind::Base), CurvePoint::fromp(p[1], PointKind::Ctrl)]);
+//                     self.output.points.extend_from_slice(&[CurvePoint::fromp(q[0], PointKind::Base), CurvePoint::fromp(q[1], PointKind::Ctrl)]);
+//                     self.output.points.extend_from_slice(&[CurvePoint::fromp(r[0], PointKind::Base), CurvePoint::fromp(r[1], PointKind::Ctrl)]);
+//                     self.output.points.extend_from_slice(&[CurvePoint::fromp(s[0], PointKind::Base), CurvePoint::fromp(s[1], PointKind::Ctrl)]);
 
-                } else {
-                    self.output.points.extend_from_slice(&section[..2]);
-                }
+//                 } else {
+//                     self.output.points.extend_from_slice(&section[..2]);
+//                 }
 
-            // 2: cubic curve
-            } else if section[0].kind() == PointKind::Base &&
-                      section[1].kind() == PointKind::Ctrl &&
-                      section[2].kind() == PointKind::Ctrl &&
-                      section[3].kind() == PointKind::Base {
+//             // 2: cubic curve
+//             } else if section[0].kind() == PointKind::Base &&
+//                       section[1].kind() == PointKind::Ctrl &&
+//                       section[2].kind() == PointKind::Ctrl &&
+//                       section[3].kind() == PointKind::Base {
 
-                // we split the cubic curve into pieces and
-                // then degree reduce it to a quadratic curve
+//                 // we split the cubic curve into pieces and
+//                 // then degree reduce it to a quadratic curve
 
-                increment = 3;
+//                 increment = 3;
 
-                let [x, y] = TriangulationPass::split_cubic([a, b, c, d], 0.5);
-                let [p, q] = TriangulationPass::split_cubic(x, 0.5);
-                let [r, s] = TriangulationPass::split_cubic(y, 0.5);
+//                 let [x, y] = TriangulationPass::split_cubic([a, b, c, d], 0.5);
+//                 let [p, q] = TriangulationPass::split_cubic(x, 0.5);
+//                 let [r, s] = TriangulationPass::split_cubic(y, 0.5);
 
-                for curve in [p, q, r, s] {
+//                 for curve in [p, q, r, s] {
 
-                    // degree reduce by averaging
-                    let new_ctrl_point_x = -0.25*curve[0].x + 0.75*curve[1].x + 0.75*curve[2].x -0.25*curve[3].x;
-                    let new_ctrl_point_y = -0.25*curve[0].y + 0.75*curve[1].y + 0.75*curve[2].y -0.25*curve[3].y;
+//                     // degree reduce by averaging
+//                     let new_ctrl_point_x = -0.25*curve[0].x + 0.75*curve[1].x + 0.75*curve[2].x -0.25*curve[3].x;
+//                     let new_ctrl_point_y = -0.25*curve[0].y + 0.75*curve[1].y + 0.75*curve[2].y -0.25*curve[3].y;
 
-                    self.output.points.extend_from_slice(&[
-                        CurvePoint::fromp(curve[0], PointKind::Base),
-                        CurvePoint::new(new_ctrl_point_x as i16, new_ctrl_point_y as i16, PointKind::Ctrl)
-                    ]);
+//                     self.output.points.extend_from_slice(&[
+//                         CurvePoint::fromp(curve[0], PointKind::Base),
+//                         CurvePoint::new(new_ctrl_point_x as i16, new_ctrl_point_y as i16, PointKind::Ctrl)
+//                     ]);
 
-                }
+//                 }
 
-            // 3: invalid case
-            } else if section[0].kind() == PointKind::Ctrl &&
-                      section[1].kind() == PointKind::Ctrl &&
-                      section[2].kind() == PointKind::Ctrl {
+//             // 3: invalid case
+//             } else if section[0].kind() == PointKind::Ctrl &&
+//                       section[1].kind() == PointKind::Ctrl &&
+//                       section[2].kind() == PointKind::Ctrl {
 
-                // todo!("error: three contol points in a row");
-                return Err(())
-
-
-            // 4: "normal line" case
-            } else {
-                self.output.points.push(section[0]);
-                increment = 1;
-            }
-
-            // TODO: what happens if a point is duplicated in the input? does it triangulate correctly? yes
-
-            idx += increment;
-            if idx >= len { break };
-
-        }
-
-        let shape_end = self.output.points.len() as u16;
-
-        // generate the output shape, with updated indices
-        self.output.shapes.push(Shape::new(shape_start..shape_end));
-
-        Ok(())
+//                 // todo!("error: three contol points in a row");
+//                 return Err(())
 
 
-    }
+//             // 4: "normal line" case
+//             } else {
+//                 self.output.points.push(section[0]);
+//                 increment = 1;
+//             }
 
-}
+//             // TODO: what happens if a point is duplicated in the input? does it triangulate correctly? yes
+
+//             idx += increment;
+//             if idx >= len { break };
+
+//         }
+
+//         let shape_end = self.output.points.len() as u16;
+
+//         // generate the output shape, with updated indices
+//         self.output.shapes.push(Shape::new(shape_start..shape_end));
+
+//         Ok(())
+
+
+//     }
+
+// }
 
 struct TriangulationPass {
     /// During ear-clipping, stores which vertices are valid ears.
@@ -283,6 +283,8 @@ impl TriangulationPass {
         debug_assert!(len >= 3);
 
         // make curve triangles out of quadratic curves (B-C-B)
+
+        // TODO: use "sections()" iterator
 
         let mut idx = 0;
         loop {
@@ -426,18 +428,18 @@ impl TriangulationPass {
 
     }
 
-    /// Computes the direct neightbours of this index, wrapping around if neccessary.
-    #[track_caller]
-    pub(self) fn direct_neighbours(len: usize, idx: usize) -> [usize; 2] {
-        if idx == 0 {
-            [len - 1, idx + 1]
-        } else if idx == len - 1 {
-            [idx - 1, 0]
-        } else {
-            debug_assert!(idx <= len, "idx should be <= len");
-            [idx - 1, idx + 1]
-        }
-    }
+    // /// Computes the direct neightbours of this index, wrapping around if neccessary.
+    // #[track_caller]
+    // pub(self) fn direct_neighbours(len: usize, idx: usize) -> [usize; 2] {
+    //     if idx == 0 {
+    //         [len - 1, idx + 1]
+    //     } else if idx == len - 1 {
+    //         [idx - 1, 0]
+    //     } else {
+    //         debug_assert!(idx <= len, "idx should be <= len");
+    //         [idx - 1, idx + 1]
+    //     }
+    // }
 
     /// Computes the neightbours of this index, wrapping around if neccessary and
     /// considering which other items have already been marked as removed.
@@ -652,187 +654,187 @@ impl TriangulationPass {
 
     }
 
-    fn lerp(p1: MathPoint, p2: MathPoint, t: f32) -> MathPoint {
-        MathPoint::new(
-            p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
-            p1.y as f32 + (p2.y as f32 - p1.y as f32) * t
-        )
-    }
+    // fn lerp(p1: MathPoint, p2: MathPoint, t: f32) -> MathPoint {
+    //     MathPoint::new(
+    //         p1.x as f32 + (p2.x as f32 - p1.x as f32) * t,
+    //         p1.y as f32 + (p2.y as f32 - p1.y as f32) * t
+    //     )
+    // }
 
-    // Function to split a quadratic bézier curve at t
-    fn split_quadratic([a, b, c]: [MathPoint; 3], t: f32) -> [[MathPoint; 3]; 2] {
-        let q1 = Self::lerp(a, b, t);
-        let q2 = Self::lerp(b, c, t);
-        let r0 = Self::lerp(q1, q2, t);
-        [[a, q1, r0], [r0, q2, c]]
-        //  curve1       curve2
-    }
+    // // Function to split a quadratic bézier curve at t
+    // fn split_quadratic([a, b, c]: [MathPoint; 3], t: f32) -> [[MathPoint; 3]; 2] {
+    //     let q1 = Self::lerp(a, b, t);
+    //     let q2 = Self::lerp(b, c, t);
+    //     let r0 = Self::lerp(q1, q2, t);
+    //     [[a, q1, r0], [r0, q2, c]]
+    //     //  curve1       curve2
+    // }
 
-    fn split_cubic([a, b, c, d]: [MathPoint; 4], t: f32) -> [[MathPoint; 4]; 2] {
-        let p1  = Self::lerp(a, b, t);
-        let p2  = Self::lerp(b, c, t);
-        let p3  = Self::lerp(c, d, t);
-        let p12 = Self::lerp(p1, p2, t);
-        let p23 = Self::lerp(p2, p3, t);
-        let p   = Self::lerp(p12, p23, t);
-        [[a, p1, p12, p], [p, p23, p3, d]]
-        // -- curve1 --    -- curve2  --
-    }
+    // fn split_cubic([a, b, c, d]: [MathPoint; 4], t: f32) -> [[MathPoint; 4]; 2] {
+    //     let p1  = Self::lerp(a, b, t);
+    //     let p2  = Self::lerp(b, c, t);
+    //     let p3  = Self::lerp(c, d, t);
+    //     let p12 = Self::lerp(p1, p2, t);
+    //     let p23 = Self::lerp(p2, p3, t);
+    //     let p   = Self::lerp(p12, p23, t);
+    //     [[a, p1, p12, p], [p, p23, p3, d]]
+    //     // -- curve1 --    -- curve2  --
+    // }
 
-    fn bezier_point([a, b, c]: [MathPoint; 3], t: f32) -> MathPoint {
-        let x = (1.0 - t) * (1.0 - t) * a.x + 2.0 * (1.0 - t) * t * b.x + t * t * c.x;
-        let y = (1.0 - t) * (1.0 - t) * a.y + 2.0 * (1.0 - t) * t * b.y + t * t * c.y;
-        MathPoint { x, y }
-    }
+    // fn bezier_point([a, b, c]: [MathPoint; 3], t: f32) -> MathPoint {
+    //     let x = (1.0 - t) * (1.0 - t) * a.x + 2.0 * (1.0 - t) * t * b.x + t * t * c.x;
+    //     let y = (1.0 - t) * (1.0 - t) * a.y + 2.0 * (1.0 - t) * t * b.y + t * t * c.y;
+    //     MathPoint { x, y }
+    // }
 
-    fn favoured_split_point(curve: [MathPoint; 3], p: MathPoint) -> f32 {
+    // fn favoured_split_point(curve: [MathPoint; 3], p: MathPoint) -> f32 {
 
-        #![allow(non_snake_case)]
+    //     #![allow(non_snake_case)]
 
-        // coefficients of implicit line equation
-        // implicit form: A*x + B*y + C = 0
-        let A = p.y - curve[0].y;
-        let B = curve[0].x - p.x;
-        let C = curve[0].y * p.x - curve[0].x * p.y;
+    //     // coefficients of implicit line equation
+    //     // implicit form: A*x + B*y + C = 0
+    //     let A = p.y - curve[0].y;
+    //     let B = curve[0].x - p.x;
+    //     let C = curve[0].y * p.x - curve[0].x * p.y;
 
-        // coefficients for the line-curve intersection quadratic eqation
-        // implicit form: A*x(t) + B*y(t) + C = 0
-        // final equation: a*t² + b*t + c = 0
-        let a = A * (curve[2].x - 2.0*curve[1].x + curve[0].x) + B * (curve[2].y - 2.0*curve[1].y + curve[0].y);
-        let b = A * (2.0*curve[1].x - 2.0*curve[0].x) + B * (2.0*curve[1].y - 2.0*curve[0].y);
-        let c = A * curve[0].x + B * curve[0].y + C;
+    //     // coefficients for the line-curve intersection quadratic eqation
+    //     // implicit form: A*x(t) + B*y(t) + C = 0
+    //     // final equation: a*t² + b*t + c = 0
+    //     let a = A * (curve[2].x - 2.0*curve[1].x + curve[0].x) + B * (curve[2].y - 2.0*curve[1].y + curve[0].y);
+    //     let b = A * (2.0*curve[1].x - 2.0*curve[0].x) + B * (2.0*curve[1].y - 2.0*curve[0].y);
+    //     let c = A * curve[0].x + B * curve[0].y + C;
 
-        // find the roots
+    //     // find the roots
 
-        let inner = (b.powi(2) - 4.0*a*c).sqrt();
-        debug_assert!(!inner.is_nan(), "closest point must not be on the end of the curve"); // TODO: remove and clamp to 0
+    //     let inner = (b.powi(2) - 4.0*a*c).sqrt();
+    //     debug_assert!(!inner.is_nan(), "closest point must not be on the end of the curve"); // TODO: remove and clamp to 0
 
-        let root1 = (-b + inner) / (2.0*a);
-        let _root2 = (-b - inner) / (2.0*a); // TODO: (?) check the distance and choose the closest root like in closest_split_point
+    //     let root1 = (-b + inner) / (2.0*a);
+    //     let _root2 = (-b - inner) / (2.0*a); // TODO: (?) check the distance and choose the closest root like in closest_split_point
 
-        root1
+    //     root1
 
-    }
+    // }
 
-    fn closest_split_point(curve: [MathPoint; 3], p: MathPoint) -> f32 {
+    // fn closest_split_point(curve: [MathPoint; 3], p: MathPoint) -> f32 {
 
-        // get coefficients for this curve
-        let [a, b, c, d] = Self::distance_derivative_coefficients(curve, p);
+    //     // get coefficients for this curve
+    //     let [a, b, c, d] = Self::distance_derivative_coefficients(curve, p);
 
-        // solve the cubic equation for t values
-        let roots = Self::solve_distance_derivative(a, b, c, d);
+    //     // solve the cubic equation for t values
+    //     let roots = Self::solve_distance_derivative(a, b, c, d);
 
-        // NOTE: for our case, where the point lies inside the curves "belly", there will
-        //       be only one root and the closest point will not be at the ends
+    //     // NOTE: for our case, where the point lies inside the curves "belly", there will
+    //     //       be only one root and the closest point will not be at the ends
 
-        // this would be for the general case
+    //     // this would be for the general case
 
-        let iter = roots.into_iter()
-            .filter_map(identity)
-            .chain(once(0.0))
-            .chain(once(1.0));
+    //     let iter = roots.into_iter()
+    //         .filter_map(identity)
+    //         .chain(once(0.0))
+    //         .chain(once(1.0));
 
-        // find the root that gives the minimum distance
-        let mut closest_t = 0.0;
-        let mut closest_dist = f32::MAX;
+    //     // find the root that gives the minimum distance
+    //     let mut closest_t = 0.0;
+    //     let mut closest_dist = f32::MAX;
 
-        for t in iter {
+    //     for t in iter {
 
-            // only consider t in the valid range [0, 1]
-            if t >= 0.0 && t <= 1.0 {
-                let curve_point = Self::bezier_point(curve, t);
-                let dist = (curve_point.x - p.x).powi(2) + (curve_point.y - p.y).powi(2);
-                if dist < closest_dist {
-                    closest_dist = dist;
-                    closest_t = t;
-                }
-            }
-        }
+    //         // only consider t in the valid range [0, 1]
+    //         if t >= 0.0 && t <= 1.0 {
+    //             let curve_point = Self::bezier_point(curve, t);
+    //             let dist = (curve_point.x - p.x).powi(2) + (curve_point.y - p.y).powi(2);
+    //             if dist < closest_dist {
+    //                 closest_dist = dist;
+    //                 closest_t = t;
+    //             }
+    //         }
+    //     }
 
-        closest_t
+    //     closest_t
 
 
 
-    }
+    // }
 
-    fn distance_derivative_coefficients([a, b, c]: [MathPoint; 3], p: MathPoint) -> [f32; 4] {
+    // fn distance_derivative_coefficients([a, b, c]: [MathPoint; 3], p: MathPoint) -> [f32; 4] {
 
-        #![allow(non_snake_case)]
+    //     #![allow(non_snake_case)]
 
-        // source: https://www.primescholars.com/articles/an-algorithm-for-computing-the-shortest-distance-between-a-point-and-quadratic-bezier-curve.pdf
-        // D'(x) = 4At³ * 12Bt² * 4Ct * 4D
-        // where A, B, C, D are d4, ... d1 respectively
+    //     // source: https://www.primescholars.com/articles/an-algorithm-for-computing-the-shortest-distance-between-a-point-and-quadratic-bezier-curve.pdf
+    //     // D'(x) = 4At³ * 12Bt² * 4Ct * 4D
+    //     // where A, B, C, D are d4, ... d1 respectively
 
-        let A = (a.x - 2.0*b.x + c.x).powi(2)       + (a.y - 2.0*b.y + c.y).powi(2);
-        let B = (a.x - 2.0*b.x + c.x) * (b.x - a.x) + (a.y - 2.0*b.y + c.y) * (b.y - a.y);
-        let C = (a.x - 2.0*b.x + c.x) * (a.x - p.x) + (a.y - 2.0*b.y + c.y) * (a.y - p.y)      + 2.0*(b.x - a.x).powi(2) + 2.0*(b.y - a.y).powi(2);
-        let D = (b.x - a.x) * (a.x - p.x)           + (b.y - a.y) * (a.y - p.y);
+    //     let A = (a.x - 2.0*b.x + c.x).powi(2)       + (a.y - 2.0*b.y + c.y).powi(2);
+    //     let B = (a.x - 2.0*b.x + c.x) * (b.x - a.x) + (a.y - 2.0*b.y + c.y) * (b.y - a.y);
+    //     let C = (a.x - 2.0*b.x + c.x) * (a.x - p.x) + (a.y - 2.0*b.y + c.y) * (a.y - p.y)      + 2.0*(b.x - a.x).powi(2) + 2.0*(b.y - a.y).powi(2);
+    //     let D = (b.x - a.x) * (a.x - p.x)           + (b.y - a.y) * (a.y - p.y);
 
-        [4.0*A, 12.0*B, 4.0*C, 4.0*D]
+    //     [4.0*A, 12.0*B, 4.0*C, 4.0*D]
 
-    }
+    // }
 
-    /// sloves a cubic equation
-    fn solve_distance_derivative(a: f32, b: f32, c: f32, d: f32) -> [Option<f32>; 3] {
+    // /// sloves a cubic equation
+    // fn solve_distance_derivative(a: f32, b: f32, c: f32, d: f32) -> [Option<f32>; 3] {
 
-        #![allow(non_snake_case)]
+    //     #![allow(non_snake_case)]
 
-        // normalize coefficients, so at³ => t³
-        let p = b / a;
-        let q = c / a;
-        let r = d / a;
+    //     // normalize coefficients, so at³ => t³
+    //     let p = b / a;
+    //     let q = c / a;
+    //     let r = d / a;
 
-        // convert to a depressed cubic u^3 + A*u + B = 0
-        let A = (3.0 * q - p * p) / 9.0;
-        let B = (9.0 * p * q - 27.0 * r - 2.0 * p * p * p) / 54.0;
+    //     // convert to a depressed cubic u^3 + A*u + B = 0
+    //     let A = (3.0 * q - p * p) / 9.0;
+    //     let B = (9.0 * p * q - 27.0 * r - 2.0 * p * p * p) / 54.0;
 
-        // compute discriminant
-        let delta = A.powi(3) + B.powi(2);
+    //     // compute discriminant
+    //     let delta = A.powi(3) + B.powi(2);
 
-        if delta > 0.0 {
+    //     if delta > 0.0 {
 
-            // one real root, two complex roots
-            let sqrt_delta = delta.sqrt();
-            let C = (B + sqrt_delta).cbrt();
-            let D = (B - sqrt_delta).cbrt();
-            let u1 = C + D;
+    //         // one real root, two complex roots
+    //         let sqrt_delta = delta.sqrt();
+    //         let C = (B + sqrt_delta).cbrt();
+    //         let D = (B - sqrt_delta).cbrt();
+    //         let u1 = C + D;
 
-            // shift u back to t
-            let t1 = u1 - p / 3.0;
+    //         // shift u back to t
+    //         let t1 = u1 - p / 3.0;
 
-            [Some(t1), None, None]
+    //         [Some(t1), None, None]
 
-        } else if delta == 0.0 {
+    //     } else if delta == 0.0 {
 
-            // triple real root case
-            let C = B.cbrt();
-            let u1 = 2.0 * C;
-            let u2 = -C;
+    //         // triple real root case
+    //         let C = B.cbrt();
+    //         let u1 = 2.0 * C;
+    //         let u2 = -C;
 
-            let t1 = u1 - p / 3.0;
-            let t2 = u2 - p / 3.0;
+    //         let t1 = u1 - p / 3.0;
+    //         let t2 = u2 - p / 3.0;
 
-            [Some(t1), Some(t2), None]
+    //         [Some(t1), Some(t2), None]
 
-        } else {
+    //     } else {
 
-            // three real roots, trigonometric solution
-            let theta = (B / (-A * A * A).sqrt()).acos();
-            let val = 2.0 * (-A).sqrt();
+    //         // three real roots, trigonometric solution
+    //         let theta = (B / (-A * A * A).sqrt()).acos();
+    //         let val = 2.0 * (-A).sqrt();
 
-            let u1 = val *  (theta / 3.0).cos();
-            let u2 = val * ((theta + 2.0 * PI) / 3.0).cos();
-            let u3 = val * ((theta + 4.0 * PI) / 3.0).cos();
+    //         let u1 = val *  (theta / 3.0).cos();
+    //         let u2 = val * ((theta + 2.0 * PI) / 3.0).cos();
+    //         let u3 = val * ((theta + 4.0 * PI) / 3.0).cos();
 
-            let t1 = u1 - p / 3.0;
-            let t2 = u2 - p / 3.0;
-            let t3 = u3 - p / 3.0;
+    //         let t1 = u1 - p / 3.0;
+    //         let t2 = u2 - p / 3.0;
+    //         let t3 = u3 - p / 3.0;
 
-            [Some(t1), Some(t2), Some(t3)]
+    //         [Some(t1), Some(t2), Some(t3)]
 
-        }
+    //     }
 
-    }
+    // }
 
     fn check_outer_edges([ia, ib, ic]: [usize; 3], points: &[CurvePoint]) -> [bool; 3] {
         let mut result = [false; 3];
@@ -852,45 +854,45 @@ impl TriangulationPass {
 
 }
 
-/// Gives information about the way the vector `rhs` points in relation to `lhs`.
-/// # Example
-/// - - - - - - - - - - > lhs
-///     ⟍
-///       ⟍
-///         ⟍
-///           ↘ rhs
-/// Here the `rhs` has the `MovingRight` relation to `lhs`.
-fn two_vector_relation(lhs: [CurvePoint; 2], rhs: [CurvePoint; 2]) -> TwoVectorRelation {
+// /// Gives information about the way the vector `rhs` points in relation to `lhs`.
+// /// # Example
+// /// - - - - - - - - - - > lhs
+// ///     ⟍
+// ///       ⟍
+// ///         ⟍
+// ///           ↘ rhs
+// /// Here the `rhs` has the `MovingRight` relation to `lhs`.
+// fn two_vector_relation(lhs: [CurvePoint; 2], rhs: [CurvePoint; 2]) -> TwoVectorRelation {
 
-    // compute the normal vector of the edge we are touching. this will
-    // be the LEFT normal vector since we are using the [-y, x] form.
-    let normal = [-(lhs[1].y() as f32 - lhs[0].y() as f32), (lhs[1].x() as f32 - lhs[0].x() as f32)];
+//     // compute the normal vector of the edge we are touching. this will
+//     // be the LEFT normal vector since we are using the [-y, x] form.
+//     let normal = [-(lhs[1].y() as f32 - lhs[0].y() as f32), (lhs[1].x() as f32 - lhs[0].x() as f32)];
 
-    let dot = ((rhs[1].x() as f32 - rhs[0].x() as f32) * normal[0] as f32) +
-              ((rhs[1].y() as f32 - rhs[0].y() as f32) * normal[1] as f32);
+//     let dot = ((rhs[1].x() as f32 - rhs[0].x() as f32) * normal[0] as f32) +
+//               ((rhs[1].y() as f32 - rhs[0].y() as f32) * normal[1] as f32);
 
-    // dot product rules:
-    // dot == 0 → parallel
-    // dot <  0 → sharp angle
-    // dot >  0 → wide angle
+//     // dot product rules:
+//     // dot == 0 → parallel
+//     // dot <  0 → sharp angle
+//     // dot >  0 → wide angle
 
-    const EPS: f32 = 1e-6;
+//     const EPS: f32 = 1e-6;
 
-    if dot < EPS && dot > -EPS {
-        TwoVectorRelation::Parallel
-    } else if dot < EPS {
-        TwoVectorRelation::MovingLeft
-    } else {
-        TwoVectorRelation::MovingRight
-    }
-}
+//     if dot < EPS && dot > -EPS {
+//         TwoVectorRelation::Parallel
+//     } else if dot < EPS {
+//         TwoVectorRelation::MovingLeft
+//     } else {
+//         TwoVectorRelation::MovingRight
+//     }
+// }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TwoVectorRelation {
-    MovingLeft,
-    MovingRight,
-    Parallel,
-}
+// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// enum TwoVectorRelation {
+//     MovingLeft,
+//     MovingRight,
+//     Parallel,
+// }
 
 #[test]
 fn neighbours() {
