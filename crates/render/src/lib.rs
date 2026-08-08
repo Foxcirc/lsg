@@ -1,9 +1,6 @@
 
 //! This workspace crate contains code to render curved shapes on the CPU + GPU.
 
-pub mod shaper;
-pub use shaper::*;
-
 use std::{error::Error as StdError, fmt, iter::{repeat, zip}, ops::Range, rc::Rc};
 
 use common::*;

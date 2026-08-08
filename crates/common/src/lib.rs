@@ -500,10 +500,28 @@ pub struct VertexGeometry {
 }
 
 impl VertexGeometry {
+
     pub fn clear(&mut self) {
         self.vertices.clear();
         self.shapes.clear();
     }
+
+    /// Add a vertex shape to this geometry and return the index.
+    pub fn add(&mut self, data: &[PartialVertex]) -> u16 {
+
+        // Calculate where our shape will be.
+        let start = self.vertices.len() as u16;
+        let end = start + data.len() as u16;
+        let shape = Shape::new(start..end);
+
+        // Just push the points and the new shape.
+        self.vertices.extend_from_slice(data);
+        self.shapes.push(shape);
+
+        return (self.shapes.len() - 1) as u16
+
+    }
+
 }
 
 #[derive(Clone, Copy)]

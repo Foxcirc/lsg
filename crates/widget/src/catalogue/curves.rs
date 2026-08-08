@@ -13,19 +13,28 @@
 //! functionallity is actually not needed in many cases.
 //!
 //! Also, only having vertices as the base geometry format simplifies all other
-//! algorithms that the widgets use to manipulate geometry, e.g. clipping.
+//! algorithms that the widgets use to manipulate geometry, for example clipping.
 
 pub mod shaper {
 
     use std::iter;
     use common::*;
 
+    /// This auxillary struct is used to convert a shape described by a list
+    /// of curve points into a shape described by a list of triangles.
     pub struct GeometryShaper {
         lower: LoweringPass,
         trig: TriangulationPass,
     }
 
     impl GeometryShaper {
+
+        pub fn new() -> Self {
+            Self {
+                lower: LoweringPass::new(),
+                trig: TriangulationPass::new(),
+            }
+        }
 
         /// Process a single curved shape.
         pub fn process<'s>(&'s mut self, points: &[CurvePoint]) -> Result<&'s [PartialVertex], ()> {
@@ -35,13 +44,6 @@ pub mod shaper {
 
             Ok(result)
 
-        }
-
-        pub fn new() -> Self {
-            Self {
-                lower: LoweringPass::new(),
-                trig: TriangulationPass::new(),
-            }
         }
 
     }
@@ -59,18 +61,7 @@ pub mod shaper {
             }
         }
 
-        /// Add a new shape to the curve geometry and returns its index.
-        ///
-        /// # Notes
-        /// The shape is automatically lowered to a simpler representation,
-        /// so the data it easier to introspect and work with for widgets:
-        /// - Cubic curves are lowered to quadratic ones.
-        /// - Intersected quadratic curves are split,
-        ///   so they can be correctly triangulated later.
         pub fn process<'s>(&'s mut self, points: &[CurvePoint]) -> Result<&'s [CurvePoint], ()> {
-
-            // The section is always an extension of the last current point,
-            // so e.g. `Quadratic` only contains the new control and end point.
 
             self.buf.clear();
 
@@ -308,7 +299,7 @@ pub mod shaper {
             // Remove ears and recalculate neighbours to
             // incrementally generate the triangle mesh.
 
-            let mut changes = false; // Used to check for errors.
+            let mut changes = false;
             let mut counter = 0;
 
             loop {
@@ -317,9 +308,8 @@ pub mod shaper {
                     // Increment the counter:
                     counter += 1;
                 } else {
-                    // To avoid looping infinitely on bad input,
-                    // we emit an error if we detects that after
-                    // a full cycle there were no changes.
+                    // To avoid looping infinitely on bad input, we emit an
+                    // error if after a full cycle there were no changes.
                     if !changes { return Err(()) }
                     // Reset the counter:
                     changes = false;
@@ -596,8 +586,7 @@ pub mod shaper {
     }
 
     fn edge_is_outer([x, y]: [usize; 2], points: &[CurvePoint]) -> bool {
-        // Check if the points are direct neightbours
-        // and NOT part of a curve triangle.
+        // Check if the points are direct neightbours and NOT part of a curve triangle.
         let diff = x.abs_diff(y);
         (diff == 1 || diff == points.len() - 1) &&
         points[x].kind() != PointKind::Ctrl &&

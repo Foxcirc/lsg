@@ -104,10 +104,9 @@ let rect = widget("ForceResize(5000x5000, Rect(red, round25))");
 
  }
 
-#[derive(Clone, Copy)]
 pub enum Action<'a> {
 
-    Render { space: Space<'a> },
+    Render { out: &'a mut RenderOutput },
     // RenderCached { space: Space<'a> }, // This would be used to render a singular widget using app.redraw(&mywidget), so the widgets would have to store their last space-parameters (rect) and then restore and render themselves with the same offset+size. If we would use widgets ID's this could be automatic if space.child stored the new widget id somehow, but I dont like mandatory widget ID's.
 
     MouseMotion { point: common::PhysicalPoint },
@@ -133,23 +132,42 @@ impl<'a> Action<'a> {
     ///
     /// The `layout` is the layout of the child. To be efficient, some actions
     /// may be determined to not cascade, in which case `None` is returned.
-    pub fn cascade(self, layout: Layout) -> Option<Self> {
+    pub fn cascade<'x>(&'x mut self, layout: Layout) -> Option<Action<'x>> {
 
-        let target = layout.bounds;
+        let bounds = layout.bounds;
 
         match self {
-            Self::Render { .. } => Some(self),
-            Self::MouseMotion { point }     => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unhover) },
-            Self::MouseDown   { point, .. } => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unfocus) },
-            Self::MouseUp     { point, .. } => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unfocus) },
-            Self::MouseScroll { point, .. } => if point_inside_rect(point, target) { Some(self) } else { Some(Self::Unhover) },
-            Self::Unhover => Some(self),
-            Self::Unfocus => Some(self),
-            Self::KeyDown { .. } => Some(self),
-            Self::KeyUp   { .. } => Some(self),
-            Self::TextInput   { .. } => Some(self),
-            Self::TextCompose { .. } => Some(self),
-            Self::TextComposeCancel  => Some(self)
+            Self::Render { out } => Some(Action::Render { out }),
+            &mut Self::MouseMotion { point }     => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unhover) },
+            &mut Self::MouseDown   { point, .. } => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unfocus) },
+            &mut Self::MouseUp     { point, .. } => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unfocus) },
+            &mut Self::MouseScroll { point, .. } => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unhover) },
+            &mut Self::Unhover => Some(self.same()),
+            &mut Self::Unfocus => Some(self.same()),
+            &mut Self::KeyDown { .. }     => Some(self.same()),
+            &mut Self::KeyUp   { .. }     => Some(self.same()),
+            &mut Self::TextInput   { .. } => Some(self.same()),
+            &mut Self::TextCompose { .. } => Some(self.same()),
+            &mut Self::TextComposeCancel  => Some(self.same())
+        }
+
+    }
+
+    pub fn same<'x>(&'x mut self) -> Action<'x> {
+
+        match self {
+            Self::Render { out } => Action::Render { out },
+            &mut Self::MouseMotion { point }         => Action::MouseMotion { point },
+            &mut Self::MouseDown   { point, button } => Action::MouseDown   { point, button },
+            &mut Self::MouseUp     { point, button } => Action::MouseUp     { point, button },
+            &mut Self::MouseScroll { point, delta }  => Action::MouseScroll { point, delta },
+            &mut Self::Unhover => Action::Unhover,
+            &mut Self::Unfocus => Action::Unfocus,
+            &mut Self::KeyDown { key, repeat } => Action::KeyDown { key, repeat },
+            &mut Self::KeyUp   { key }         => Action::KeyUp   { key },
+            &mut Self::TextInput   { chr }     => Action::TextInput   { chr },
+            &mut Self::TextCompose { chr }     => Action::TextCompose { chr },
+            &mut Self::TextComposeCancel       => Action::TextComposeCancel
         }
 
     }
@@ -161,94 +179,61 @@ pub fn point_inside_rect(pt: common::PhysicalPoint, rect: common::PhysicalRect) 
     pt.y >= rect.point.y && pt.y <= rect.point.y + rect.size.y
 }
 
-#[derive(Default)]
-pub struct SpaceRenderState {
+pub struct VertexGeometries {
+    pub inner: Vec<Arc<common::VertexGeometry>>
+}
+
+impl VertexGeometries {
+
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    /// Add a geometry to the store, which can be referenced by instances later.
+    pub fn add(&mut self, geometry: Arc<common::VertexGeometry>) -> u16 {
+        self.inner.push(geometry);
+        return (self.inner.len() - 1 + 1) as u16
+        //                       ^^^^ because the first geometry is ours
+    }
+
+}
+
+pub struct RenderOutput {
     /// Widget-added geometries.
-    pub blobs: Vec<Arc<common::VertexGeometry>>,
+    pub geometries: VertexGeometries,
     /// Widget-added vertices.
-    pub vertices: common::VertexGeometry,
+    pub geometry: common::VertexGeometry,
     /// Ordered shape instances, which index
     /// into the various stored geometries.
     pub instances: Vec<common::Instance>,
 }
 
-impl SpaceRenderState {
+impl RenderOutput {
+
     pub fn clear(&mut self) {
-        self.blobs.clear();
-        self.vertices.clear();
+        self.geometries.clear();
+        self.geometry.clear();
         self.instances.clear();
     }
-}
 
-#[derive(Clone, Copy)]
-pub struct Space<'a> {
-    pub state: &'a SmartMutex<SpaceRenderState>,
-}
+    pub fn instance(&mut self, layout: Layout, target: common::GeometryTarget, instance: Instance) {
 
-impl<'a> Space<'a> {
-
-    pub fn shape(&self, data: &[common::PartialVertex]) -> u16 {
-
-        let target = &mut self.state.lock().vertices;
-
-        // Calculate where our shape will be.
-        let start = target.vertices.len() as u16;
-        let end = start + data.len() as u16;
-        let shape = common::Shape::new(start..end);
-
-        // Just push the points and the new shape.
-        target.vertices.extend_from_slice(data);
-        target.shapes.push(shape);
-
-        return (target.shapes.len() - 1) as u16
-
-    }
-
-    pub fn geometry(&self, geometry: Arc<common::VertexGeometry>) -> u16 {
-
-        let target = &mut self.state.lock().blobs;
-
-        // Just push the geometry.
-        target.push(geometry);
-
-        return (target.len() - 1 + 1) as u16
-        //                       ^^^^ because the first geometry is ours
-
-    }
-
-    #[track_caller]
-    pub fn instance(&self, layout: Layout, key: SpaceKey, i: Instance) {
-
-        let new = layout.transform(common::MeasuredRect { point: i.pos, size: i.size });
+        let new = layout.transform(common::MeasuredRect {
+            point: instance.pos,
+            size: instance.size
+        });
 
         let inner = common::Instance {
-            target: key.target(),
+            target,
             pos: new.point,
             size: new.size,
-            texture: i.texture,
+            texture: instance.texture,
         };
 
-        self.state.lock().instances.push(inner);
+        self.instances.push(inner);
 
     }
 
-}
-
-#[derive(Clone, Copy)]
-pub enum SpaceKey {
-    Shape(u16),
-    Geometry(u16, u16)
-}
-
-impl SpaceKey {
-    #[track_caller]
-    pub fn target(self) -> common::GeometryTarget {
-        use common::GeometryTarget;
-        match self {
-            Self::Shape(shape)              => GeometryTarget { geometry: 0, shape },
-            Self::Geometry(geometry, shape) => GeometryTarget { geometry,    shape }
-        }
-    }
 }
 
 pub struct Instance {

@@ -14,14 +14,18 @@ impl Rect {
 impl Widget for Rect {
     fn action(&self, layout: Layout, action: Action) {
         match action {
-            Action::Render { space } => {
-                let key = space.data(Data::Curves(&[
-                    common::CurvePoint::base(0,     0),
-                    common::CurvePoint::base(10000, 0),
-                    common::CurvePoint::base(10000, 10000),
-                    common::CurvePoint::base(0,     10000)
-                ]));
-                space.instance(layout, key, Instance {
+            Action::Render { out } => {
+                let idx = out.geometry.add(&[
+                    // 1. triangle:
+                    common::PartialVertex::new([0,     0    ], common::FillKind::Filled, 0),
+                    common::PartialVertex::new([10000, 0    ], common::FillKind::Filled, 0),
+                    common::PartialVertex::new([10000, 10000], common::FillKind::Filled, 0),
+                    // 2. triangle:
+                    common::PartialVertex::new([0,     0    ], common::FillKind::Filled, 0),
+                    common::PartialVertex::new([10000, 10000], common::FillKind::Filled, 0),
+                    common::PartialVertex::new([0,     10000], common::FillKind::Filled, 0),
+                ]);
+                out.instance(layout, common::GeometryTarget { geometry: 0, shape: idx }, Instance {
                     pos: common::MeasuredPoint::new(common::abs(0),     common::abs(0)),
                     size: common::MeasuredSize::new(common::rel(10000), common::rel(10000)),
                     texture: self.texture,

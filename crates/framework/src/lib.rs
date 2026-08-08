@@ -251,8 +251,8 @@ impl Window {
                 windowstate.clear();
 
                 let size = self.inner.size();
-                let space = widget::Space { state: &windowstate.geometry };
-                let action = widget::Action::Render { space };
+                let space = widget::RenderOutput { state: &windowstate.geometry };
+                let action = widget::Action::Render { out: space };
                 let layout = widget::Layout::new(common::PhysicalRect {
                     point: common::PhysicalPoint::ZERO, size
                 });
