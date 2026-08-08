@@ -66,7 +66,7 @@ impl App {
                     .map_err(desktop::EvlError::anyerror)?;
 
                 let renderstate = AppRenderState {
-                    shaper: render::GeometryShaper::new(),
+                    // shaper: render::GeometryShaper::new(),
                     atlas: render::TextureAtlas::new(&renderer),
                     renderer,
                 };
@@ -191,14 +191,14 @@ impl Drop for Window {
 
 impl Window {
 
-    pub fn new(app: &Arc<App>) -> Result<Arc<Self>, desktop::EvlError> {
+    pub fn new(app: &Arc<App>) -> Arc<Self> {
 
         let inner = desktop::Window::new(&app.eventloop);
 
         let renderer = &app.renderstate.lock().renderer;
 
         let renderstate = SmartMutex::new(WindowRenderState {
-            geometry: SmartMutex::new(widget::SpaceRenderState::default()),
+            rendered: widget::RenderOutput::default(),
             texture: graphics::Texture::new(&renderer.gp, inner.size(), None),
             surface: graphics::Surface::new(&renderer.gp, &inner),
         });
@@ -217,7 +217,7 @@ impl Window {
             Arc::downgrade(&this)
         );
 
-        Ok(this)
+        this
 
     }
 
@@ -251,8 +251,7 @@ impl Window {
                 windowstate.clear();
 
                 let size = self.inner.size();
-                let space = widget::RenderOutput { state: &windowstate.geometry };
-                let action = widget::Action::Render { out: space };
+                let action = widget::Action::Render { out: &mut windowstate.rendered };
                 let layout = widget::Layout::new(common::PhysicalRect {
                     point: common::PhysicalPoint::ZERO, size
                 });
@@ -262,17 +261,12 @@ impl Window {
 
                 // Now we can read back and render the data.
 
-                let AppRenderState { shaper, renderer, atlas } = &mut *appstate;
-                let WindowRenderState { ref mut surface, ref mut texture, ref geometry, .. } = *windowstate;
-
-                let geometry = geometry.lock();
-
-                let curves = &geometry.curves;
-                let vertices = shaper.process(curves);
+                let AppRenderState { renderer, atlas } = &mut *appstate;
+                let WindowRenderState { rendered, texture, surface } = &mut *windowstate;
 
                 let drawable = render::DrawableGeometry {
-                    source: &[vertices],
-                    instances: &geometry.instances,
+                    source: &[&rendered.geometry],
+                    instances: &rendered.instances,
                 };
 
                 self.inner.present();
@@ -317,14 +311,14 @@ struct WindowEventHandlers {
 }
 
 struct AppRenderState {
-    shaper: render::GeometryShaper,
+    // shaper: render::GeometryShaper,
     renderer: render::Renderer,
     atlas: render::TextureAtlas,
 }
 
 struct WindowRenderState {
     // Geometry Buffers:
-    geometry: SmartMutex<widget::SpaceRenderState>,
+    rendered: widget::RenderOutput,
     // Intermediate Texture and Surface:
     texture: graphics::Texture,
     surface: graphics::Surface,
@@ -332,7 +326,7 @@ struct WindowRenderState {
 
 impl WindowRenderState {
     pub fn clear(&mut self) {
-        self.geometry.lock().clear();
+        self.rendered.clear();
     }
 }
 

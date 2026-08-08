@@ -266,7 +266,8 @@ use std::sync::Arc;
 use lsg::Window;
 
 fn main() {
-    lsg::App::run(handle, lsg::Config::default()).expect("run app");
+    lsg::App::run(handle, lsg::Config::default())
+        .expect("failed to run app");
 }
 
 async fn handle(app: Arc<lsg::App>) {
@@ -274,11 +275,12 @@ async fn handle(app: Arc<lsg::App>) {
     use lsg::widget::{layout, shapes};
     use lsg::common::rel;
 
-    let window = lsg::Window::new(&app).expect("open window");
+    let window = lsg::Window::new(&app);
 
     let widget = layout::Cols::new(vec![
         (rel(5000), shapes::Rect::colored((130, 0, 0, 255))),
-        (rel(5000), shapes::Rect::colored((50, 0, 100, 255)))
+        (rel(5000), shapes::Rect::colored((50, 0, 100, 255))),
+        // (rel(5000), rect().xround(0.25).xcolor(Color::RED))
     ]);
 
     window.content(Arc::new(widget));

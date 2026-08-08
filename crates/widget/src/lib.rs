@@ -179,6 +179,7 @@ pub fn point_inside_rect(pt: common::PhysicalPoint, rect: common::PhysicalRect) 
     pt.y >= rect.point.y && pt.y <= rect.point.y + rect.size.y
 }
 
+#[derive(Default)]
 pub struct VertexGeometries {
     pub inner: Vec<Arc<common::VertexGeometry>>
 }
@@ -198,6 +199,7 @@ impl VertexGeometries {
 
 }
 
+#[derive(Default)]
 pub struct RenderOutput {
     /// Widget-added geometries.
     pub geometries: VertexGeometries,
