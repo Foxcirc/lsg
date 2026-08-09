@@ -385,6 +385,8 @@ pub mod shaper {
     /// Param `outers` specifies edges in this order: [AB, BC, CA].
     fn gen_triangle(points: [MathPoint; 3], outers: [bool; 3], fill: FillKind, out: &mut Vec<PartialVertex>) {
 
+        // TODO: make this return a [PartialVertex; 3] instead of filling in the "out"
+
         let edges = ((outers[0] as u8) << 2) |
                     ((outers[1] as u8) << 1) |
                     ((outers[2] as u8) << 0);

@@ -168,15 +168,15 @@ impl<W: Widget> Widget for Rows<W> {
 ///
 /// Only needed if the child will purposefully draw out of bounds.
 pub struct Clip<W: Widget> {
-    pub bufs: SmartMutex<ClipBufs>,
     pub inner: W,
+    bufs: SmartMutex<ClipBufs>,
 }
 
 impl<W: Widget> Clip<W> {
     pub fn new(inner: W) -> Self {
         Self {
-            bufs: SmartMutex::default(),
             inner,
+            bufs: SmartMutex::default(),
         }
     }
 }
@@ -219,88 +219,16 @@ impl<W: Widget> Widget for Clip<W> {
                 // INTERSECTING => CLIP
                 else {
 
-                    let ClipBufs { buf0, buf1, newshape } = &mut *self.bufs.lock();
-
-                    buf0.clear();
-                    buf1.clear();
-                    newshape.clear();
-
                     if instance.target.geometry == 0 {
                         // `0` means index into the default geometry
 
-                        let (triangles, ..) = geometry
-                            .get(instance.target.shape)
-                            .as_chunks::<3>();
+                        let bufs = &mut *self.bufs.lock();
+                        let shape = geometry.get(instance.target.shape);
 
-                        for triangle in triangles {
-
-                            // Initialize buf0.
-                            buf0.extend_from_slice(triangle);
-
-                            const EDGES: [EdgeEquation; 4] = [
-                                EdgeEquation::Left,
-                                EdgeEquation::Right,
-                                EdgeEquation::Bottom,
-                                EdgeEquation::Top
-                            ];
-
-                            for edge in EDGES {
-
-                                let (subtriangles, ..) = buf0
-                                    .as_chunks::<3>();
-
-                                // Clip arr0 into arr1.
-                                for subtriangle @ [a, b, c] in subtriangles {
-
-                                    let isinside = subtriangle
-                                        .map(|it| edge.inside(it.pos, layout.bounds));
-
-                                    match subtriangle[0].curve {
-
-                                        common::FillKind::Filled => {
-
-                                            match isinside {
-
-                                                // Keep as-is.
-                                                [true, true, true] => buf1.extend(*subtriangle),
-
-                                                // Do nothing.
-                                                [false, false, false] => (),
-
-                                                // One inside cases:
-
-                                                [true,  false, false] => buf1.extend(gen_triangle_one_inside(*a, [*b, *c], edge, layout.bounds)),
-                                                [false, true,  false] => buf1.extend(gen_triangle_one_inside(*b, [*a, *c], edge, layout.bounds)),
-                                                [false, false, true]  => buf1.extend(gen_triangle_one_inside(*c, [*a, *b], edge, layout.bounds)),
-
-                                                // Two inside cases:
-
-                                                [false, true,  true]  => buf1.extend(gen_triangles_two_inside([*b, *c], *a, edge, layout.bounds)),
-                                                [true,  false, true]  => buf1.extend(gen_triangles_two_inside([*a, *c], *b, edge, layout.bounds)),
-                                                [true,  true,  false] => buf1.extend(gen_triangles_two_inside([*a, *b], *c, edge, layout.bounds))
-                                            }
-
-                                        },
-
-                                        _ => todo!()
-
-                                    }
-
-                                }
-
-                                swap(buf0, buf1);
-                                buf1.clear();
-
-                            }
-
-                            // Copy over the new triangles to
-                            // the shape we are constructing...
-                            newshape.extend_from_slice(buf0);
-
-                        }
+                        clip_triangle_shape_to_rect(bufs, shape, layout.bounds);
 
                         // Finally, redirect the instance to our new shape.
-                        let idx = geometry.add(newshape);
+                        let idx = geometry.add(&bufs.newshape);
                         instance.target.shape = idx;
 
                     } else {
@@ -316,6 +244,88 @@ impl<W: Widget> Widget for Clip<W> {
         } else {
             self.inner.action(layout, action);
         }
+
+    }
+}
+
+/// Clip the triangle shape to the bounds and write the result into the provided bufs.
+///
+/// Will clear the bufs and overwrite its contents.
+fn clip_triangle_shape_to_rect(
+    ClipBufs { buf0, buf1, newshape }: &mut ClipBufs,
+    shape: &[common::PartialVertex],
+    bounds: common::PhysicalRect
+) {
+
+    buf0.clear();
+    buf1.clear();
+    newshape.clear();
+
+    let (triangles, ..) = shape.as_chunks::<3>();
+    for triangle in triangles {
+
+        // Initialize buf0.
+        buf0.extend_from_slice(triangle);
+
+        const EDGES: [EdgeEquation; 4] = [
+            EdgeEquation::Left,
+            EdgeEquation::Right,
+            EdgeEquation::Bottom,
+            EdgeEquation::Top
+        ];
+
+        for edge in EDGES {
+
+            let (subtriangles, ..) = buf0
+                .as_chunks::<3>();
+
+            // Clip arr0 into arr1.
+            for subtriangle @ [a, b, c] in subtriangles {
+
+                let isinside = subtriangle
+                    .map(|it| edge.inside(it.pos, bounds));
+
+                match subtriangle[0].curve {
+
+                    common::FillKind::Filled => {
+
+                        match isinside {
+
+                            // Keep as-is.
+                            [true, true, true] => buf1.extend(*subtriangle),
+
+                            // Do nothing.
+                            [false, false, false] => (),
+
+                            // One inside cases:
+
+                            [true,  false, false] => buf1.extend(gen_triangle_one_inside(*a, [*b, *c], edge, bounds)),
+                            [false, true,  false] => buf1.extend(gen_triangle_one_inside(*b, [*a, *c], edge, bounds)),
+                            [false, false, true]  => buf1.extend(gen_triangle_one_inside(*c, [*a, *b], edge, bounds)),
+
+                            // Two inside cases:
+
+                            [false, true,  true]  => buf1.extend(gen_triangles_two_inside([*b, *c], *a, edge, bounds)),
+                            [true,  false, true]  => buf1.extend(gen_triangles_two_inside([*a, *c], *b, edge, bounds)),
+                            [true,  true,  false] => buf1.extend(gen_triangles_two_inside([*a, *b], *c, edge, bounds))
+                        }
+
+                    },
+
+                    _ => todo!()
+
+                }
+
+            }
+
+            swap(buf0, buf1);
+            buf1.clear();
+
+        }
+
+        // Copy over the new triangles to
+        // the shape we are constructing...
+        newshape.extend_from_slice(buf0);
 
     }
 }
@@ -349,33 +359,17 @@ fn gen_triangles_two_inside([in0, in1]: [common::PartialVertex; 2], outp: common
 }
 
 #[derive(Default)]
-struct ClipArrays {
-    pub arr0: [common::PartialVertex; 24],
-    pub arr1: [common::PartialVertex; 24],
-    pub len0: usize,
-    pub len1: usize
-}
-
-#[derive(Default)]
 struct ClipBufs {
     buf0: Vec<common::PartialVertex>,
     buf1: Vec<common::PartialVertex>,
     newshape: Vec<common::PartialVertex>
 }
 
-impl ClipBufs {
-    pub fn clear(&mut self) {
-        self.buf0.clear();
-        self.buf1.clear();
-        self.newshape.clear();
-    }
-}
-
-enum AddPoints {
-    None,
-    One([common::PhysicalPoint; 1]),
-    Two([common::PhysicalPoint; 2])
-}
+// enum AddPoints {
+//     None,
+//     One([common::PhysicalPoint; 1]),
+//     Two([common::PhysicalPoint; 2])
+// }
 
 #[derive(Clone, Copy)]
 enum EdgeEquation {
