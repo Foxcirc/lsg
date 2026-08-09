@@ -390,7 +390,7 @@ pub mod shaper {
                     ((outers[2] as u8) << 0);
 
         for point in points {
-            out.push(PartialVertex::new([point.x as u16, point.y as u16], fill, edges));
+            out.push(PartialVertex::new(PhysicalPoint::new(point.x as i16, point.y as i16), fill, edges));
         }
 
     }

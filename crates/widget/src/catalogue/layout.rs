@@ -166,41 +166,23 @@ impl<W: Widget> Widget for Rows<W> {
 /// A clipping check is run on all child geometry and instances are
 /// adjusted so that their geometry stops at the layout bounds.
 ///
-/// This widget should only be used if you know the child is going to
-/// draw out of bounds on purpose.
+/// Only needed if the child will purposefully draw out of bounds.
 pub struct Clip<W: Widget> {
+    pub bufs: SmartMutex<ClipBufs>,
     pub inner: W,
-    bufs: SmartMutex<ClipBufs>,
-}
-
-struct ClipBufs {
-    pub curves0: Vec<common::CurvePoint>,
-    pub curves1: Vec<common::CurvePoint>,
-}
-
-impl ClipBufs {
-    pub fn new() -> Self {
-        Self {
-            curves0: Vec::with_capacity(24),
-            curves1: Vec::with_capacity(24),
-        }
-    }
 }
 
 impl<W: Widget> Clip<W> {
     pub fn new(inner: W) -> Self {
         Self {
+            bufs: SmartMutex::default(),
             inner,
-            bufs: SmartMutex::new(ClipBufs::new()),
         }
     }
 }
 
 impl<W: Widget> Widget for Clip<W> {
     fn action(&self, layout: Layout, action: Action) {
-
-        // The `Clip` widget is purely for visual cleanliness and doesn't need
-        // to care about generally affecting the widget layouting process.
 
         if let Action::Render { out } = action {
 
@@ -209,7 +191,7 @@ impl<W: Widget> Widget for Clip<W> {
             // Let the childs render, next we will inspect their output.
             self.inner.action(layout, Action::Render { out });
 
-            let RenderOutput { geometries, geometry, instances } = out;
+            let RenderOutput { geometry, instances, .. } = out;
 
             // Iterate over the instances added by the child.
             for instance in &mut instances[start..] {
@@ -217,39 +199,113 @@ impl<W: Widget> Widget for Clip<W> {
                 // We do bounding box checks on the instances:
                 //
                 // The checks are based on the fact, that an instance
-                // should always be smaller then its bounding box.
-                //
-                // +---------------------+-----------+
-                // | case                | action    |
-                // +---------------------+-----------+
-                // | completely inside   | keep      |
-                // | completely outside  | discard   |
-                // | touching bounds     | clip      |
-                // +---------------------+-----------+
+                // shall always be smaller then its bounding box.
 
                 let rect = common::PhysicalRect {
                     point: instance.pos,
                     size: instance.size
                 };
 
+                // COMPLETELY INSIDE => KEEP
                 if rect_inside_rect(rect, layout.bounds) {
-                    // If completely inside, we can keep it as-is.
+                    // Do nothing.
                 }
 
+                // COMPLETELY OUTSIDE => DISCARD
                 else if !rect_intersects_rect(rect, layout.bounds) {
-                    // If completely outside, discard it.
                     *instance = common::Instance::DISCARD;
                 }
 
+                // INTERSECTING => CLIP
                 else {
 
-                    // Otherwise this instance needs to be clipped.
+                    let ClipBufs { buf0, buf1, newshape } = &mut *self.bufs.lock();
+
+                    buf0.clear();
+                    buf1.clear();
+                    newshape.clear();
 
                     if instance.target.geometry == 0 {
                         // `0` means index into the default geometry
 
+                        let (triangles, ..) = geometry
+                            .get(instance.target.shape)
+                            .as_chunks::<3>();
+
+                        for triangle in triangles {
+
+                            // Initialize buf0.
+                            buf0.extend_from_slice(triangle);
+
+                            const EDGES: [EdgeEquation; 4] = [
+                                EdgeEquation::Left,
+                                EdgeEquation::Right,
+                                EdgeEquation::Bottom,
+                                EdgeEquation::Top
+                            ];
+
+                            for edge in EDGES {
+
+                                let (subtriangles, ..) = buf0
+                                    .as_chunks::<3>();
+
+                                // Clip arr0 into arr1.
+                                for subtriangle @ [a, b, c] in subtriangles {
+
+                                    let isinside = subtriangle
+                                        .map(|it| edge.inside(it.pos, layout.bounds));
+
+                                    match subtriangle[0].curve {
+
+                                        common::FillKind::Filled => {
+
+                                            match isinside {
+
+                                                // Keep as-is.
+                                                [true, true, true] => buf1.extend(*subtriangle),
+
+                                                // Do nothing.
+                                                [false, false, false] => (),
+
+                                                // One inside cases:
+
+                                                [true,  false, false] => buf1.extend(gen_triangle_one_inside(*a, [*b, *c], edge, layout.bounds)),
+                                                [false, true,  false] => buf1.extend(gen_triangle_one_inside(*b, [*a, *c], edge, layout.bounds)),
+                                                [false, false, true]  => buf1.extend(gen_triangle_one_inside(*c, [*a, *b], edge, layout.bounds)),
+
+                                                // Two inside cases:
+
+                                                [false, true,  true]  => buf1.extend(gen_triangles_two_inside([*b, *c], *a, edge, layout.bounds)),
+                                                [true,  false, true]  => buf1.extend(gen_triangles_two_inside([*a, *c], *b, edge, layout.bounds)),
+                                                [true,  true,  false] => buf1.extend(gen_triangles_two_inside([*a, *b], *c, edge, layout.bounds))
+                                            }
+
+                                        },
+
+                                        _ => todo!()
+
+                                    }
+
+                                }
+
+                                swap(buf0, buf1);
+                                buf1.clear();
+
+                            }
+
+                            // Copy over the new triangles to
+                            // the shape we are constructing...
+                            newshape.extend_from_slice(buf0);
+
+                        }
+
+                        // Finally, redirect the instance to our new shape.
+                        let idx = geometry.add(newshape);
+                        instance.target.shape = idx;
+
                     } else {
                         // otherwise, index into another geometry
+                        todo!();
                     }
 
                 }
@@ -264,61 +320,106 @@ impl<W: Widget> Widget for Clip<W> {
     }
 }
 
+fn gen_triangle_one_inside(inp: common::PartialVertex, [out0, out1]: [common::PartialVertex; 2], edge: EdgeEquation, bs: common::PhysicalRect) -> [common::PartialVertex; 3] {
+    let edge0 = [inp.pos, out0.pos];
+    let edge1 = [inp.pos, out1.pos];
+    let t0 = edge.iline(edge0, bs);
+    let t1 = edge.iline(edge1, bs);
+    let i0 = interpolated_point_on_line(edge0, t0);
+    let i1 = interpolated_point_on_line(edge1, t1);
+    // TODO: pass along outside edge info correctly...
+    [common::PartialVertex::new(inp.pos, common::FillKind::Filled, 0),
+     common::PartialVertex::new(i0,      common::FillKind::Filled, 0),
+     common::PartialVertex::new(i1,      common::FillKind::Filled, 0)]
+}
+
+fn gen_triangles_two_inside([in0, in1]: [common::PartialVertex; 2], outp: common::PartialVertex, edge: EdgeEquation, bs: common::PhysicalRect) -> [common::PartialVertex; 6] {
+    let edge0 = [in0.pos, outp.pos];
+    let edge1 = [in1.pos, outp.pos];
+    let t0 = edge.iline(edge0, bs);
+    let t1 = edge.iline(edge1, bs);
+    let i0 = interpolated_point_on_line(edge0, t0);
+    let i1 = interpolated_point_on_line(edge1, t1);
+    [common::PartialVertex::new(in0.pos, common::FillKind::Filled, 0),
+     common::PartialVertex::new(i0,      common::FillKind::Filled, 0),
+     common::PartialVertex::new(in1.pos, common::FillKind::Filled, 0),
+     common::PartialVertex::new(i0,      common::FillKind::Filled, 0),
+     common::PartialVertex::new(i1,      common::FillKind::Filled, 0),
+     common::PartialVertex::new(in1.pos, common::FillKind::Filled, 0)]
+}
+
+#[derive(Default)]
+struct ClipArrays {
+    pub arr0: [common::PartialVertex; 24],
+    pub arr1: [common::PartialVertex; 24],
+    pub len0: usize,
+    pub len1: usize
+}
+
+#[derive(Default)]
+struct ClipBufs {
+    buf0: Vec<common::PartialVertex>,
+    buf1: Vec<common::PartialVertex>,
+    newshape: Vec<common::PartialVertex>
+}
+
+impl ClipBufs {
+    pub fn clear(&mut self) {
+        self.buf0.clear();
+        self.buf1.clear();
+        self.newshape.clear();
+    }
+}
+
 enum AddPoints {
     None,
     One([common::PhysicalPoint; 1]),
     Two([common::PhysicalPoint; 2])
 }
 
-struct EdgeEquations {
-    /// Get if a point is inside the bounds.
-    pub inside: fn(point: common::PhysicalPoint, bounds: common::PhysicalRect) -> bool,
-    /// Get the intersection point of the edge and the bounds.
-    pub iline: fn(edge: [common::PhysicalPoint; 2], bounds: common::PhysicalRect) -> common::PhysicalPoint,
-    /// Get the intersection point(s) of the curve and the bounds.
-    pub icurve: fn(curve: [common::PhysicalPoint; 3], bounds: common::PhysicalRect) -> CurveIntersections
+#[derive(Clone, Copy)]
+enum EdgeEquation {
+    Left,
+    Right,
+    Bottom,
+    Top
 }
 
-impl EdgeEquations {
+impl EdgeEquation {
 
-    pub const LEFT: Self = Self {
-        inside: |point, bounds| point.x >= bounds.point.x,
-        iline: |[p0, p1], bounds| common::PhysicalPoint::new(
-            bounds.point.x, p0.y + (p1.y - p0.y) * ((bounds.point.x - p0.x) / (p1.x -p0.x))
-        ),
-        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.x as f32, ctrl.x as f32, p1.x as f32, bounds.point.x as f32)
-    };
+    pub fn inside(self, point: common::PhysicalPoint, bs: common::PhysicalRect) -> bool {
+        match self {
+            Self::Left   => point.x >= bs.xmin(),
+            Self::Right  => point.x <= bs.xmax(),
+            Self::Bottom => point.y >= bs.ymin(),
+            Self::Top    => point.y <= bs.ymax()
+        }
+    }
+    pub fn iline(self, [p0, p1]: [common::PhysicalPoint; 2], bs: common::PhysicalRect) -> f32 {
+        match self {
+            Self::Left   => (bs.xmin() - p0.x) as f32 / (p1.x - p0.x) as f32,
+            Self::Right  => (bs.xmax() - p0.x) as f32 / (p1.x - p0.x) as f32,
+            Self::Bottom => (bs.ymin() - p0.y) as f32 / (p1.y - p0.y) as f32,
+            Self::Top    => (bs.ymax() - p0.y) as f32 / (p1.y - p0.y) as f32,
+        }
+    }
 
-    pub const RIGHT: Self = Self {
-        inside: |point, bounds| point.x <= bounds.point.x + bounds.size.x,
-        iline: |[p0, p1], bounds| {
-            let xmax = bounds.point.x + bounds.size.x;
-            common::PhysicalPoint::new(
-                xmax, p0.y + (p1.y - p0.y) * ((xmax - p0.x) / (p1.x - p0.x))
-            )
-        },
-        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.x as f32, ctrl.x as f32, p1.x as f32, bounds.point.x as f32 + bounds.size.x as f32)
-    };
+    pub fn icurve(self, [p0, ctrl, p1]: [common::PhysicalPoint; 3], bs: common::PhysicalRect) -> CurveIntersections {
+        match self {
+            Self::Left   => solve_quadratic_bezier_1d(p0.x as f32, ctrl.x as f32, p1.x as f32, bs.xmin() as f32),
+            Self::Right  => solve_quadratic_bezier_1d(p0.x as f32, ctrl.x as f32, p1.x as f32, bs.xmax() as f32),
+            Self::Bottom => solve_quadratic_bezier_1d(p0.y as f32, ctrl.y as f32, p1.y as f32, bs.ymin() as f32),
+            Self::Top    => solve_quadratic_bezier_1d(p0.y as f32, ctrl.y as f32, p1.y as f32, bs.ymax() as f32)
+        }
+    }
 
-    pub const BOTTOM: Self = Self {
-        inside: |point, bounds| point.y >= bounds.point.y,
-        iline: |[p0, p1], bounds| common::PhysicalPoint::new(
-            p0.x + (p1.x - p0.x) * ((bounds.point.y - p0.y) / (p1.y - p0.y)), bounds.point.y
-        ),
-        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.y as f32, ctrl.y as f32, p1.y as f32, bounds.point.y as f32)
-    };
+}
 
-    pub const TOP: Self = Self {
-        inside: |point, bounds| point.y <= bounds.point.y + bounds.size.y,
-        iline: |[p0, p1], bounds| {
-            let ymax = bounds.point.y + bounds.size.y;
-            common::PhysicalPoint::new(
-                p0.x + (p1.x - p0.x) * ((ymax - p0.y) / (p1.y - p0.y)), ymax
-            )
-        },
-        icurve: |[p0, ctrl, p1], bounds| solve_quadratic_bezier_1d(p0.y as f32, ctrl.y as f32, p1.y as f32, bounds.point.y as f32 + bounds.size.y as f32)
-    };
-
+fn interpolated_point_on_line([p0, p1]: [common::PhysicalPoint; 2], t: f32) -> common::PhysicalPoint {
+    common::PhysicalPoint {
+        x: (p0.x as f32 + t * (p1.x - p0.x) as f32) as i16,
+        y: (p0.y as f32 + t * (p1.y - p0.y) as f32) as i16
+    }
 }
 
 enum CurveIntersections {

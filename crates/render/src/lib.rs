@@ -491,8 +491,8 @@ impl Renderer {
 
             for (vertex, index) in zip(vertices, ivertices) {
 
-                let vertex_x = vertex.pos[0];
-                let vertex_y = vertex.pos[1];
+                let vertex_x = vertex.pos.x;
+                let vertex_y = vertex.pos.y;
 
                 let physical_x = vertex_x as f64 * instance.size.x as f64 / 10000.0;
                 let physical_y = vertex_y as f64 * instance.size.y as f64 / 10000.0;

@@ -20,6 +20,10 @@ impl PhysicalRect {
     pub const fn new2(x: i16, y: i16, w: i16, h: i16) -> Self {
         Self { point: PhysicalPair::new(x, y), size: PhysicalPair::new(w, h) }
     }
+    pub fn xmin(&self) -> i16 { self.point.x }
+    pub fn xmax(&self) -> i16 { self.point.x + self.size.x }
+    pub fn ymin(&self) -> i16 { self.point.y }
+    pub fn ymax(&self) -> i16 { self.point.y + self.size.y }
 }
 
 // /// A non-negative size, specified in logical coordinates.
@@ -133,9 +137,8 @@ impl PhysicalPair {
     pub const ZERO: Self = Self::new(0, 0);
     pub const MAX: Self = Self::new(i16::MAX, i16::MAX);
     pub const MIN: Self = Self::new(-i16::MAX, -i16::MAX);
-    pub const fn new(x: i16, y: i16) -> Self {
-        Self { x, y }
-    }
+    pub const fn new(x: i16, y: i16) -> Self { Self { x, y } }
+    pub const fn new2([x, y]: [i16; 2]) -> Self { Self { x, y } }
     pub const fn scale(&self, factor: f64) -> PhysicalPair {
         PhysicalPair {
             x: (self.x as f64 * factor).round() as i16,
@@ -394,7 +397,7 @@ impl Instance {
         texture: TextureKind::Color(0, 0, 0, 0)
     };
     /// Check if this instance should be discarded.
-    pub fn discard(&self) -> bool {
+    pub fn isdiscard(&self) -> bool {
         self.target == GeometryTarget::DISCARD
     }
 }
@@ -481,13 +484,14 @@ pub enum FillKind {
 /// A simple vertex making up a list of triangles in [`VertexGeometry`].
 #[derive(Default, Clone, Copy, Debug)]
 pub struct PartialVertex {
-    pub pos: [u16; 2], // TODO: should be i16 I think (to also allow negative offsets)
+    pub pos: PhysicalPoint,
     pub curve: FillKind,
     pub edges: u8,
 }
 
 impl PartialVertex {
-    pub const fn new(pos: [u16; 2], curve: FillKind, edges: u8) -> Self {
+    pub const ZERO: Self = Self::new(PhysicalPoint::ZERO, FillKind::Filled, 0);
+    pub const fn new(pos: PhysicalPoint, curve: FillKind, edges: u8) -> Self {
         Self { pos, curve, edges }
     }
 }
@@ -520,6 +524,11 @@ impl VertexGeometry {
 
         return (self.shapes.len() - 1) as u16
 
+    }
+
+    /// Get the vertices of a shape.
+    pub fn get(&self, ishape: u16) -> &[PartialVertex] {
+        &self.vertices[self.shapes[ishape as usize].rangeu()]
     }
 
 }
