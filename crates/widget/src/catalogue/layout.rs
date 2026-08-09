@@ -5,16 +5,56 @@ use common::SmartMutex;
 use crate::{Action::Render, *};
 
 pub struct Placement<W: Widget> {
-    pub rect: common::MeasuredRect,
     pub inner: W,
+    pub rect: SmartMutex<common::MeasuredRect>,
+}
+
+impl<W: Widget> Placement<W> {
+    pub fn new(inner: W, rect: common::MeasuredRect) -> Self {
+        Self {
+            inner,
+            rect: SmartMutex::new(rect)
+        }
+    }
 }
 
 impl<W: Widget> Widget for Placement<W> {
     fn action(&self, layout: Layout, mut action: Action) {
-        let clayout = layout.child(self.rect);
+        let rect = *self.rect.lock();
+        let clayout = layout.child(rect);
         if let Some(it) = action.cascade(clayout) {
             self.inner.action(clayout, it);
         }
+    }
+}
+
+pub struct Offset<W: Widget> {
+    pub inner: W,
+    pub rect: SmartMutex<common::PhysicalRect>,
+}
+
+impl<W: Widget> Offset<W> {
+    pub fn new(inner: W, rect: common::PhysicalRect) -> Self {
+        Self {
+            inner,
+            rect: SmartMutex::new(rect)
+        }
+    }
+}
+
+impl<W: Widget> Widget for Offset<W> {
+    fn action(&self, layout: Layout, mut action: Action) {
+        let rect = *self.rect.lock();
+        let mut newbounds = layout.bounds;
+        newbounds.point.x += rect.point.x;
+        newbounds.point.y += rect.point.y;
+        newbounds.size.x += rect.size.x;
+        newbounds.size.y += rect.size.y;
+        let clayout = layout.child(common::MeasuredRect::from(newbounds));
+        // if let Some(it) = action.cascade(clayout) {
+        //     self.inner.action(clayout, it);
+        // }
+        self.inner.action(clayout, action.same());
     }
 }
 
@@ -493,86 +533,39 @@ fn rect_intersects_rect(inner: common::PhysicalRect, outer: common::PhysicalRect
         inner.point.y + inner.size.y > outer.point.y
 }
 
-// enum RectEdge {
-//     Left,
-//     Right,
-//     Top,
-//     Bottom,
-// }
+pub struct Scrollable<W: Widget> {
+    pub inner: Offset<W>,
+}
 
-// fn rect_intersects_point_at(rect: &common::PhysicalRect, line: [common::MathPoint; 2]) -> Option<(RectEdge, common::MathPoint)> {
-//     // TODO:                               ^^^^^^^^^^^^ impl something like "MathRect"
+impl<W: Widget> Scrollable<W> {
+    pub fn new(inner: W) -> Self {
+        Self {
+            inner: Offset::new(inner, common::PhysicalRect::ZERO),
+        }
+    }
+}
 
-//     // From the line we get a origin and direction vector.
-//     let origin = line[0];
-//     let dir = common::MathPoint {
-//         x: line[1].x - line[0].x,
-//         y: line[1].y - line[0].y
-//     };
+impl<W: Widget> Widget for Scrollable<W> {
+    fn action(&self, layout: Layout, action: Action) {
 
-//     // Convert the rect into the representation we need.
-//     let rect0 = common::MathPoint::from(rect.point);
-//     let rect1 = common::MathPoint {
-//         x: (rect.point.x + rect.size.x) as f32,
-//         y: (rect.point.y + rect.size.y) as f32
-//     };
+        if let Action::MouseScroll { delta, .. } = action {
 
-//     let tx1 = (rect0.x - origin.x) / dir.x;
-//     let tx2 = (rect1.x - origin.x) / dir.x;
-//     let ty1 = (rect0.y - origin.y) / dir.y;
-//     let ty2 = (rect1.y - origin.y) / dir.y;
+            println!("scrolling: {delta:?}");
 
-//     let tx_near = tx1.min(tx2);
-//     let tx_far  = tx1.max(tx2);
-//     let ty_near = ty1.min(ty2);
-//     let ty_far  = ty1.max(ty2);
+            // Adjust the offset.
+            self.inner.rect.with(|it| {
+                it.point.x -= delta.x / 200;
+                it.point.y += delta.y / 200;
+            })
 
-//     let t_near = tx_near.max(ty_near);
-//     let t_far = tx_far.min(ty_far);
+        } else {
 
-//     // If t_near is NaN (start point on boundary), we treat it as 0.0
-//     let t_near = if t_near.is_nan() { 0.0 } else { t_near };
+            self.inner.action(layout, action);
 
-//     if t_near > t_far || t_far < 0.0 || t_near > 1.0 {
-//         return None;
-//     }
+        }
 
-//     let hit_point = MathPoint {
-//         x: origin.x + t_near * dir.x,
-//         y: origin.y + t_near * dir.y,
-//     };
-
-//     let edge = if tx_near > ty_near {
-//         if dir.x > 0.0 { Edge::Left } else { Edge::Right }
-//     } else {
-//         if dir.y > 0.0 { Edge::Top } else { Edge::Bottom }
-//     };
-
-//     Some((edge, hit_point))
-// }
-
-// pub struct Scrollable<W: Widget> {
-//     pub inner: W,
-//     pub rect: SmartMutex<common::PhysicalPoint>,
-// }
-
-// impl<W: Widget> Scrollable<W> {
-//     pub fn new(inner: W) -> Self {
-//         Self { inner, point: SmartMutex::new(common::PhysicalPoint::ZERO) }
-//     }
-// }
-
-// impl<W: Widget> Widget for Scrollable<W> {
-//     fn action(&self, layout: Layout, action: Action) {
-
-//         let point = self.point.lock();
-
-//         // layout.clip = true;
-
-//         let clayout =
-
-//     }
-// }
+    }
+}
 
 /*
 

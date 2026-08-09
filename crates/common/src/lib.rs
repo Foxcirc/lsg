@@ -13,7 +13,7 @@ pub struct PhysicalRect {
 
 impl PhysicalRect {
     pub const MAX: Self = Self::new(PhysicalPair::MIN, PhysicalPair::MAX);
-    pub const ZERO: Self = Self::new(PhysicalPair::ZERO, PhysicalPair::MIN);
+    pub const ZERO: Self = Self::new(PhysicalPair::ZERO, PhysicalPair::ZERO);
     pub const fn new(point: PhysicalPair, size: PhysicalPair) -> Self {
         Self { point, size }
     }
@@ -180,6 +180,15 @@ impl MeasuredRect {
         point: MeasuredPoint::ZERO,
         size: MeasuredSize::ZERO
     };
+}
+
+impl From<PhysicalRect> for MeasuredRect {
+    fn from(it: PhysicalRect) -> Self {
+        Self {
+            point: MeasuredPoint::new(abs(it.point.x), abs(it.point.y)),
+            size:  MeasuredSize::new(abs(it.size.x), abs(it.size.y)),
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy)]

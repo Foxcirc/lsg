@@ -9,6 +9,7 @@ pub use widget;
 
 use common::{IsSurface, SmartMutex};
 use desktop::{MouseButton, Key};
+use widget::Widget;
 use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, future::{pending, poll_fn}, pin::Pin, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
@@ -228,6 +229,11 @@ impl Window {
         let mut windowstate = self.renderstate.lock();
         let mut appstate = self.app.renderstate.lock();
 
+        let layout = widget::Layout::new(common::PhysicalRect {
+            point: common::PhysicalPoint::ZERO,
+            size: self.inner.size()
+        });
+
         match event {
 
             // Event handlers.
@@ -250,13 +256,8 @@ impl Window {
 
                 windowstate.clear();
 
-                let size = self.inner.size();
-                let action = widget::Action::Render { out: &mut windowstate.rendered };
-                let layout = widget::Layout::new(common::PhysicalRect {
-                    point: common::PhysicalPoint::ZERO, size
-                });
-
                 // This will render the whole tree.
+                let action = widget::Action::Render { out: &mut windowstate.rendered };
                 self.content.lock().inner.action(layout, action);
 
                 // Now we can read back and render the data.
@@ -270,13 +271,23 @@ impl Window {
                 };
 
                 self.inner.present();
+                texture.clear([0., 0., 0., 1.]);
                 renderer.draw(&drawable, &atlas, texture);
+                self.inner.redraw();
 
                 surface.blit(texture);
                 surface.swap();
 
 
             },
+
+            WindowEvent::MouseScroll { dx, dy } => {
+                let action = widget::Action::MouseScroll {
+                    point: common::PhysicalPoint::new(100, 100),
+                    delta: common::PhysicalPoint::new(dx, dy)
+                };
+                self.content.lock().inner.action(layout, action);
+            }
 
             _ => (),
 
