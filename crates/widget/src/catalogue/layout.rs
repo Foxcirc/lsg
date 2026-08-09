@@ -19,12 +19,9 @@ impl<W: Widget> Placement<W> {
 }
 
 impl<W: Widget> Widget for Placement<W> {
-    fn action(&self, layout: Layout, mut action: Action) {
+    fn action(&self, cx: Context) -> Response {
         let rect = *self.rect.lock();
-        let clayout = layout.child(rect);
-        if let Some(it) = action.cascade(clayout) {
-            self.inner.action(clayout, it);
-        }
+        cx.child(rect, &self.inner)
     }
 }
 
@@ -43,18 +40,14 @@ impl<W: Widget> Offset<W> {
 }
 
 impl<W: Widget> Widget for Offset<W> {
-    fn action(&self, layout: Layout, mut action: Action) {
+    fn action(&self, cx: Context) -> Response {
         let rect = *self.rect.lock();
-        let mut newbounds = layout.bounds;
+        let mut newbounds = cx.layout.bounds;
         newbounds.point.x += rect.point.x;
         newbounds.point.y += rect.point.y;
         newbounds.size.x += rect.size.x;
         newbounds.size.y += rect.size.y;
-        let clayout = layout.child(common::MeasuredRect::from(newbounds));
-        // if let Some(it) = action.cascade(clayout) {
-        //     self.inner.action(clayout, it);
-        // }
-        self.inner.action(clayout, action.same());
+        cx.child(newbounds.into(), &self.inner)
     }
 }
 
@@ -69,10 +62,13 @@ impl<W: Widget> Many<W> {
 }
 
 impl<W: Widget> Widget for Many<W> {
-    fn action(&self, layout: Layout, mut action: Action) {
+    fn action(&self, cx: Context) -> Response {
+        let mut resp = Response::Bubble;
         for entry in &*self.inner.lock() {
-            entry.action(layout, action.same());
+            let iresp = entry.action(cx);
+            resp.and(iresp);
         }
+        resp
     }
 }
 
@@ -94,10 +90,12 @@ impl<W1: Widget, W2: Widget> Cols2<W1, W2> {
 }
 
 impl<W1: Widget, W2: Widget> Widget for Cols2<W1, W2> {
-    fn action(&self, layout: Layout, mut action: Action) {
+    fn action(&self, cx: Context) -> Response {
+        let mut resp = Response::Bubble;
         let mut offset: i16 = 0;
-        implcol(layout, action.same(), &*self.w1.lock(), &mut offset);
-        implcol(layout, action.same(), &*self.w2.lock(), &mut offset);
+        resp.and(implcol(cx, &*self.w1.lock(), &mut offset));
+        resp.and(implcol(cx, &*self.w2.lock(), &mut offset));
+        resp
     }
 }
 
@@ -122,11 +120,13 @@ impl <W1: Widget, W2: Widget, W3: Widget> Cols3<W1, W2, W3> {
 }
 
 impl<W1: Widget, W2: Widget, W3: Widget> Widget for Cols3<W1, W2, W3> {
-    fn action(&self, layout: Layout, mut action: Action) {
+    fn action(&self, cx: Context) -> Response {
+        let mut resp = Response::Bubble;
         let mut offset: i16 = 0;
-        implcol(layout, action.same(), &*self.w1.lock(), &mut offset);
-        implcol(layout, action.same(), &*self.w2.lock(), &mut offset);
-        implcol(layout, action.same(), &*self.w3.lock(), &mut offset);
+        resp.and(implcol(cx, &*self.w1.lock(), &mut offset));
+        resp.and(implcol(cx, &*self.w2.lock(), &mut offset));
+        resp.and(implcol(cx, &*self.w3.lock(), &mut offset));
+        resp
     }
 }
 
@@ -141,64 +141,39 @@ impl<W: Widget> Cols<W> {
 }
 
 impl<W: Widget> Widget for Cols<W> {
-    fn action(&self, layout: Layout, mut action: Action) {
+    fn action(&self, cx: Context) -> Response {
 
+        let mut resp = Response::Bubble;
         let mut offset: i16 = 0;
 
         for slot in &*self.inner.lock() {
-            implcol(layout, action.same(), slot, &mut offset);
+            let iresp = implcol(cx, slot, &mut offset);
+            resp.and(iresp);
         }
+
+        resp
 
     }
 }
 
-fn implcol<W: Widget>(layout: Layout, mut action: Action, slot: &(common::MeasuredNumber, W), offset: &mut i16) {
+fn implcol<W: Widget>(cx: Context, slot: &(common::MeasuredNumber, W), offset: &mut i16) -> Response {
 
     let (cwidth, cwidget) = slot;
 
-    let clayout = layout.child(common::MeasuredRect {
+    let crect = cx.layout.transform(common::MeasuredRect {
         point: common::MeasuredPoint::new(common::abs(*offset), common::abs(0)),
-        size: common::MeasuredSize::new(*cwidth, common::abs(layout.height()))
+        size:  common::MeasuredSize::new(*cwidth, common::abs(cx.layout.height()))
     });
 
-    *offset += clayout.width();
 
-    if let Some(it) = action.cascade(layout) {
-        cwidget.action(clayout, it);
-    }
+    *offset += crect.size.x;
+
+    cx.child(crect.into(), cwidget)
+
 }
 
 pub struct Rows<W: Widget> {
     pub inner: SmartMutex<Vec<(common::MeasuredNumber, W)>>
-}
-
-impl<W: Widget> Rows<W> {
-    pub fn new(inner: Vec<(common::MeasuredNumber, W)>) -> Self {
-        Self { inner: SmartMutex::new(inner) }
-    }
-}
-
-impl<W: Widget> Widget for Rows<W> {
-    fn action(&self, layout: Layout, mut action: Action) {
-
-        let mut offset: i16 = 0;
-
-        for (cheight, cwidget) in &*self.inner.lock() {
-
-            let clayout = layout.child(common::MeasuredRect {
-                point: common::MeasuredPoint::new(common::abs(0), common::abs(offset)),
-                size: common::MeasuredSize::new(common::abs(layout.width()), *cheight)
-            });
-
-            offset += clayout.height();
-
-            if let Some(it) = action.cascade(layout) {
-                cwidget.action(clayout, it);
-            }
-
-        }
-
-    }
 }
 
 /// Clips its children to avoid their geometry escaping bounds.
@@ -222,16 +197,18 @@ impl<W: Widget> Clip<W> {
 }
 
 impl<W: Widget> Widget for Clip<W> {
-    fn action(&self, layout: Layout, action: Action) {
+    fn action(&self, cx: Context) -> Response {
 
-        if let Action::Render { out } = action {
+        if let Action::Render { out: locked } = cx.action {
 
-            let start = out.instances.len();
+            let start = locked.inner.lock()
+                .instances.len();
 
-            // Let the childs render, next we will inspect their output.
-            self.inner.action(layout, Action::Render { out });
+            // Let the child render.
+            let resp = self.inner.action(cx);
 
-            let RenderOutput { geometry, instances, .. } = out;
+            let RenderOutputInner { geometry, instances, .. } =
+                &mut *locked.inner.lock();
 
             // Iterate over the instances added by the child.
             for instance in &mut instances[start..] {
@@ -247,12 +224,12 @@ impl<W: Widget> Widget for Clip<W> {
                 };
 
                 // COMPLETELY INSIDE => KEEP
-                if rect_inside_rect(rect, layout.bounds) {
+                if rect_inside_rect(rect, cx.layout.bounds) {
                     // Do nothing.
                 }
 
                 // COMPLETELY OUTSIDE => DISCARD
-                else if !rect_intersects_rect(rect, layout.bounds) {
+                else if !rect_intersects_rect(rect, cx.layout.bounds) {
                     *instance = common::Instance::DISCARD;
                 }
 
@@ -265,7 +242,7 @@ impl<W: Widget> Widget for Clip<W> {
                         let bufs = &mut *self.bufs.lock();
                         let shape = geometry.get(instance.target.shape);
 
-                        clip_triangle_shape_to_rect(bufs, shape, layout.bounds);
+                        clip_triangle_shape_to_rect(bufs, shape, cx.layout.bounds);
 
                         // Finally, redirect the instance to our new shape.
                         let idx = geometry.add(&bufs.newshape);
@@ -280,9 +257,10 @@ impl<W: Widget> Widget for Clip<W> {
 
             }
 
+            resp
 
         } else {
-            self.inner.action(layout, action);
+            self.inner.action(cx)
         }
 
     }
@@ -546,22 +524,24 @@ impl<W: Widget> Scrollable<W> {
 }
 
 impl<W: Widget> Widget for Scrollable<W> {
-    fn action(&self, layout: Layout, action: Action) {
+    fn action(&self, cx: Context) -> Response {
 
-        if let Action::MouseScroll { delta, .. } = action {
+        if let Action::MouseScroll { delta, .. } = cx.action {
 
-            println!("scrolling: {delta:?}");
+            let iresp = self.inner.action(cx);
 
-            // Adjust the offset.
-            self.inner.rect.with(|it| {
-                it.point.x -= delta.x / 200;
-                it.point.y += delta.y / 200;
-            })
+            if let Response::Bubble = iresp {
+                // Adjust the offset.
+                self.inner.rect.with(|it| {
+                    it.point.x -= delta.x / 200;
+                    it.point.y += delta.y / 200;
+                });
+            }
+
+            Response::Handeled
 
         } else {
-
-            self.inner.action(layout, action);
-
+            self.inner.action(cx)
         }
 
     }

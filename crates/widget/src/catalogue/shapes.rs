@@ -12,10 +12,10 @@ impl Rect {
 }
 
 impl Widget for Rect {
-    fn action(&self, layout: Layout, action: Action) {
-        match action {
+    fn action(&self, cx: Context) -> Response {
+        match cx.action {
             Action::Render { out } => {
-                let shape = out.geometry.add(&[
+                let shape = out.addshape(&[
                     // 1. triangle:
                     common::PartialVertex::new(common::PhysicalPoint::new(0,     0    ), common::FillKind::Filled, 0),
                     common::PartialVertex::new(common::PhysicalPoint::new(10000, 0    ), common::FillKind::Filled, 0),
@@ -25,13 +25,14 @@ impl Widget for Rect {
                     common::PartialVertex::new(common::PhysicalPoint::new(10000, 10000), common::FillKind::Filled, 0),
                     common::PartialVertex::new(common::PhysicalPoint::new(0,     10000), common::FillKind::Filled, 0),
                 ]);
-                out.instance(layout, common::GeometryTarget { geometry: 0, shape }, Instance {
+                out.instance(cx, common::GeometryTarget { geometry: 0, shape }, Instance {
                     pos: common::MeasuredPoint::new(common::abs(0),     common::abs(0)),
                     size: common::MeasuredSize::new(common::rel(10000), common::rel(10000)),
                     texture: self.texture,
                 });
             },
             _ => (),
-        }
+        };
+        Response::Bubble
     }
 }

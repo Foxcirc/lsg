@@ -278,8 +278,9 @@ async fn handle(app: Arc<lsg::App>) {
     let window = lsg::Window::new(&app);
 
     let cols = layout::Cols::new(vec![
-        (rel(5000), shapes::Rect::colored((130, 0, 0, 255))),
-        (rel(5000), shapes::Rect::colored((50, 0, 100, 255))),
+        (rel(3333), shapes::Rect::colored((200, 0, 0, 200))),
+        (rel(3333), shapes::Rect::colored((0, 200, 0, 200))),
+        (rel(3333), shapes::Rect::colored((0, 0, 200, 200)))
         // (rel(5000), rect().xround(0.25).xcolor(Color::RED))
     ]);
 

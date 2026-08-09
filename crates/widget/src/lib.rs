@@ -5,11 +5,10 @@
 pub mod catalogue;
 pub use catalogue::*;
 
-use common::SmartMutex;
-use std::sync::Arc;
+use std::{fmt, sync::{Arc, MutexGuard}};
 
 pub trait Widget {
-    fn action(&self, layout: Layout, action: Action);
+    fn action(&self, cx: Context) -> Response;
     // fn query(&self, query: Query);
 }
 
@@ -18,19 +17,41 @@ pub trait Widget {
 //     WasDeleted { out: &'a mut bool },
 // }
 
-// #[derive(Clone, Copy)]
-// pub struct ActionContext<'a> {
-//     pub layout: Layout,
-//     pub action: Action<'a>,
-// }
+#[derive(Clone, Copy)]
+pub struct Context<'a> {
+    pub layout: Layout,
+    pub action: Action<'a>,
+}
 
-// impl<'a> ActionContext<'a> {
-//     pub fn child(self, rect: common::MeasuredRect) -> Option<Self> {
-//         let layout = self.layout.child(rect);
-//         let action = self.action.cascade(layout);
-//         Some(Self { layout, ation })
-//     }
-// }
+impl<'a> Context<'a> {
+    pub fn propagate(self, rect: common::MeasuredRect) -> Option<Self> {
+        let subrect = self.layout.transform(rect);
+        let layout = Layout::new(subrect);
+        let action = self.action.propagate(layout)?;
+        Some(Self { layout, action })
+    }
+    pub fn child(self, rect: common::MeasuredRect, inner: &impl Widget) -> Response {
+        if let Some(ch) = self.propagate(rect) {
+            inner.action(ch)
+        } else {
+            Response::Bubble
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Response {
+    Bubble,
+    Handeled
+}
+
+impl Response {
+    pub fn and(&mut self, other: Response) {
+        if let Self::Handeled = other {
+            *self = Response::Handeled
+        }
+    }
+}
 
 /*
 
@@ -98,16 +119,17 @@ let rect = widget("ForceResize(5000x5000, Rect(red, round25))");
          common::PhysicalRect { point, size }
      }
 
-     pub fn child(&self, rect: common::MeasuredRect) -> Self {
-         Self { bounds: self.transform(rect) }
-     }
-
  }
 
+ #[derive(Debug, Clone, Copy)]
 pub enum Action<'a> {
 
-    Render { out: &'a mut RenderOutput },
-    // RenderCached { space: Space<'a> }, // This would be used to render a singular widget using app.redraw(&mywidget), so the widgets would have to store their last space-parameters (rect) and then restore and render themselves with the same offset+size. If we would use widgets ID's this could be automatic if space.child stored the new widget id somehow, but I dont like mandatory widget ID's.
+    /// Render this widget.
+    ///
+    /// # Why is `out` inside a mutex?
+    /// This could be a regular mutable reference, since there is no actual concurrency
+    /// going on, but having a regular reference here makes live much easier.
+    Render { out: &'a RenderOutput },
 
     MouseMotion { point: common::PhysicalPoint },
     MouseDown { point: common::PhysicalPoint, button: desktop::MouseButton },
@@ -132,42 +154,23 @@ impl<'a> Action<'a> {
     ///
     /// The `layout` is the layout of the child. To be efficient, some actions
     /// may be determined to not cascade, in which case `None` is returned.
-    pub fn cascade<'x>(&'x mut self, layout: Layout) -> Option<Action<'x>> {
+    pub fn propagate(self, layout: Layout) -> Option<Action<'a>> {
 
         let bounds = layout.bounds;
 
         match self {
             Self::Render { out } => Some(Action::Render { out }),
-            &mut Self::MouseMotion { point }     => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unhover) },
-            &mut Self::MouseDown   { point, .. } => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unfocus) },
-            &mut Self::MouseUp     { point, .. } => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unfocus) },
-            &mut Self::MouseScroll { point, .. } => if point_inside_rect(point, bounds) { Some(self.same()) } else { Some(Self::Unhover) },
-            &mut Self::Unhover => Some(self.same()),
-            &mut Self::Unfocus => Some(self.same()),
-            &mut Self::KeyDown { .. }     => Some(self.same()),
-            &mut Self::KeyUp   { .. }     => Some(self.same()),
-            &mut Self::TextInput   { .. } => Some(self.same()),
-            &mut Self::TextCompose { .. } => Some(self.same()),
-            &mut Self::TextComposeCancel  => Some(self.same())
-        }
-
-    }
-
-    pub fn same<'x>(&'x mut self) -> Action<'x> {
-
-        match self {
-            Self::Render { out } => Action::Render { out },
-            &mut Self::MouseMotion { point }         => Action::MouseMotion { point },
-            &mut Self::MouseDown   { point, button } => Action::MouseDown   { point, button },
-            &mut Self::MouseUp     { point, button } => Action::MouseUp     { point, button },
-            &mut Self::MouseScroll { point, delta }  => Action::MouseScroll { point, delta },
-            &mut Self::Unhover => Action::Unhover,
-            &mut Self::Unfocus => Action::Unfocus,
-            &mut Self::KeyDown { key, repeat } => Action::KeyDown { key, repeat },
-            &mut Self::KeyUp   { key }         => Action::KeyUp   { key },
-            &mut Self::TextInput   { chr }     => Action::TextInput   { chr },
-            &mut Self::TextCompose { chr }     => Action::TextCompose { chr },
-            &mut Self::TextComposeCancel       => Action::TextComposeCancel
+            Self::MouseMotion { point }     => if point_inside_rect(point, bounds) { Some(self) } else { Some(Self::Unhover) },
+            Self::MouseDown   { point, .. } => if point_inside_rect(point, bounds) { Some(self) } else { Some(Self::Unfocus) },
+            Self::MouseUp     { point, .. } => if point_inside_rect(point, bounds) { Some(self) } else { Some(Self::Unfocus) },
+            Self::MouseScroll { point, .. } => if point_inside_rect(point, bounds) { Some(self) } else { Some(Self::Unhover) },
+            Self::Unhover => Some(self),
+            Self::Unfocus => Some(self),
+            Self::KeyDown { .. }     => Some(self),
+            Self::KeyUp   { .. }     => Some(self),
+            Self::TextInput   { .. } => Some(self),
+            Self::TextCompose { .. } => Some(self),
+            Self::TextComposeCancel  => Some(self)
         }
 
     }
@@ -201,6 +204,11 @@ impl VertexGeometries {
 
 #[derive(Default)]
 pub struct RenderOutput {
+    pub inner: common::SmartMutex<RenderOutputInner>
+}
+
+#[derive(Default)]
+pub struct RenderOutputInner {
     /// Widget-added geometries.
     pub geometries: VertexGeometries,
     /// Widget-added vertices.
@@ -213,29 +221,51 @@ pub struct RenderOutput {
 impl RenderOutput {
 
     pub fn clear(&mut self) {
-        self.geometries.clear();
-        self.geometry.clear();
-        self.instances.clear();
+        let mut inner = self.inner.lock();
+        inner.geometries.clear();
+        inner.geometry.clear();
+        inner.instances.clear();
     }
 
-    pub fn instance(&mut self, layout: Layout, target: common::GeometryTarget, instance: Instance) {
+    pub fn addshape(&self, shape: &[common::PartialVertex]) -> u16 {
+        let mut this = self.inner.lock();
+        this.geometry.add(shape)
+    }
 
-        let new = layout.transform(common::MeasuredRect {
+    pub fn addgeometry(&self, geometry: Arc<common::VertexGeometry>) -> u16 {
+        let mut this = self.inner.lock();
+        this.geometries.add(geometry)
+    }
+
+    pub fn instance(&self, cx: Context, target: common::GeometryTarget, instance: Instance) {
+
+        let mut this = self.inner.lock();
+
+        let new = cx.layout.transform(common::MeasuredRect {
             point: instance.pos,
             size: instance.size
         });
 
-        let inner = common::Instance {
+        let rawinstance = common::Instance {
             target,
             pos: new.point,
             size: new.size,
             texture: instance.texture,
         };
 
-        self.instances.push(inner);
+        this.instances.push(rawinstance);
 
     }
 
+}
+
+impl fmt::Debug for RenderOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let this = self.inner.lock();
+        f.debug_struct("RenderOutput")
+            .field("#instances", &this.instances.len())
+            .finish_non_exhaustive()
+    }
 }
 
 pub struct Instance {

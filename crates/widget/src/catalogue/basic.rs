@@ -3,7 +3,9 @@ use crate::*;
 use std::sync::Arc;
 
 impl Widget for () {
-    fn action(&self, _: Layout, _: Action) {}
+    fn action(&self, _: Context) -> Response {
+        Response::Bubble
+    }
 }
 
 pub struct DynWidget {
@@ -23,7 +25,7 @@ impl Default for DynWidget {
 }
 
 impl Widget for DynWidget {
-    fn action(&self, layout: Layout, action: Action) {
-        self.inner.action(layout, action);
+    fn action(&self, cx: Context) -> Response {
+        self.inner.action(cx)
     }
 }

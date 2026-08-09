@@ -257,17 +257,19 @@ impl Window {
                 windowstate.clear();
 
                 // This will render the whole tree.
-                let action = widget::Action::Render { out: &mut windowstate.rendered };
-                self.content.lock().inner.action(layout, action);
+                let action = widget::Action::Render { out: &windowstate.rendered };
+                let cx = widget::Context { layout, action };
+                self.content.lock().inner.action(cx);
 
                 // Now we can read back and render the data.
 
                 let AppRenderState { renderer, atlas } = &mut *appstate;
                 let WindowRenderState { rendered, texture, surface } = &mut *windowstate;
+                let widget::RenderOutputInner { geometry, instances, .. } = &mut *rendered.inner.lock();
 
                 let drawable = render::DrawableGeometry {
-                    source: &[&rendered.geometry],
-                    instances: &rendered.instances,
+                    source: &[&geometry],
+                    instances: &instances,
                 };
 
                 self.inner.present();
@@ -286,7 +288,8 @@ impl Window {
                     point: common::PhysicalPoint::new(100, 100),
                     delta: common::PhysicalPoint::new(dx, dy)
                 };
-                self.content.lock().inner.action(layout, action);
+                let cx = widget::Context { layout, action };
+                self.content.lock().inner.action(cx);
             }
 
             _ => (),

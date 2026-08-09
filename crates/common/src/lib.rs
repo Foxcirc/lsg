@@ -162,14 +162,14 @@ impl From<CurvePoint> for PhysicalPair {
 pub type PhysicalPoint = PhysicalPair;
 pub type PhysicalSize  = PhysicalPair;
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub enum Measure {
     #[default]
     Absolute,
     Relative,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct MeasuredRect {
     pub point: MeasuredPoint,
     pub size: MeasuredSize
@@ -191,7 +191,7 @@ impl From<PhysicalRect> for MeasuredRect {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct MeasuredPair {
     pub x: i16,
     pub y: i16,
@@ -209,7 +209,6 @@ impl MeasuredPair {
 pub type MeasuredPoint = MeasuredPair;
 pub type MeasuredSize  = MeasuredPair;
 
-// TODO: I believe we should work with integer points that have high coordinate values instead of using f32 generally
 /// A mathematical point.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -542,7 +541,7 @@ impl VertexGeometry {
 
 }
 
-#[derive(Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct MeasuredNumber {
     pub v: i16,
     pub mv: Measure
@@ -639,7 +638,7 @@ pub unsafe trait IsSurface {
     fn scale(&self) -> f64;
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SmartMutex<T> {
     inner: Mutex<T>,
 }
