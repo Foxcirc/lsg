@@ -1,8 +1,8 @@
 
-use std::{iter::zip, mem::swap};
+use std::mem::swap;
 
 use common::SmartMutex;
-use crate::{Action::Render, *};
+use crate::*;
 
 pub struct Placement<W: Widget> {
     pub inner: W,
@@ -42,7 +42,7 @@ impl<W: Widget> Offset<W> {
 impl<W: Widget> Widget for Offset<W> {
     fn action(&self, cx: Context) -> Response {
         let rect = *self.rect.lock();
-        let mut newbounds = cx.layout.bounds;
+        let mut newbounds = cx.layout;
         newbounds.point.x += rect.point.x;
         newbounds.point.y += rect.point.y;
         newbounds.size.x += rect.size.x;
@@ -160,9 +160,9 @@ fn implcol<W: Widget>(cx: Context, slot: &(common::MeasuredNumber, W), offset: &
 
     let (cwidth, cwidget) = slot;
 
-    let crect = cx.layout.transform(common::MeasuredRect {
+    let crect = cx.transform(common::MeasuredRect {
         point: common::MeasuredPoint::new(common::abs(*offset), common::abs(0)),
-        size:  common::MeasuredSize::new(*cwidth, common::abs(cx.layout.height()))
+        size:  common::MeasuredSize::new(*cwidth, common::abs(cx.height()))
     });
 
 
@@ -224,12 +224,12 @@ impl<W: Widget> Widget for Clip<W> {
                 };
 
                 // COMPLETELY INSIDE => KEEP
-                if rect_inside_rect(rect, cx.layout.bounds) {
+                if rect_inside_rect(rect, cx.layout) {
                     // Do nothing.
                 }
 
                 // COMPLETELY OUTSIDE => DISCARD
-                else if !rect_intersects_rect(rect, cx.layout.bounds) {
+                else if !rect_intersects_rect(rect, cx.layout) {
                     *instance = common::Instance::DISCARD;
                 }
 
@@ -242,7 +242,7 @@ impl<W: Widget> Widget for Clip<W> {
                         let bufs = &mut *self.bufs.lock();
                         let shape = geometry.get(instance.target.shape);
 
-                        clip_triangle_shape_to_rect(bufs, shape, cx.layout.bounds);
+                        clip_triangle_shape_to_rect(bufs, shape, cx.layout);
 
                         // Finally, redirect the instance to our new shape.
                         let idx = geometry.add(&bufs.newshape);
@@ -536,6 +536,8 @@ impl<W: Widget> Widget for Scrollable<W> {
                     it.point.x -= delta.x / 200;
                     it.point.y += delta.y / 200;
                 });
+                // Redraw, to make our changes visible.
+                cx.caps.redraw();
             }
 
             Response::Handeled

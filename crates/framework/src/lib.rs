@@ -229,18 +229,13 @@ impl Window {
         let mut windowstate = self.renderstate.lock();
         let mut appstate = self.app.renderstate.lock();
 
-        let layout = widget::Layout::new(common::PhysicalRect {
-            point: common::PhysicalPoint::ZERO,
-            size: self.inner.size()
-        });
-
         match event {
 
-            // Event handlers.
+            // Event handlers:
 
             WindowEvent::ShouldClose => self.handlers.closed.fire(),
 
-            // Special events.
+            // Special events:
 
             WindowEvent::Resize { size, .. } => {
                 windowstate.surface.resize(size);
@@ -249,17 +244,10 @@ impl Window {
 
             WindowEvent::Redraw => {
 
-                // Rendering a widget looks as follows.
-                // 1. Clear old data and create a blank `Space`.
-                // 2. Let the widget tree render into the `Space`.
-                // 3. Read the data and render it onto the window.
-
                 windowstate.clear();
 
                 // This will render the whole tree.
-                let action = widget::Action::Render { out: &windowstate.rendered };
-                let cx = widget::Context { layout, action };
-                self.content.lock().inner.action(cx);
+                self.action(widget::Action::Render { out: &windowstate.rendered });
 
                 // Now we can read back and render the data.
 
@@ -275,7 +263,6 @@ impl Window {
                 self.inner.present();
                 texture.clear([0., 0., 0., 1.]);
                 renderer.draw(&drawable, &atlas, texture);
-                self.inner.redraw();
 
                 surface.blit(texture);
                 surface.swap();
@@ -284,12 +271,10 @@ impl Window {
             },
 
             WindowEvent::MouseScroll { dx, dy } => {
-                let action = widget::Action::MouseScroll {
+                self.action(widget::Action::MouseScroll {
                     point: common::PhysicalPoint::new(100, 100),
                     delta: common::PhysicalPoint::new(dx, dy)
-                };
-                let cx = widget::Context { layout, action };
-                self.content.lock().inner.action(cx);
+                });
             }
 
             _ => (),
@@ -305,6 +290,28 @@ impl Window {
 
     }
 
+    /// Propagate an action through the tree.
+    fn action(&self, action: widget::Action) {
+
+        // All actions for the `content` will be done with this layout.
+        let layout = common::PhysicalRect {
+            point: common::PhysicalPoint::ZERO,
+            size: self.inner.size()
+        };
+
+        // # Deadlocks
+        // Caps must be careful to not use any variables that are locked
+        // inside `handle`, specifically the `renderstate` variables.
+        let caps = &Caps {
+            window: &self
+        };
+
+        // Propagate it through the tree.
+        self.content.lock().inner.action(
+            widget::Context { action, layout, caps }
+        );
+    }
+
     // pub fn show(&self, size: LogicalSize) {
     //     // self.inner.
     // }
@@ -313,10 +320,24 @@ impl Window {
         self.content.set(widget::basic::DynWidget::new(widget));
     }
 
+    pub fn redraw(&self) {
+        self.inner.redraw();
+    }
+
     pub fn closed<'s>(&'s self) -> BroadcastFuture<'s, ()> {
         self.handlers.closed.listen()
     }
 
+}
+
+pub struct Caps<'a> {
+    window: &'a Window
+}
+
+impl<'a> widget::Caps for Caps<'a> {
+    fn redraw(&self) {
+        self.window.redraw();
+    }
 }
 
 #[derive(Default)]
