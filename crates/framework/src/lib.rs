@@ -225,6 +225,7 @@ impl Window {
     fn handle(&self, event: desktop::WindowEvent) -> Result<(), desktop::EvlError> {
 
         use desktop::WindowEvent;
+        use widget::RenderOutputInner;
 
         let mut windowstate = self.renderstate.lock();
         let mut appstate = self.app.renderstate.lock();
@@ -250,10 +251,9 @@ impl Window {
                 self.action(widget::Action::Render { out: &windowstate.rendered });
 
                 // Now we can read back and render the data.
-
-                let AppRenderState { renderer, atlas } = &mut *appstate;
+                let AppRenderState    { renderer, atlas }            = &mut *appstate;
                 let WindowRenderState { rendered, texture, surface } = &mut *windowstate;
-                let widget::RenderOutputInner { geometry, instances, .. } = &mut *rendered.inner.lock();
+                let RenderOutputInner { geometry, instances, .. }    = &mut *rendered.inner.lock();
 
                 let drawable = render::DrawableGeometry {
                     source: &[&geometry],
@@ -282,11 +282,6 @@ impl Window {
         }
 
         Ok(())
-
-        // let action = Action::Event { event };
-
-        // Propagate the action through the widget tree.
-        // self.content.lock().action(action);
 
     }
 
