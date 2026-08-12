@@ -263,32 +263,39 @@ extern "C" fn run() {
 
 use std::sync::Arc;
 
-use lsg::Window;
-
 fn main() {
     lsg::App::run(handle, lsg::Config::default())
-        .expect("failed to run app");
+        .expect("unable to launch");
 }
 
 async fn handle(app: Arc<lsg::App>) {
 
-    use lsg::widget::{layout, shapes};
+    use lsg::{connect, Window};
+    use lsg::widget::{basic, layout, shapes};
     use lsg::common::rel;
 
     let window = lsg::Window::new(&app);
 
     let cols = layout::Cols::new(vec![
-        (rel(3333), shapes::Rect::colored((200, 0, 0, 200))),
-        (rel(3333), shapes::Rect::colored((0, 200, 0, 200))),
-        (rel(3333), shapes::Rect::colored((0, 0, 200, 200)))
+        (rel(3333), shapes::Rect::colored((200, 0, 0, 100))),
+        (rel(3333), shapes::Rect::colored((0, 200, 0, 100))),
+        (rel(3333), shapes::Rect::colored((0, 0, 200, 100)))
         // (rel(5000), rect().xround(0.25).xcolor(Color::RED))
     ]);
 
-    let widget = layout::Scrollable::new(cols);
+    let background = shapes::Rect::colored((0, 0, 0, 100));
+    let scrollable = layout::Scrollable::new(cols);
+    let widget = layout::Many::<basic::DynWidget>::new();
+    widget.add(basic::DynWidget::new(Arc::new(background)));
+    widget.add(basic::DynWidget::new(Arc::new(scrollable)));
 
     window.content(Arc::new(widget));
 
-    app.connect(&window, Window::closed, async move |(app, ..)| {
+    // app.connect(&window, Window::closed, async move |(app, ..)| {
+    //     app.quit();
+    // });
+
+    connect!({app, window}, Window::closed, {
         app.quit();
     });
 

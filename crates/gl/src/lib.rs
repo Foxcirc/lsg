@@ -979,8 +979,8 @@ pub fn draw_buffers(fbo: &FrameBuffer, buffers: &[AttachmentPoint]) {
 #[track_caller]
 pub fn clear_buffer_v(fbo: &FrameBuffer, attachment: AttachmentPoint, value: &[f32]) {
     bind_frame_buffer(fbo);
-    // somebody has to be seriously punished for creating this horrible api...
-    // why is this completely different compared to ALL other functions that deal with fbo's!?
+    // WHY is this completely different compared to
+    // ALL other functions that deal with FBOs!?
     let (param1, param2) = match attachment {
         AttachmentPoint::Color0 => (gl::COLOR, 0),
         AttachmentPoint::Color1 => (gl::COLOR, 1),

@@ -13,7 +13,7 @@ async fn handle(app: Arc<lsg::App>) {
         (rel(5000), shapes::Rect::colored((50, 0, 100, 255)))
     ]);
 
-    window.content(Arc::new(widget));
+    window.content(arc(widget));
 
     app.connect(&window, Window::closed, async move |(app, ..)| {
         app.quit();

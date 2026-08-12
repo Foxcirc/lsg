@@ -12,6 +12,16 @@ pub trait Widget {
     // fn query(&self, query: Query);
 }
 
+// NOTE: To make it possible to use `&dyn Widget` as a `W: Widget`,
+//       this blanked implementation for references would need to be
+//       provided but I cannot see a use case for this right now.
+//
+// impl<'a, T: ?Sized + Widget> Widget for &'a T {
+//     fn action(&self, cx: Context) -> Response {
+//         (**self).action(cx)
+//     }
+// }
+
 // pub enum Query<'a> {
 //     PreferredSize { out: &'a mut common::PhysicalSize },
 //     WasDeleted { out: &'a mut bool },

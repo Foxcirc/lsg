@@ -56,6 +56,9 @@ pub struct Many<W: Widget> {
 }
 
 impl<W: Widget> Many<W> {
+    pub fn new() -> Self {
+        Self { inner: SmartMutex::new(Vec::new()) }
+    }
     pub fn add(&self, w: W) {
         self.inner.lock().push(w);
     }

@@ -139,25 +139,6 @@ impl App {
 
     }
 
-    pub fn connect<T, E, L, F>(self: &Arc<Self>, data: &Arc<T>, listener: L, handler: F)
-        where F: AsyncFn((&Arc<App>, &Arc<T>, E)) + 'static,
-              L: Fn(&T) -> BroadcastFuture<E> + 'static,
-              E: Clone,
-              T: 'static
-        {
-
-            let data2 = Arc::clone(data);
-            let app2 = Arc::clone(&self);
-
-            self.spawn(async move {
-                let mut source = listener(&data2);
-                loop { handler(
-                    (&app2, &data2, source.next().await)
-                ).await }
-            });
-
-    }
-
     pub fn quit(&self) {
         self.handlers.quit.send(desktop::QuitReason::Program)
     }
@@ -260,8 +241,11 @@ impl Window {
                     instances: &instances,
                 };
 
+                // TODO: remove the present function... it is fucking annoying.
+                // ALSO: Debug why it sometimes hangs...
                 self.inner.present();
-                texture.clear([0., 0., 0., 1.]);
+
+                texture.clear([0.0, 0.0, 0.0, 0.0]);
                 renderer.draw(&drawable, &atlas, texture);
 
                 surface.blit(texture);
@@ -324,6 +308,71 @@ impl Window {
     }
 
 }
+
+/// Easily connect an event source to a handler.
+#[macro_export]
+macro_rules! connect {
+    (
+        // Input variables...
+        {$app:ident,
+         $source:ident
+         $(, $rest:ident)* $(,)? },
+        // Listener and body...
+        $listener:path,
+        $body:expr
+    ) => {
+
+        {
+
+            // Enforce types of the input variables.
+            $crate::connecthelper1(&$app, &$source, &$listener);
+
+            let app0 = &$app;
+
+            // Clone the input variables.
+            let $app = Arc::clone(&app0);
+            let $source = Arc::clone(&$source);
+
+            $(
+                // Clone all additional variables.
+                $crate::connecthelper2(&$rest);
+                let $rest = Arc::clone(&$rest);
+            )*
+
+            // Spawn our listener.
+            app0.spawn(async move {
+                let mut broadcaster = $listener(&$source);
+                loop {
+                    let event = broadcaster.next().await;
+                    {
+                        // Make sure the user cannot try
+                        // to move out of the values:
+                        let $app = &$app;
+                        let $source = &$source;
+                        $(let $rest = &$rest;)*
+                        $body;
+                    }
+                }
+            })
+        }
+
+    };
+}
+
+// pub fn connect<T, E, L, F>(self: &Arc<Self>, data: &Arc<T>, listener: L, handler: F)
+//     where F: AsyncFn((&Arc<App>, &Arc<T>, E)) + 'static,
+//           L: Fn(&T) -> BroadcastFuture<E> + 'static,
+//           E: Clone,
+//           T: 'static
+
+/// Helper (1) to enforce types in the [`connect`] macro.
+#[doc(hidden)]
+pub fn connecthelper1<T, L, E>(_app: &Arc<App>, _source: &Arc<T>, _listener: L)
+where L: Fn(&T) -> BroadcastFuture<E> + 'static, E: Clone, T: 'static {}
+
+/// Helper (2) to enforce types in the [`connect`] macro.
+#[doc(hidden)]
+pub fn connecthelper2<T>(_rest: &Arc<T>) {}
 
 pub struct Caps<'a> {
     window: &'a Window
