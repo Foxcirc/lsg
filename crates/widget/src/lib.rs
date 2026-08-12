@@ -140,15 +140,15 @@ pub enum Action<'a> {
     Render { out: &'a RenderOutput },
 
     MouseMotion { point: common::PhysicalPoint },
-    MouseDown { point: common::PhysicalPoint, button: desktop::MouseButton },
-    MouseUp { point: common::PhysicalPoint, button: desktop::MouseButton },
+    MouseDown { point: common::PhysicalPoint, button: common::MouseButton },
+    MouseUp { point: common::PhysicalPoint, button: common::MouseButton },
     MouseScroll { point: common::PhysicalPoint, delta: common::PhysicalPair },
 
     Unhover,
     Unfocus,
 
-    KeyDown { key: desktop::Key, repeat: bool },
-    KeyUp { key: desktop::Key },
+    KeyDown { key: common::Key, repeat: bool },
+    KeyUp { key: common::Key },
 
     TextInput { chr: char },
     TextCompose { chr: char },
@@ -270,7 +270,7 @@ impl fmt::Debug for RenderOutput {
         let this = self.inner.lock();
         f.debug_struct("RenderOutput")
             .field("#instances", &this.instances.len())
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 

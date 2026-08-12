@@ -8,9 +8,7 @@ pub use common;
 pub use widget;
 
 use common::{IsSurface, SmartMutex};
-use desktop::{MouseButton, Key};
-use widget::Widget;
-use std::{collections::{HashMap, VecDeque}, convert::{Infallible, identity}, future::{pending, poll_fn}, pin::Pin, sync::{Arc, Weak}, task};
+use std::{collections::HashMap, convert::{Infallible, identity}, future::poll_fn, sync::{Arc, Weak}, task};
 use futures_lite::{FutureExt, future::block_on};
 
 pub struct Config {

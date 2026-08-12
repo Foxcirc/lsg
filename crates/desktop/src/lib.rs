@@ -60,11 +60,11 @@ pub enum WindowEvent {
     MouseEnter,
     MouseLeave,
     MouseMotion { point: common::PhysicalPair },
-    MouseDown { point: common::PhysicalPair, button: MouseButton },
-    MouseUp { point: common::PhysicalPair, button: MouseButton },
+    MouseDown { point: common::PhysicalPair, button: common::MouseButton },
+    MouseUp { point: common::PhysicalPair, button: common::MouseButton },
     MouseScroll { dx: i16, dy: i16 },
-    KeyDown { key: Key, repeat: bool },
-    KeyUp { key: Key },
+    KeyDown { key: common::Key, repeat: bool },
+    KeyUp { key: common::Key },
     TextInput { chr: char },
     TextCompose { chr: char },
     TextComposeCancel,
@@ -185,63 +185,6 @@ pub enum Urgency {
 #[repr(C)]
 pub enum IconFormat {
     Argb8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: derive the right traits to all those classes
-pub enum Key {
-    Special(SpecialKey),
-    Char(char), // a-z, A-Z, 1-9, + special chars
-    DeadChar(char),
-    Unknown(u32)
-}
-
-impl Key {
-    pub fn modifier(&self) -> bool {
-        if let Self::Special(key) = self {
-            matches!(key,
-                SpecialKey::Shift | SpecialKey::Control | SpecialKey::CapsLock |
-                SpecialKey::Alt   | SpecialKey::AltGr   | SpecialKey::Super
-            )
-        } else {
-            false
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpecialKey {
-    Escape,
-    Tab,
-    CapsLock,
-    Shift,
-    Control,
-    Alt,
-    AltGr,
-    /// Windows key.
-    Super,
-    /// Application menu key.
-    AppMenu,
-    Return,
-    Backspace,
-    Space,
-    ArrowUp,
-    ArrowDown,
-    ArrowLeft,
-    ArrowRight,
-    F1, F2, F3, F4, F5, F6,
-    F7, F8, F9, F10, F11, F12,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub enum MouseButton {
-    Left,
-    Right,
-    Middle,
-    X1,
-    X2,
-    Unknown,
 }
 
 #[repr(C)] // TODO: make it e.g. repr(u8) to actually define the layout
