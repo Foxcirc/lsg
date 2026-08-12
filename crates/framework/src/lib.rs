@@ -310,6 +310,8 @@ impl Window {
 /// Easily connect an event source to a handler.
 #[macro_export]
 macro_rules! connect {
+
+    // Rule without binding $event.
     (
         // Input variables...
         {$app:ident,
@@ -317,7 +319,20 @@ macro_rules! connect {
          $(, $rest:ident)* $(,)? },
         // Listener and body...
         $listener:path,
-        $body:expr
+        $body:block
+    ) => {
+        connect!({$app, $source, $($rest)*}, $listener, _ => $body);
+    };
+
+    // Rule binding $event.
+    (
+        // Input variables...
+        {$app:ident,
+         $source:ident
+         $(, $rest:ident)* $(,)? },
+        // Listener and body...
+        $listener:path,
+        $event:pat => $body:block
     ) => {
 
         {
@@ -339,22 +354,22 @@ macro_rules! connect {
 
             // Spawn our listener.
             app0.spawn(async move {
-                let mut broadcaster = $listener(&$source);
-                loop {
-                    let event = broadcaster.next().await;
-                    {
-                        // Make sure the user cannot try
-                        // to move out of the values:
-                        let $app = &$app;
-                        let $source = &$source;
-                        $(let $rest = &$rest;)*
-                        $body;
-                    }
+                let mut brc = $listener(&$source);
+                while let Some($event) = brc.next().await {
+                    // Make sure the user cannot try
+                    // to move out of the values.
+                    let $app = &$app;
+                    let $source = &$source;
+                    $(let $rest = &$rest;)*
+                    // Call the users body.
+                    $body;
+
                 }
             })
         }
 
     };
+
 }
 
 // pub fn connect<T, E, L, F>(self: &Arc<Self>, data: &Arc<T>, listener: L, handler: F)
@@ -407,8 +422,58 @@ impl WindowRenderState {
     }
 }
 
+enum WakerSlot {
+    Reserved,
+    Free,
+    Some(task::Waker)
+}
+
+impl WakerSlot {
+
+    pub fn isfree(&self) -> bool {
+        matches!(self, Self::Free)
+    }
+
+    pub fn getwaker(&self) -> Option<&task::Waker> {
+        match self {
+            Self::Reserved => None,
+            Self::Free     => None,
+            Self::Some(it) => Some(it)
+        }
+    }
+
+    // Efficiently insert a waker into this slot.
+    pub fn insert(&mut self, waker: &task::Waker) {
+        match self {
+            Self::Free => unreachable!(),
+            Self::Reserved => *self = Self::Some(waker.clone()),
+            Self::Some(it) => it.clone_from(waker)
+        }
+    }
+
+}
+
+enum Event<T: Clone> {
+    Drop,
+    None,
+    Some(T),
+}
+
+struct EventBroadcasterInner<T: Clone> {
+    event: Event<T>,
+    wakers: Vec<WakerSlot>,
+    tick: u16,
+}
+
 pub struct EventBroadcaster<T: Clone> {
     inner: SmartMutex<EventBroadcasterInner<T>>,
+}
+
+impl<T: Clone> Drop for EventBroadcaster<T> {
+    fn drop(&mut self) {
+        // This makes [`Broadcastfuture::next`] return `None`.
+        self.sendraw(Event::Drop);
+    }
 }
 
 impl<T: Clone> Default for EventBroadcaster<T> {
@@ -417,39 +482,31 @@ impl<T: Clone> Default for EventBroadcaster<T> {
     }
 }
 
-struct EventBroadcasterInner<T: Clone> {
-    event: Option<T>,
-    wakers: Vec<Option<task::Waker>>, // TODO: fix bug (slot reserved but still None = treated as empty slot)
-    tick: u16,
-}
-
-// TODO: right now, listeners registered with spawn()/connect!() will
-// cause a memory leak, as they hold an Arc<Widget> but if W is dropped
-// they never notice and continue indefinitely waiting.
-// To solve this, EventBroadcaster should sent a quit value (e.g. a None)
-// to all their listeners when dropped.
-
 impl<T: Clone> EventBroadcaster<T> {
 
     pub const fn new() -> Self {
         Self {
             inner: SmartMutex::new(EventBroadcasterInner {
-                event: None,
+                event: Event::None,
                 wakers: Vec::new(),
                 tick: 1,
             }),
         }
     }
 
-    pub fn send(&self, event: T) {
+    pub fn send(&self, t: T) {
+        self.sendraw(Event::Some(t));
+    }
+
+    fn sendraw(&self, event: Event<T>) {
 
         let mut inner = self.inner.lock();
 
-        inner.event = Some(event);
+        inner.event = event;
         inner.tick += 1;
 
         inner.wakers.iter()
-            .flat_map(identity)
+            .filter_map(WakerSlot::getwaker)
             .for_each(task::Waker::wake_by_ref);
 
     }
@@ -458,10 +515,13 @@ impl<T: Clone> EventBroadcaster<T> {
 
         let mut inner = self.inner.lock();
 
-        let slot = inner.wakers.iter().position(Option::is_none).unwrap_or_else(|| {
-            inner.wakers.push(None);
+        let maybe = inner.wakers.iter().position(WakerSlot::isfree);
+        let slot = maybe.unwrap_or_else(|| {
+            inner.wakers.push(WakerSlot::Free);
             inner.wakers.len() - 1
         });
+
+        inner.wakers[slot] = WakerSlot::Reserved;
 
         BroadcastFuture {
             channel: self,
@@ -489,29 +549,31 @@ impl<'a, T: Clone> Drop for BroadcastFuture<'a, T> {
     fn drop(&mut self) {
         // Make our slot available again.
         let mut inner = self.channel.inner.lock();
-        inner.wakers[self.slot as usize] = None;
+        inner.wakers[self.slot as usize] = WakerSlot::Free;
     }
 }
 
 impl<'a, T: Clone> BroadcastFuture<'a, T> {
 
-    pub async fn next(&mut self) -> T {
+    pub async fn next(&mut self) -> Option<T> {
         poll_fn(|cx| self.poll(cx)).await
     }
 
-    pub fn poll(&mut self, cx: &mut task::Context) -> task::Poll<T> {
+    pub fn poll(&mut self, cx: &mut task::Context) -> task::Poll<Option<T>> {
 
         let mut inner = self.channel.inner.lock();
 
-        // Read the event if it is new.
-        if let Some(ref event) = inner.event && inner.tick > self.tick {
-            // This event is now no longer new.
+        // Read the event only if it is new.
+        let new = inner.tick > self.tick;
+
+        if let Event::Some(it) = &inner.event && new {
             self.tick = inner.tick;
-            task::Poll::Ready(event.clone())
+            task::Poll::Ready(Some(it.clone()))
+        } else if let Event::Drop = &inner.event {
+            task::Poll::Ready(None)
         } else {
             inner.wakers[self.slot as usize]
-                .get_or_insert_with(|| cx.waker().clone())
-                .clone_from(cx.waker());
+                .insert(cx.waker());
             task::Poll::Pending
         }
 
@@ -535,13 +597,12 @@ fn event_broadcaster() {
 
     block_on(async move {
 
-        // Both should receive only events that
-        // happen after their creation.
+        // Both should receive only events that happen after their creation.
 
         let mut dummy = task::Context::from_waker(task::Waker::noop());
 
-        assert_eq!((&mut listener1).next().await, 1);
-        assert_eq!((&mut listener2).next().await, 1);
+        assert_eq!((&mut listener1).next().await, Some(1));
+        assert_eq!((&mut listener2).next().await, Some(1));
         assert_eq!((&mut listener3).poll(&mut dummy), task::Poll::Pending);
 
     });
