@@ -423,6 +423,12 @@ struct EventBroadcasterInner<T: Clone> {
     tick: u16,
 }
 
+// TODO: right now, listeners registered with spawn()/connect!() will
+// cause a memory leak, as they hold an Arc<Widget> but if W is dropped
+// they never notice and continue indefinitely waiting.
+// To solve this, EventBroadcaster should sent a quit value (e.g. a None)
+// to all their listeners when dropped.
+
 impl<T: Clone> EventBroadcaster<T> {
 
     pub const fn new() -> Self {

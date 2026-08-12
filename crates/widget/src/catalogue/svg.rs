@@ -457,7 +457,6 @@ pub fn path_to_shape(path: Vec<PathCommand>, scale: f32) -> Result<Vec<Vec<Curve
 
 }
 
-// TODO: as part of the never ending rework for math functions taking points/curvepoints this should take an Into<Point> instead of curvepoint
 fn point_inside_polygon(point: CurvePoint, polygon: &[CurvePoint]) -> bool {
 
     let len = polygon.len();
@@ -480,8 +479,8 @@ fn point_inside_polygon(point: CurvePoint, polygon: &[CurvePoint]) -> bool {
 
 }
 
-/// Finds indices in `lhs` and `rhs` where a new edge could be created without intersecting any
-/// of the edges present in `sections` (considering only sections in `group`).
+/// Finds indices in `lhs` and `rhs` where a new edge could be created without intersecting
+/// any of the edges present in `sections`, considering only sections in `group`.
 fn find_connection_spot_for_group(lhs: &[CurvePoint], rhs: &[CurvePoint], sections: &[Section], group: usize) -> Option<ConnectionSpot> {
 
     // Check every possible edge between the sections.
@@ -512,8 +511,7 @@ fn find_connection_spot_for_group(lhs: &[CurvePoint], rhs: &[CurvePoint], sectio
                 }
             }
 
-            // Since we didn't  `continue` above no intersections were found and this
-            // connection is valid.
+            // Since we didn't  `continue` above no intersections were found and this connection is valid.
 
             return Some(ConnectionSpot {
                 lhs: lhs_point_idx,
