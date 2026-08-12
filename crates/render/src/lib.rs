@@ -483,6 +483,11 @@ impl Renderer {
 
         for instance in geometry.instances {
 
+            // Skip discarded instances. See constant [`Instance::DISCARD`].
+            if instance.isdiscard() {
+                continue;
+            }
+
             let inner = &geometry.source[instance.target.geometry as usize];
             let shape = &inner.shapes[instance.target.shape as usize];
             let vertices = &inner.vertices[shape.rangeu()];
